@@ -6,10 +6,10 @@
   (t :string x))
 
 (defn number [x]
-  (t :number x))
+  (t :number (Long/parseLong x)))
 
 (defn date [x]
-  (t :date x))
+  (t :date (java.sql.Date/valueOf x)))
 
 #_{:clj-kondo/ignore [:redefined-var]}
 (defn symbol [x]

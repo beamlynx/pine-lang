@@ -1,0 +1,10 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+Tests for the project:
+
+```bash
+clojure -M:test
+```

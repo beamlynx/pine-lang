@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: pine
       POSTGRES_DB: pine
     ports:
-      - "5432"
+      - "5434:5432"
     volumes:
       - db-data:/var/lib/postgresql/data
       - ./docker/db/init:/docker-entrypoint-initdb.d
@@ -18,7 +18,7 @@ services:
       retries: 10
 
   pine:
-    image: ahmadnazir/pine:0.22.0
+    image: ahmadnazir/pine:0.23.0
     container_name: pine_server
     depends_on:
       sample-db-ecommerce:

@@ -3,8 +3,16 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [0.23.0] - 2025-08-15
 ### Added
 - Setup for playground
+
+### Fixed
+- Numbers are parsed as longs e.g. if the column is an integer:
+```
+customers | id = 1
+```
 
 ## [0.22.0] - 2025-07-12
 ### Added

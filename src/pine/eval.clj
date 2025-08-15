@@ -118,9 +118,10 @@
 (defn formatted-query [{:keys [query params]}]
   (let [replacer (fn [s param]
                    (let [v (:value param)
-                         param-str (if (= (:type param) :string)
-                                     (str "'" v "'")
-                                     (str v))]
+                         param-str (cond
+                                     (= (:type param) :string) (str "'" v "'")
+                                     (= (:type param) :date) (str "'" v "'")
+                                     :else (str v))]
                      (s/replace-first s "?" param-str)))]
     (if (empty? query) "" (str "\n" (reduce replacer query params) ";\n"))))
 

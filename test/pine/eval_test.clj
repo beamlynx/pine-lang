@@ -53,7 +53,17 @@
            (generate "company | where: name ilike 'acme%'")))
     (is (= {:query "SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" NOT ILIKE ? LIMIT 250",
             :params (map dt/string ["acme%"])}
-           (generate "company | where: name not ilike 'acme%'"))))
+           (generate "company | where: name not ilike 'acme%'")))
+    (is (= {:query "SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? LIMIT 250",
+            :params (map dt/number ["1"])}
+           (generate "company | where: id = 1")))
+    (is (= {:query "SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" != ? LIMIT 250",
+            :params (map dt/number ["1"])}
+           (generate "company | where: id != 1")))
+    (is (= {:query "SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" IS NULL LIMIT 250",
+            :params []}
+           (generate "company | where: id is null")))
+    )
 
   (testing "Condition : !="
     (is (= {:query "SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" != ? LIMIT 250",
