@@ -34,6 +34,9 @@
 (defn run-query [id query]
   (postgres/run-query id query))
 
+(defn run-action-query [id query]
+  (postgres/run-action-query id query))
+
 (defn get-connection-count [id]
   (let [result (run-query id {:query "SELECT COUNT(*) as connection_count FROM pg_stat_activity" :params []})]
     (-> result second first)))

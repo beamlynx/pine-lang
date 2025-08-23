@@ -4,6 +4,14 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.24.0] - 2025-08-23
+### Added
+- Support for `update!` operation:
+```
+customers | w: id = 1 | update! name = 'John Doe'
+```
+
+
 ## [0.23.0] - 2025-08-15
 ### Added
 - Setup for playground

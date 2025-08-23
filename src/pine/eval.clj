@@ -105,11 +105,38 @@
     {:query (str "DELETE FROM " (q schema table) " WHERE " (q column) " IN ( "  query " )")
      :params params}))
 
+(defn build-update-query [state]
+  (let [{:keys [update current aliases]} state
+        {table :table schema :schema}     (get aliases current)
+        {:keys [assignments]}             update
+        ;; Build the SET clause
+        set-clause (s/join ", " 
+                          (map (fn [{:keys [column value]}]
+                                 (let [{:keys [alias column]} column]
+                                   (str (q column) " = " (cond
+                                                           (= (:type value) :symbol) (:value value)
+                                                           (= (:type value) :column) (let [{:keys [alias column]} value] (q alias column))
+                                                           :else "?"))))
+                               assignments))
+        ;; Create a modified state for the subquery that only selects id
+        ;; and has the operation type set to :select to avoid adding .*
+        state-for-subquery (-> state
+                              (assoc :columns [{:column "id" :alias current}])
+                              (assoc :operation {:type :select :value nil}))
+        {:keys [query params]} (build-select-query state-for-subquery)
+        ;; Extract parameters from update assignments
+        update-params (->> assignments
+                          (map :value)
+                          (filter #(not (or (= (:type %) :symbol) (= (:type %) :column)))))]
+    {:query (str "UPDATE " (q schema table) " SET " set-clause " WHERE id IN ( " query " )")
+     :params (concat update-params params)}))
+
 (defn build-query [state]
   (let [{:keys [type]} (state :operation)]
     (cond
       (= (-> state :current) "x_0") {:query "" :params nil}
       (= type :delete-action) (build-delete-query state)
+      (= type :update-action) (build-update-query state)
       (= type :count) (build-count-query state)
       (= type :group) (build-select-query state)
       ;; no op
@@ -129,5 +156,14 @@
   (if (= (-> state :operation :type) :no-op)
     [["No operation"] ["-"]]
     (let [connection-id (state :connection-id)
-          {query :query params :params} (build-query state)]
-      (db/run-query connection-id {:query query :params (map #(:value %) params)}))))
+          {query :query params :params} (build-query state)
+          operation-type (-> state :operation :type)]
+      (if (contains? #{:update-action :delete-action} operation-type)
+        ;; For action operations, return the number of affected rows
+        (let [affected-rows (db/run-action-query connection-id {:query query :params (map #(:value %) params)})]
+          [[(case operation-type
+              :update-action "Rows updated"
+              :delete-action "Rows deleted")] 
+           [affected-rows]])
+        ;; For select operations, return the result set
+        (db/run-query connection-id {:query query :params (map #(:value %) params)})))))

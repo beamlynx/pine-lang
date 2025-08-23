@@ -14,7 +14,7 @@
       (ast/generate :test)
       eval/build-query))
 
-(deftest test-build--query
+(deftest test-build-query
 
   (testing "qualify table"
     (is (= "\"x\"" (eval/q "x")))
@@ -170,25 +170,52 @@
             :params nil}
            (generate "company | delete! .id"))))
 
+  (testing "update action"
+    (is (= {:query "UPDATE \"company\" SET \"name\" = ? WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )",
+            :params (list (dt/string "John Doe") (dt/number "1"))}
+           (generate "company | where: id = 1 | update! name = 'John Doe'")))
+    (is (= {:query "UPDATE \"company\" SET \"name\" = ?, \"age\" = ? WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )",
+            :params (list (dt/string "John") (dt/number "30") (dt/number "1"))}
+           (generate "company | where: id = 1 | update! name = 'John', age = 30")))
+    (is (= {:query "UPDATE \"company\" SET \"active\" = true WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )",
+            :params (list (dt/number "1"))}
+           (generate "company | where: id = 1 | update! active = true"))))
+
   (testing "delete"
     (is (= {:query " /* No SQL. Evaluate the pine expression for results */ "}
            (generate "company | delete:")))))
 
-(deftest test-format--query
+(deftest test-action-operations
+  (testing "Action operations should use different query execution path"
+    ;; Test that update-action operations are identified correctly
+    (let [state (-> "company | where: id = 1 | update! name = 'John'"
+                   parser/parse
+                   :result
+                   (ast/generate :test))]
+      (is (= :update-action (-> state :operation :type))))
+    
+    ;; Test that delete-action operations are identified correctly  
+    (let [state (-> "company | delete! .id"
+                   parser/parse
+                   :result
+                   (ast/generate :test))]
+      (is (= :delete-action (-> state :operation :type))))))
+
+(deftest test-format-query
   (testing "string"
     (is (= "\nSELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" = 'Acme Inc.' LIMIT 250;\n"
-           (-> "company | where: name='Acme Inc.'" generate eval/formatted-query)))))
+           (-> "company | where: name='Acme Inc.'" generate eval/formatted-query))))
 
-(testing "Condition : date"
-  (is (= {:query "SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" = ? LIMIT 250",
-          :params (list (dt/date "2025-01-01"))}
-         (generate "company | where: created_at = '2025-01-01'")))
-  (is (= {:query "SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" != ? LIMIT 250",
-          :params (list (dt/date "2025-01-01"))}
-         (generate "company | where: created_at != '2025-01-01'")))
-  (is (= {:query "SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" > ? LIMIT 250",
-          :params (list (dt/date "2025-01-01"))}
-         (generate "company | where: created_at > '2025-01-01'")))
-  (is (= {:query "SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" < ? LIMIT 250",
-          :params (list (dt/date "2025-01-01"))}
-         (generate "company | where: created_at < '2025-01-01'"))))
+  (testing "Condition : date"
+    (is (= {:query "SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" = ? LIMIT 250",
+            :params (list (dt/date "2025-01-01"))}
+           (generate "company | where: created_at = '2025-01-01'")))
+    (is (= {:query "SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" != ? LIMIT 250",
+            :params (list (dt/date "2025-01-01"))}
+           (generate "company | where: created_at != '2025-01-01'")))
+    (is (= {:query "SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" > ? LIMIT 250",
+            :params (list (dt/date "2025-01-01"))}
+           (generate "company | where: created_at > '2025-01-01'")))
+    (is (= {:query "SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" < ? LIMIT 250",
+            :params (list (dt/date "2025-01-01"))}
+           (generate "company | where: created_at < '2025-01-01'")))))

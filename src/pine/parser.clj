@@ -363,6 +363,39 @@
     :else (throw (ex-info "Unknown DELETE operation" {:_ payload}))))
 
 ;; -----
+;; UPDATE
+;; -----
+
+(defn- parse-update-assignment [assignment]
+  (match assignment
+    [:update-assignment column-pattern [:string & characters]]
+    {:column (extract-column-info column-pattern) :value (parse-characters characters)}
+    
+    [:update-assignment column-pattern [:number value]]
+    {:column (extract-column-info column-pattern) :value (dt/number value)}
+    
+    [:update-assignment column-pattern [:boolean b]]
+    {:column (extract-column-info column-pattern) :value (dt/symbol b)}
+    
+    [:update-assignment column-pattern [:null]]
+    {:column (extract-column-info column-pattern) :value (dt/symbol "NULL")}
+    
+    [:update-assignment column-pattern [:date value]]
+    {:column (extract-column-info column-pattern) :value (dt/date value)}
+    
+    ;; Column-to-column assignment
+    [:update-assignment column-pattern rhs]
+    {:column (extract-column-info column-pattern) :value (extract-column-info rhs)}
+    
+    :else (throw (ex-info "Unknown update assignment" {:_ assignment}))))
+
+(defmethod -normalize-op :UPDATE-ACTION [[_ payload]]
+  (match payload
+    [:update-assignments & assignments]
+    {:type :update-action :value {:assignments (mapv parse-update-assignment assignments)}}
+    :else (throw (ex-info "Unknown UPDATE-ACTION operation" {:_ payload}))))
+
+;; -----
 ;; NO-OP
 ;; -----
 

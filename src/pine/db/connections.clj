@@ -10,13 +10,13 @@
     (.setUsername (:user config))
     (.setPassword (:password config))
     (.setSchema (:schema config))
-    (.setMaximumPoolSize 1)      ; Only need one connection
-    (.setMinimumIdle 1)          ; Keep one idle connection
-    (.setIdleTimeout 600000)     ; 10 minutes idle timeout
+    (.setMaximumPoolSize 1)       ; Only need one connection
+    (.setMinimumIdle 1)           ; Keep one idle connection
+    (.setIdleTimeout 600000)      ; 10 minutes idle timeout
     (.setConnectionTimeout 10000) ; 10 seconds connection timeout
-    (.setMaxLifetime 3600000)    ; 1 hour max lifetime
-    (.setAutoCommit false)       ; Disable auto-commit
-    (.setReadOnly true)))        ; Read-only mode for now
+    (.setMaxLifetime 3600000)     ; 1 hour max lifetime
+    (.setAutoCommit true)         ; Disable auto-commit
+    (.setReadOnly false)))        ; Read-only mode disabled
 
 (defn create-pool [config]
   (let [config (merge {:dbtype "postgres" :port 5432} config)]

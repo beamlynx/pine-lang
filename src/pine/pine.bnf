@@ -1,6 +1,6 @@
 OPERATIONS := <ws*> OPERATION <ws*> (<"|"> <ws*> OPERATION <ws*>)*
 
-OPERATION    := SELECT-PARTIAL | SELECT | TABLE | WHERE-PARTIAL | WHERE | LIMIT| FROM | ORDER-PARTIAL | ORDER | COUNT | DELETE-ACTION | DELETE | GROUP
+OPERATION    := SELECT-PARTIAL | SELECT | TABLE | WHERE-PARTIAL | WHERE | LIMIT| FROM | ORDER-PARTIAL | ORDER | COUNT | DELETE-ACTION | DELETE | UPDATE-ACTION | GROUP
 
 
 TABLE             := table table-mods
@@ -18,6 +18,7 @@ ORDER             := <order-op>         order-columns
 
 DELETE-ACTION     := <delete-action-op> hint-column
 DELETE            := <delete-op>
+UPDATE-ACTION     := <update-action-op> update-assignments
 COUNT             := <count-op>
 
 GROUP             := <group-op>         group-args
@@ -30,6 +31,7 @@ order-op          := (<"order:">  | <"o:">) <ws*>
 group-op          := (<"group:">  | <"g:">) <ws*>
 delete-action-op  := (<"delete!"> | <"d!">) <ws*>
 delete-op         := (<"delete:"> | <"d:">) <ws*>
+update-action-op  := (<"update!"> | <"u!">) <ws*>
 count-op          := <"count:">
 
 <table>           := symbol* | symbol* <"."> symbol*
@@ -40,6 +42,8 @@ group-args          := aliased-columns <ws*> <"=>"> <ws*> aggregate-functions
 aggregate-functions := aggregate-function (<","> <ws*> aggregate-function)*
 aggregate-function  := "count" | "string_agg" | "sum" | "avg" | "min" | "max"
 
+update-assignments := update-assignment (<","> <ws*> update-assignment)*
+update-assignment  := column <ws*> <"="> <ws*> (column|string|number|boolean|null|date)
 
 conditions          := condition (<","> <ws*> condition)*
 condition           := column <ws*> (condition-default|condition-in) (<ws*> cast)?

@@ -151,6 +151,13 @@
   (testing "Generate ast for `delete`"
     (is (= {:column "id"} (generate :delete "company | delete! .id"))))
 
+  (testing "Generate ast for `update`"
+    (is (= {:assignments [{:column {:alias nil :column "name"} :value (dt/string "John Doe")}]} 
+           (generate :update "company | update! name = 'John Doe'")))
+    (is (= {:assignments [{:column {:alias nil :column "name"} :value (dt/string "John")} 
+                          {:column {:alias nil :column "age"} :value (dt/number "30")}]} 
+           (generate :update "company | update! name = 'John', age = 30"))))
+
   (testing "Generate ast for `group`"
     (is (= [[{:alias "c" :column "status" :index 1} {:symbol "COUNT(1)"}]
             [{:alias "c" :column "status" :index 1}]]

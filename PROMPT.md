@@ -32,3 +32,25 @@ This means that the following need to be updated:
 - @parser.clj and @parser_test.clj 
 - @main.clj and @ast_test.clj 
 - @eval.clj and @eval_test.clj 
+
+## Support for `update!` operation
+
+I want to be able to specify the `update!` operation e.g.
+
+```
+customers | where: id = 1 | update! name = 'John Doe'
+```
+
+which should be evaluated to:
+
+```
+UPDATE customers SET name = 'John Doe' WHERE id IN (SELECT id FROM customers WHERE id = 1) 
+```
+
+We will use the existing select statement and wrap that in an update statement.
+
+This means that the following need to be updated:
+- @pine.bnf 
+- @parser.clj and @parser_test.clj 
+- @main.clj and @ast_test.clj 
+- @eval.clj and @eval_test.clj 

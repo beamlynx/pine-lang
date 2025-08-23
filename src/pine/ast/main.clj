@@ -9,6 +9,7 @@
    [pine.ast.order :as order]
    [pine.ast.select :as select]
    [pine.ast.table :as table]
+   [pine.ast.update-action :as update-action]
    [pine.ast.where :as where]
    [pine.db.main :as db]))
 
@@ -28,6 +29,7 @@
             :where           []           ;; e.g. [ "name" "=" "john" ]
             :order           []           ;; e.g. [{ :alias "u" :column "name" :direction "DESC" }]
             :group           []           ;; e.g. [{ :alias "u" :column "name" }]
+            :update          nil          ;; e.g. { :assignments [{ :column {...} :value {...} }] }
             ;; state
             :index           0
             :operation       {:type  nil
@@ -65,6 +67,7 @@
     :order-partial (order/handle state value)
     :count (pine-count/handle state value)
     :delete-action (delete-action/handle state value)
+    :update-action (update-action/handle state value)
     ;; No operations
     :no-op state
     (update state :errors conj [type "Unknown operation type in parse tree"])))

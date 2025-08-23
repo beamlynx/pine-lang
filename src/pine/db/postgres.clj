@@ -133,3 +133,14 @@ FROM information_schema.columns"]
                  (jdbc/query {:connection conn} (cons query params) {:as-arrays? true :identifiers identity}))
         _ (prn "Done!")]
     result))
+
+(defn run-action-query [id query]
+  (let [pool (connections/get-connection-pool id)
+        {:keys [query params]} query
+        params (map try-cast-to-uuid params)
+        _ (prn (format "Running action: %s" query))
+        result (with-open [conn (.getConnection pool)]
+                 (jdbc/execute! {:connection conn} (cons query params)))
+        affected-rows (first result)
+        _ (prn (format "Affected rows: %d" affected-rows))]
+    affected-rows))
