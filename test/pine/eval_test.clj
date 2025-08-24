@@ -28,7 +28,15 @@
   (testing "Select"
     (is (= {:query "SELECT \"c_0\".* FROM \"company\" AS \"c_0\" LIMIT 250",
             :params nil}
-           (generate "company"))))
+           (generate "company")))
+    (is (= {:query "SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" LIMIT 1",
+            :params nil}
+           (generate "company | s: id, | l: 1")))
+    (is (= {:query "SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" LIMIT 1",
+            :params nil}
+           (generate "company | s: id | l: 1")))
+    )
+
 
   (testing "Count"
     (is (= {:query "WITH x AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT COUNT(*) FROM x",

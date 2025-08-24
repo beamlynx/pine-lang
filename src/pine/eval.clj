@@ -24,8 +24,11 @@
 
 (defn- build-columns-clause [{:keys [operation columns current]}]
   (let [type (-> operation :type)
+        ;; Check if any columns are selected for the current table
+        current-table-has-columns? (some #(= (:alias %) current) columns)
         select-all (cond
                      (contains? #{:select :delete-action :group} type) ""
+                     current-table-has-columns? ""  ; Don't add .* if current table has explicit columns
                      :else (str (if (seq columns) ", " "") (q current) ".*"))]
     (str
      "SELECT "

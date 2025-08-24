@@ -4,13 +4,18 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [0.24.0] - 2025-08-23
 ### Added
 - Support for `update!` operation:
 ```
 customers | w: id = 1 | update! name = 'John Doe'
 ```
 
+### Fixed
+- All columns were being returned in some cases instead of the explicitly selected columns. e.g.
+```
+company | s: id,
+company | s: id | l: 1
+```
 
 ## [0.23.0] - 2025-08-15
 ### Added

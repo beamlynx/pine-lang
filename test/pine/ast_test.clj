@@ -59,6 +59,10 @@
            (generate :columns "company as c | s: id")))
     (is (= []
            (generate :columns "user")))
+    (is (= [{:alias "u" :column "id" :index 1}]
+           (generate :columns "user as u | s: id | limit: 1")))
+    (is (= [{:alias "c" :column "id" :index 1} {:alias "u" :column "id" :index 3}]
+           (generate :columns "customer as c | s: id | user as u | s: id | limit: 1")))
     (is (= [{:alias "u" :column "" :symbol "*" :index 1}]
            (generate :columns "user as u | s: u.*"))))
 
