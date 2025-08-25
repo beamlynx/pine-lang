@@ -24,7 +24,7 @@ services:
       sample-db-ecommerce:
         condition: service_healthy
     ports:
-      - "33333:33333"
+      - "127.0.0.1:33333:33333"
 
   init:
     image: curlimages/curl:8.7.1
@@ -37,4 +37,5 @@ services:
     restart: "no"
 
 volumes:
-  db-data: 
+  db-data:
+
