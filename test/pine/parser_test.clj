@@ -163,16 +163,16 @@
     (is (= [{:type :delete-action, :value {:column "id"}}] (p "delete! .id"))))
 
   (testing "Parse `update!` expressions"
-    (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "name"} :value (dt/string "John Doe")}]}}] 
+    (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "name"} :value (dt/string "John Doe")}]}}]
            (p "update! name = 'John Doe'")))
-    (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "age"} :value (dt/number "25")}]}}] 
+    (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "age"} :value (dt/number "25")}]}}]
            (p "update! age = 25")))
-    (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "active"} :value (dt/symbol "true")}]}}] 
+    (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "active"} :value (dt/symbol "true")}]}}]
            (p "update! active = true")))
-    (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "deleted_at"} :value (dt/symbol "NULL")}]}}] 
+    (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "deleted_at"} :value (dt/symbol "NULL")}]}}]
            (p "update! deleted_at = null")))
-    (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "name"} :value (dt/string "John")} 
-                                                         {:column {:alias nil :column "age"} :value (dt/number "30")}]}}] 
+    (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "name"} :value (dt/string "John")}
+                                                         {:column {:alias nil :column "age"} :value (dt/number "30")}]}}]
            (p "update! name = 'John', age = 30"))))
 
   (testing "Parse No Operation expressions"

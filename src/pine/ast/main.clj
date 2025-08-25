@@ -21,7 +21,7 @@
             ;; ast
             :tables          []           ;; e.g. [{ :table "user" :schema "public" :alias "u" }] ;; schema is nilable
             :selected-tables []           ;; e.g. [{ :table "user" :schema "public" :alias "u" }] ;; schema is nilable
-            :columns         []           ;; e.g. [{ :alias "u" :column "name" }]
+            :columns         []           ;; e.g. [{ :alias "u" :column "name"  }]
             :limit           nil          ;; number ;; nilable
             :aliases         {}           ;; e.g. [{ :schema "public" :table "user" }] ;; schema is nilable
             :joins           []           ;; Vector of joins e.g. [ "u" "c" ".. relation .."]
@@ -85,6 +85,8 @@
 (defn post-handle [state]
   (-> state
       hints/handle
+      ;; Add auto-ID columns based on final operation type
+      select/add-auto-id-columns
       (assoc :selected-tables (let [tables (state :tables)
                                     type (-> state :operation :type)]
                                 (if

@@ -141,8 +141,10 @@
   ;; - Partial operations (select-partial, order-partial): exclude already-selected columns
   ;; - Note: where-partial needs custom logic (see generate-where-hints) due to complex state-dependent filtering
   (let [column (some-> columns reverse first)
+        ;; Use operation-index to determine table context for hints
+        ;; If column was added in a later operation than current context, use that column's alias
         a (if (and (seq column)
-                   (> (column :index) (state :current-index)))
+                   (> (column :operation-index) (state :current-index)))
             (column :alias)
             (state :current))
         hints (generate-all-column-hints state a)

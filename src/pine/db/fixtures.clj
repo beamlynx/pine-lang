@@ -5,6 +5,8 @@
 ;;   `x`.`company`
 ;;   `y`.`employee`
 ;;   `z`.`document`
+;;   `public`.`user`
+;;   `public`.`customer`
 ;;
 ;;     +------------------+
 ;;     |    x.company     |
@@ -28,6 +30,18 @@
 ;;              |           +-------|     created_by  (FK)   |
 ;;              +-------------------|     company_id (FK)    |
 ;;                                  +------------------------+
+;;
+;;              +------------------+
+;;              |   public.user    |
+;;              |                  |
+;;              |     id (PK)      |
+;;              +------------------+
+;;
+;;              +------------------+
+;;              |  public.customer |
+;;              |                  |
+;;              |     id (PK)      |
+;;              +------------------+
 
 (def foreign-keys [["y"  "employee"      "company_id"    "x"  "company"  "id"]
                    ["z"  "document"      "employee_id"   "y"  "employee" "id"]
@@ -46,6 +60,12 @@
               ["z"  "document"  "id"           nil  nil  nil  nil  nil]
               ["z"  "document"  "employee_id"  nil  nil  nil  nil  nil]
               ["z"  "document"  "created_by"   nil  nil  nil  nil  nil]
-              ["z"  "document"  "company_id"   nil  nil  nil  nil  nil]])
+              ["z"  "document"  "company_id"   nil  nil  nil  nil  nil]
+              ;; Add user and customer tables for tests
+              ["public"  "user"     "id"        nil  nil  nil  nil  nil]
+              ["public"  "customer" "id"        nil  nil  nil  nil  nil]
+              ;; Also add without schema for tests that don't specify schema
+              [nil  "user"     "id"             nil  nil  nil  nil  nil]
+              [nil  "customer" "id"             nil  nil  nil  nil  nil]])
 
 (def references [foreign-keys columns])

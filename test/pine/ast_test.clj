@@ -46,31 +46,33 @@
            (generate :context "company as c | user | from: c | 1"))))
 
   (testing "Generate ast for `select`"
-    (is (= [{:alias "c_0" :column "id" :index 1}]
+    (is (= [{:alias "c_0" :column "id" :operation-index 1} {:alias "c_0" :column "id" :column-alias "__c_0__id" :operation-index 2 :auto-id true :hidden true}]
            (generate :columns "company | s: id")))
-
-    (is (= [{:alias "u" :column "id" :index 1}]
-           (generate :columns "company | s: u.id")))
-    (is (= [{:alias "c_0" :column "id" :column-alias "c_id" :index 1}]
+    (is (= [{:alias "c_0" :column "id" :column-alias "c_id" :operation-index 1} {:alias "c_0" :column "id" :column-alias "__c_0__id" :operation-index 2 :auto-id true :hidden true}]
            (generate :columns "company | s: id as c_id")))
-    (is (= [{:alias "c_0" :column "id" :index 1} {:alias "e_1" :column "id" :index 3}]
+    (is (= [{:alias "c_0" :column "id" :operation-index 1} {:alias "e_1" :column "id" :operation-index 3}
+            {:alias "c_0" :column "id" :column-alias "__c_0__id" :operation-index 4 :auto-id true :hidden true}
+            {:alias "e_1" :column "id" :column-alias "__e_1__id" :operation-index 5 :auto-id true :hidden true}]
            (generate :columns "company | s: id | employee | s: id")))
-    (is (= [{:alias "c" :column "id" :index 1}]
+    (is (= [{:alias "c" :column "id" :operation-index 1} {:alias "c" :column "id" :column-alias "__c__id" :operation-index 2 :auto-id true :hidden true}]
            (generate :columns "company as c | s: id")))
-    (is (= []
+    (is (= [{:alias "u_0" :column "id" :column-alias "__u_0__id" :operation-index 1 :auto-id true :hidden true}]
            (generate :columns "user")))
-    (is (= [{:alias "u" :column "id" :index 1}]
+    (is (= [{:alias "u" :column "id" :operation-index 1} {:alias "u" :column "id" :column-alias "__u__id" :operation-index 3 :auto-id true :hidden true}]
            (generate :columns "user as u | s: id | limit: 1")))
-    (is (= [{:alias "c" :column "id" :index 1} {:alias "u" :column "id" :index 3}]
+    (is (= [{:alias "c" :column "id" :operation-index 1}
+            {:alias "u" :column "id" :operation-index 3}
+            {:alias "c" :column "id" :column-alias "__c__id" :operation-index 5 :auto-id true :hidden true}
+            {:alias "u" :column "id" :column-alias "__u__id" :operation-index 6 :auto-id true :hidden true}]
            (generate :columns "customer as c | s: id | user as u | s: id | limit: 1")))
-    (is (= [{:alias "u" :column "" :symbol "*" :index 1}]
+    (is (= [{:alias "u" :column "" :symbol "*" :operation-index 1} {:alias "u" :column "id" :column-alias "__u__id" :operation-index 2 :auto-id true :hidden true}]
            (generate :columns "user as u | s: u.*"))))
 
   (testing "Generate ast for `order`"
-    (is (= [{:alias "c_0" :column "country" :direction "DESC" :index 1}]
+    (is (= [{:alias "c_0" :column "country" :direction "DESC" :operation-index 1}]
            (generate :order "company | o: country")))
-    (is (= [{:alias "c_0" :column "country" :direction "DESC" :index 1}
-            {:alias "c_0" :column "created_at" :direction "DESC" :index 1}]
+    (is (= [{:alias "c_0" :column "country" :direction "DESC" :operation-index 1}
+            {:alias "c_0" :column "created_at" :direction "DESC" :operation-index 1}]
            (generate :order "company | o: country, created_at"))))
 
   (testing "Generate ast for `limit`"
@@ -156,15 +158,15 @@
     (is (= {:column "id"} (generate :delete "company | delete! .id"))))
 
   (testing "Generate ast for `update`"
-    (is (= {:assignments [{:column {:alias nil :column "name"} :value (dt/string "John Doe")}]} 
+    (is (= {:assignments [{:column {:alias nil :column "name"} :value (dt/string "John Doe")}]}
            (generate :update "company | update! name = 'John Doe'")))
-    (is (= {:assignments [{:column {:alias nil :column "name"} :value (dt/string "John")} 
-                          {:column {:alias nil :column "age"} :value (dt/number "30")}]} 
+    (is (= {:assignments [{:column {:alias nil :column "name"} :value (dt/string "John")}
+                          {:column {:alias nil :column "age"} :value (dt/number "30")}]}
            (generate :update "company | update! name = 'John', age = 30"))))
 
   (testing "Generate ast for `group`"
-    (is (= [[{:alias "c" :column "status" :index 1} {:symbol "COUNT(1)"}]
-            [{:alias "c" :column "status" :index 1}]]
+    (is (= [[{:alias "c" :column "status" :operation-index 1} {:symbol "COUNT(1)"}]
+            [{:alias "c" :column "status" :operation-index 1}]]
            (generate [:columns :group] "company as c | group: c.status => count"))))
 
   (testing "Generate ast for `where-partial`"

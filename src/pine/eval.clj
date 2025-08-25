@@ -24,8 +24,10 @@
 
 (defn- build-columns-clause [{:keys [operation columns current]}]
   (let [type (-> operation :type)
-        ;; Check if any columns are selected for the current table
-        current-table-has-columns? (some #(= (:alias %) current) columns)
+        ;; Separate auto-ID columns from user-selected columns
+        {auto-id-columns true user-columns nil} (group-by #(:auto-id %) columns)
+        ;; Check if any non-auto-ID columns are selected for the current table
+        current-table-has-columns? (some #(= (:alias %) current) user-columns)
         select-all (cond
                      (contains? #{:select :delete-action :group} type) ""
                      current-table-has-columns? ""  ; Don't add .* if current table has explicit columns
@@ -34,10 +36,14 @@
      "SELECT "
      (s/join
       ", "
-      (map (fn [{:keys [column alias column-alias symbol]}]
-             (let [c (if (empty? column)
-                       (if alias (str (q alias) "." symbol) symbol)
-                       (q alias column))]
+      (map (fn [{:keys [column alias column-alias symbol auto-id]}]
+             (let [c (cond
+                       ;; Auto-ID columns should render as unquoted id
+                       auto-id (str (q alias) ".id")
+                       ;; Symbol-based columns (like aggregates)
+                       (empty? column) (if alias (str (q alias) "." symbol) symbol)
+                       ;; Regular columns
+                       :else (q alias column))]
                (if column-alias (str c " AS " (q column-alias)) c))) columns))
      select-all
      " FROM")))
@@ -113,24 +119,24 @@
         {table :table schema :schema}     (get aliases current)
         {:keys [assignments]}             update
         ;; Build the SET clause
-        set-clause (s/join ", " 
-                          (map (fn [{:keys [column value]}]
-                                 (let [{:keys [alias column]} column]
-                                   (str (q column) " = " (cond
-                                                           (= (:type value) :symbol) (:value value)
-                                                           (= (:type value) :column) (let [{:keys [alias column]} value] (q alias column))
-                                                           :else "?"))))
-                               assignments))
+        set-clause (s/join ", "
+                           (map (fn [{:keys [column value]}]
+                                  (let [{:keys [alias column]} column]
+                                    (str (q column) " = " (cond
+                                                            (= (:type value) :symbol) (:value value)
+                                                            (= (:type value) :column) (let [{:keys [alias column]} value] (q alias column))
+                                                            :else "?"))))
+                                assignments))
         ;; Create a modified state for the subquery that only selects id
         ;; and has the operation type set to :select to avoid adding .*
         state-for-subquery (-> state
-                              (assoc :columns [{:column "id" :alias current}])
-                              (assoc :operation {:type :select :value nil}))
+                               (assoc :columns [{:column "id" :alias current}])
+                               (assoc :operation {:type :select :value nil}))
         {:keys [query params]} (build-select-query state-for-subquery)
         ;; Extract parameters from update assignments
         update-params (->> assignments
-                          (map :value)
-                          (filter #(not (or (= (:type %) :symbol) (= (:type %) :column)))))]
+                           (map :value)
+                           (filter #(not (or (= (:type %) :symbol) (= (:type %) :column)))))]
     {:query (str "UPDATE " (q schema table) " SET " set-clause " WHERE id IN ( " query " )")
      :params (concat update-params params)}))
 
@@ -166,7 +172,7 @@
         (let [affected-rows (db/run-action-query connection-id {:query query :params (map #(:value %) params)})]
           [[(case operation-type
               :update-action "Rows updated"
-              :delete-action "Rows deleted")] 
+              :delete-action "Rows deleted")]
            [affected-rows]])
         ;; For select operations, return the result set
         (db/run-query connection-id {:query query :params (map #(:value %) params)})))))

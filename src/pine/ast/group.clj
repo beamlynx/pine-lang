@@ -7,7 +7,7 @@
         current (state :current)
         columns (map #(-> %1
                           (assoc :alias (or (:alias %1) current))
-                          (assoc :index i))
+                          (assoc :operation-index i))
                      (:columns value))
         fn-columns (map (fn [name] {:symbol (str (s/upper-case name) "(1)")}) (:functions value))]
     (-> state

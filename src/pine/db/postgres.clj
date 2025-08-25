@@ -89,9 +89,12 @@ FROM information_schema.columns"]
             (let [col {:column col :type type :nullable nullable :default default}]
               (-> acc
                   (update-in [:schema schema :table table :columns] conj col)
-                  (update-in [:table table :columns] conj col))))
+                  (update-in [:schema schema :table table :column-set] (fnil conj #{}) col)
+                  (update-in [:table table :columns] conj col)
+                  (update-in [:table table :column-set] (fnil conj #{}) col))))
           acc
           columns))
+
 (defn- index-references
   "Finding forward and inverse relations for the table Example: A 'user' has
   'document' i.e. the document has a `user_id` column that points to

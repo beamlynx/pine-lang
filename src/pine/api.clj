@@ -45,17 +45,33 @@
       (catch Exception e {:connection-id connection-name
                           :error (.getMessage e)}))))
 
+(defn- get-columns [state rows]
+  (let [state-columns (-> state :columns)
+        row-columns (if (seq rows)
+                      (-> rows first)
+                      [])
+        remaining-columns (->> row-columns
+                               (drop (count state-columns))
+                               (map (fn [col] {:column col :alias (-> state :current)})))]
+    (concat state-columns
+            remaining-columns
+            (when-let [alias (state :alias)]
+              [alias]))))
+
 (defn api-eval [expression]
   (let [connection-name (connections/get-connection-name @db/connection-id)]
     (try
       (let [result (generate-state expression)
             {state :result error :error} result]
         (if error result
-            {:connection-id connection-name
-             :version version
-            ;;  :time (db/run-query (state :connection-id) {:query "SELECT NOW() as now, NOW() AT TIME ZONE 'UTC' AS utc;"})
-            ;;  :server_time (str (java.time.Instant/now))
-             :result (eval/run-query state)}))
+            (let [rows (eval/run-query state)]
+              {:connection-id connection-name
+               :version version
+                ;;  :time (db/run-query (state :connection-id) {:query "SELECT NOW() as now, NOW() AT TIME ZONE 'UTC' AS utc;"})
+                ;;  :server_time (str (java.time.Instant/now))
+               :result (eval/run-query state)
+               :columns (get-columns state rows)})))
+
       (catch Exception e {:connection-id connection-name
                           :error (.getMessage e)}))))
 

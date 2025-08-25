@@ -9,6 +9,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ```
 customers | w: id = 1 | update! name = 'John Doe'
 ```
+- Return id columns for all tables in the result. This allows in-place updates on a query result.
 
 ### Fixed
 - All columns were being returned in some cases instead of the explicitly selected columns. e.g.
