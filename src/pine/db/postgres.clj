@@ -122,15 +122,22 @@ FROM information_schema.columns"]
                      :else (get-references-helper id))]
     (index-references references)))
 
-(defn try-cast-to-uuid [x]
-  (try
-    (java.util.UUID/fromString x)
-    (catch Exception _e x)))
+(defn convert-param-for-postgres
+  "Convert parameter values to appropriate types for PostgreSQL"
+  [param]
+  (let [v (:value param)]
+    (case (:type param)
+      :uuid (try
+              (java.util.UUID/fromString v)
+              (catch Exception _e v))
+      :jsonb v  ; Let PostgreSQL handle JSON parsing from string
+      :boolean v
+      v)))
 
 (defn run-query [id query]
   (let [pool (connections/get-connection-pool id)
         {:keys [query params]} query
-        params (map try-cast-to-uuid params)
+        params (map convert-param-for-postgres params)
         _ (prn (format "Running query: %s" query))
         result (with-open [conn (.getConnection pool)]
                  (jdbc/query {:connection conn} (cons query params) {:as-arrays? true :identifiers identity}))
@@ -140,7 +147,7 @@ FROM information_schema.columns"]
 (defn run-action-query [id query]
   (let [pool (connections/get-connection-pool id)
         {:keys [query params]} query
-        params (map try-cast-to-uuid params)
+        params (map convert-param-for-postgres params)
         _ (prn (format "Running action: %s" query))
         result (with-open [conn (.getConnection pool)]
                  (jdbc/execute! {:connection conn} (cons query params)))

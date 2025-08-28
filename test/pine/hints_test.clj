@@ -81,12 +81,12 @@
            (->> "y.employee as e | s: e.*" gen :select (map :column)))))
 
   (testing "Generate `select-partial` hints"
-    (is (= [{:column "id" :alias "c_0"}]     (->  "company    | s:"                  gen :select)))
-    (is (= [{:column "id" :alias "c_0"}]     (->  "x.company  | s:"                  gen :select)))
-    (is (= ["reports_to"  "company_id" "id"] (->> "y.employee | s:"                  gen :select (map :column))))
-    (is (= ["reports_to"]                    (->> "y.employee | s: id, company_id,"  gen :select (map :column))))
-    (is (= ["reports_to"  "company_id" "id"] (->> "company | s: id | employee | s: " gen :select (map :column))))
-    (is (= ["reports_to"  "company_id"] (->> "company | s: id | employee | s: id, "                gen :select (map :column))))
+    (is (= [{:column "created_at" :alias "c_0"} {:column "id" :alias "c_0"}] (->  "company    | s:"                      gen :select)))
+    (is (= [{:column "created_at" :alias "c_0"} {:column "id" :alias "c_0"}] (->  "x.company  | s:"                      gen :select)))
+    (is (= ["reports_to"  "company_id" "id"]                                 (->> "y.employee | s:"                      gen :select (map :column))))
+    (is (= ["reports_to"]                                                    (->> "y.employee | s: id, company_id,"      gen :select (map :column))))
+    (is (= ["reports_to"  "company_id" "id"]                                 (->> "company | s: id | employee | s: "     gen :select (map :column))))
+    (is (= ["reports_to"  "company_id"]                                      (->> "company | s: id | employee | s: id, " gen :select (map :column))))
 
     ;; The following doesn't get parsed at the moment
     ;; We need to update the pine.bnf to support the syntax
@@ -95,16 +95,16 @@
     )
 
   (testing "Generate `order-partial` hints"
-    (is (= [{:column "id" :alias "c_0"}]     (->  "company | o:"         gen :order)))
-    (is (= []                                (->  "company | o: id," gen :order)))
-    (is (= [{:column "id" :alias "c_0"}]     (->  "company | s: id | o:" gen :order))))
+    (is (= [{:column "created_at" :alias "c_0"} {:column "id" :alias "c_0"}] (->  "company | o:"         gen :order)))
+    (is (= [{:column "created_at" :alias "c_0"}]                             (->  "company | o: id,"     gen :order)))
+    (is (= [{:column "created_at" :alias "c_0"} {:column "id" :alias "c_0"}] (->  "company | s: id | o:" gen :order))))
 
   (testing "Generate `where-partial` hints"
-    (is (= [{:column "id" :alias "c_0"}]     (->  "company | where:"       gen :where)))
-    (is (= [{:column "id" :alias "c_0"}]     (->  "company | w:"           gen :where)))
-    (is (= ["reports_to"  "company_id" "id"] (->> "y.employee | w:"        gen :where (map :column))))
-    (is (= ["reports_to"  "company_id" "id"] (->> "y.employee | where:"    gen :where (map :column))))
-    (is (= [{:column "id" :alias "c_0"}]     (->  "company | s: id | w:"   gen :where)))
+    (is (= [{:column "created_at" :alias "c_0"} {:column "id" :alias "c_0"}] (->  "company | where:"       gen :where)))
+    (is (= [{:column "created_at" :alias "c_0"} {:column "id" :alias "c_0"}] (->  "company | w:"           gen :where)))
+    (is (= ["reports_to"  "company_id" "id"]                                 (->> "y.employee | w:"        gen :where (map :column))))
+    (is (= ["reports_to"  "company_id" "id"]                                 (->> "y.employee | where:"    gen :where (map :column))))
+    (is (= [{:column "created_at" :alias "c_0"} {:column "id" :alias "c_0"}] (->  "company | s: id | w:"   gen :where)))
 
     ;; Test partial column filtering
     (is (= [{:column "id" :alias "c_0"}]     (->  "company | w: i"         gen :where)))

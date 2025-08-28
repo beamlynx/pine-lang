@@ -53,19 +53,24 @@
                    ["z"  "document"      "company_id"    "x"  "company" "id"]])
 
 ;; schema table col pos type len nullable default
-(def columns [["x"  "company"   "id"           nil  nil  nil  nil  nil]
-              ["y"  "employee"  "id"           nil  nil  nil  nil  nil]
-              ["y"  "employee"  "company_id"   nil  nil  nil  nil  nil]
-              ["y"  "employee"  "reports_to"   nil  nil  nil  nil  nil]
-              ["z"  "document"  "id"           nil  nil  nil  nil  nil]
-              ["z"  "document"  "employee_id"  nil  nil  nil  nil  nil]
-              ["z"  "document"  "created_by"   nil  nil  nil  nil  nil]
-              ["z"  "document"  "company_id"   nil  nil  nil  nil  nil]
+(def columns [["x"  "company"   "id"           nil  "integer"  nil  nil  nil]
+              ["x"  "company"   "created_at"   nil  "timestamp"  nil  nil  nil]
+              ["y"  "employee"  "id"           nil  "integer"  nil  nil  nil]
+              ["y"  "employee"  "company_id"   nil  "integer"  nil  nil  nil]
+              ["y"  "employee"  "reports_to"   nil  "integer"  nil  nil  nil]
+              ["z"  "document"  "id"           nil  "integer"  nil  nil  nil]
+              ["z"  "document"  "employee_id"  nil  "integer"  nil  nil  nil]
+              ["z"  "document"  "created_by"   nil  "integer"  nil  nil  nil]
+              ["z"  "document"  "company_id"   nil  "integer"  nil  nil  nil]
               ;; Add user and customer tables for tests
-              ["public"  "user"     "id"        nil  nil  nil  nil  nil]
-              ["public"  "customer" "id"        nil  nil  nil  nil  nil]
+              ["public"  "user"     "id"        nil  "integer"  nil  nil  nil]
+              ["public"  "customer" "id"        nil  "integer"  nil  nil  nil]
+              ["public"  "customer" "data"      nil  "jsonb"    nil  nil  nil]
+              ["public"  "customer" "uuid_col"  nil  "uuid"     nil  nil  nil]
               ;; Also add without schema for tests that don't specify schema
-              [nil  "user"     "id"             nil  nil  nil  nil  nil]
-              [nil  "customer" "id"             nil  nil  nil  nil  nil]])
+              [nil  "user"     "id"             nil  "integer"  nil  nil  nil]
+              [nil  "customer" "id"             nil  "integer"  nil  nil  nil]
+              [nil  "customer" "data"           nil  "jsonb"    nil  nil  nil]
+              [nil  "customer" "uuid_col"       nil  "uuid"     nil  nil  nil]])
 
 (def references [foreign-keys columns])

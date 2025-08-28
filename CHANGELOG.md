@@ -4,6 +4,20 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.25.0] - 2025-08-28
+
+### Added
+- Values are type casted to the appropriate database column type.
+
+### Fixed
+- As we use the correct typecase for the values, it is possible to update a jsonb column.
+
+- It is possible to use a LIKE operator on a uuid using a type cast e.g.
+```
+company | where: id like '9cd%' ::uuid
+```
+
+## [0.24.0] - 2025-08-25
 ### Added
 - Support for `update!` operation:
 ```

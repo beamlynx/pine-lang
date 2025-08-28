@@ -87,6 +87,10 @@
                                         (str (q alias col) (when cast (str "::" cast)) " " operator " " (cond
                                                                                                           (= (:type value) :symbol) (:value value)
                                                                                                           (= (:type value) :column) (let [[a col] (:value value)] (q a col))
+                                                                                                                                                ;; Cast the parameter/value, not the column (unless explicit cast)
+                                                                                                          (and (= (:type value) :jsonb) (not cast)) "?::jsonb"
+                                                                                                          (and (= (:type value) :uuid) (not cast)) "?::uuid"
+                                                                                                          (and (= (:type value) :date) (not cast)) "?::timestamp"
                                                                                                           :else "?")))))))
         group (build-group-clause state)
         order (build-order-clause state)
@@ -125,6 +129,9 @@
                                     (str (q column) " = " (cond
                                                             (= (:type value) :symbol) (:value value)
                                                             (= (:type value) :column) (let [{:keys [alias column]} value] (q alias column))
+                                                            (= (:type value) :jsonb) "?::jsonb"
+                                                            (= (:type value) :uuid) "?::uuid"
+                                                            (= (:type value) :date) "?::timestamp"
                                                             :else "?"))))
                                 assignments))
         ;; Create a modified state for the subquery that only selects id
@@ -151,14 +158,14 @@
       ;; no op
       (= type :delete) {:query " /* No SQL. Evaluate the pine expression for results */ "}
       :else (build-select-query (update state :limit #(or % 250))))))
+
 (defn formatted-query [{:keys [query params]}]
   (let [replacer (fn [s param]
                    (let [v (:value param)
-                         param-str (cond
-                                     (= (:type param) :string) (str "'" v "'")
-                                     (= (:type param) :date) (str "'" v "'")
-                                     :else (str v))]
-                     (s/replace-first s "?" param-str)))]
+                         param-str (if (= (:type param) :boolean)
+                                     (str v)
+                                     (str "'" v "'"))]
+                     (clojure.string/replace-first s #"\?" param-str)))]
     (if (empty? query) "" (str "\n" (reduce replacer query params) ";\n"))))
 
 (defn run-query [state]
@@ -169,10 +176,10 @@
           operation-type (-> state :operation :type)]
       (if (contains? #{:update-action :delete-action} operation-type)
         ;; For action operations, return the number of affected rows
-        (let [affected-rows (db/run-action-query connection-id {:query query :params (map #(:value %) params)})]
+        (let [affected-rows (db/run-action-query connection-id {:query query :params params})]
           [[(case operation-type
               :update-action "Rows updated"
               :delete-action "Rows deleted")]
            [affected-rows]])
         ;; For select operations, return the result set
-        (db/run-query connection-id {:query query :params (map #(:value %) params)})))))
+        (db/run-query connection-id {:query query :params params})))))

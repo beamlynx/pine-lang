@@ -1,21 +1,21 @@
 (ns pine.api
   (:require
-   [compojure.core :refer [GET POST defroutes]]
-   [compojure.route :as route]
-   [ring.middleware.defaults :refer [wrap-defaults api-defaults]]
-   [ring.middleware.json :refer [wrap-json-params wrap-json-response]]
-   [ring.middleware.cors :refer [wrap-cors]]
-   [ring.util.response :refer [response]]
-
-   [pine.parser :as parser]
-   [pine.ast.main :as ast]
-   [pine.eval :as eval]
-   [pine.db.main :as db]
-   [pine.db.connections :as connections]
-   ;; Encode arrays and json results in API responses
    [cheshire.generate :refer [add-encoder encode-str]]
-   [pine.version :as v])
-  (:import [java.util TimeZone]))
+   [clojure.string :as str]
+   [compojure.core :refer [defroutes GET POST]]
+   [compojure.route :as route]
+   [pine.ast.main :as ast]
+   [pine.db.connections :as connections] ;; Encode arrays and json results in API responses
+   [pine.db.main :as db]
+   [pine.eval :as eval]
+   [pine.parser :as parser]
+   [pine.version :as v]
+   [ring.middleware.cors :refer [wrap-cors]]
+   [ring.middleware.defaults :refer [api-defaults wrap-defaults]]
+   [ring.middleware.json :refer [wrap-json-params wrap-json-response]]
+   [ring.util.response :refer [response]])
+  (:import
+   [java.util TimeZone]))
 
 ;; Set default timezone to UTC
 (TimeZone/setDefault (TimeZone/getTimeZone "UTC"))
@@ -32,6 +32,12 @@
         {:error-type "parse"
          :error error})))
 
+(defn- trim-pipes [s]
+  (-> s
+      (str/trim)
+      (str/replace #"^\|\s*|\s*\|$" "")
+      (str/trim)))
+
 (defn api-build [expression]
   (let [connection-name (connections/get-connection-name @db/connection-id)]
     (try
@@ -40,7 +46,7 @@
         (if error result
             {:connection-id connection-name
              :version version
-             :query (-> state eval/build-query eval/formatted-query)
+             :query (-> expression trim-pipes generate-state :result eval/build-query eval/formatted-query)
              :ast (dissoc state :references :join-map)}))
       (catch Exception e {:connection-id connection-name
                           :error (.getMessage e)}))))
@@ -69,7 +75,7 @@
                :version version
                 ;;  :time (db/run-query (state :connection-id) {:query "SELECT NOW() as now, NOW() AT TIME ZONE 'UTC' AS utc;"})
                 ;;  :server_time (str (java.time.Instant/now))
-               :result (eval/run-query state)
+               :result rows
                :columns (get-columns state rows)})))
 
       (catch Exception e {:connection-id connection-name
@@ -126,9 +132,9 @@
          :version version
          :time (str (java.time.LocalDateTime/now))} response))
 
-  (POST "/api/v1/eval" [expression] (->> expression api-eval response))
+  (POST "/api/v1/eval" [expression] (->> expression trim-pipes api-eval response))
   ;; pine-mode.el
-  (POST "/api/v1/build-with-params" [expression] (->> expression api-build :query response))
+  (POST "/api/v1/build-with-params" [expression] (->> expression trim-pipes api-build :query response))
   ;; default case
   (route/not-found "Not Found"))
 (def app

@@ -187,7 +187,12 @@
            (generate "company | where: id = 1 | update! name = 'John', age = 30")))
     (is (= {:query "UPDATE \"company\" SET \"active\" = true WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )",
             :params (list (dt/number "1"))}
-           (generate "company | where: id = 1 | update! active = true"))))
+           (generate "company | where: id = 1 | update! active = true")))
+
+    ;; Test JSONB type conversion
+    (is (= {:query "UPDATE \"customer\" SET \"data\" = ?::jsonb WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )",
+            :params (list (dt/jsonb "{\"test\": 1}") (dt/number "1"))}
+           (generate "customer | where: id = 1 | update! data = '{\"test\": 1}'"))))
 
   (testing "delete"
     (is (= {:query " /* No SQL. Evaluate the pine expression for results */ "}
@@ -215,15 +220,26 @@
            (-> "company | where: name='Acme Inc.'" generate eval/formatted-query))))
 
   (testing "Condition : date"
-    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" = ? LIMIT 250",
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" = ?::timestamp LIMIT 250",
             :params (list (dt/date "2025-01-01"))}
            (generate "company | where: created_at = '2025-01-01'")))
-    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" != ? LIMIT 250",
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" != ?::timestamp LIMIT 250",
             :params (list (dt/date "2025-01-01"))}
            (generate "company | where: created_at != '2025-01-01'")))
-    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" > ? LIMIT 250",
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" > ?::timestamp LIMIT 250",
             :params (list (dt/date "2025-01-01"))}
            (generate "company | where: created_at > '2025-01-01'")))
-    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" < ? LIMIT 250",
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" < ?::timestamp LIMIT 250",
             :params (list (dt/date "2025-01-01"))}
-           (generate "company | where: created_at < '2025-01-01'")))))
+           (generate "company | where: created_at < '2025-01-01'"))))
+
+  (testing "Casting placement - explicit vs automatic"
+    ;; Test that explicit casts work on column side
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"uuid_col\"::uuid = ? LIMIT 250",
+            :params (list (dt/uuid "1c50ee25-4938-4b77-b831-bc41a0ee3d0c"))}
+           (generate "customer | where: uuid_col = '1c50ee25-4938-4b77-b831-bc41a0ee3d0c' ::uuid")))
+
+    ;; Test that automatic casting works on value side without explicit cast
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"uuid_col\" = ?::uuid LIMIT 250",
+            :params (list (dt/uuid "1c50ee25-4938-4b77-b831-bc41a0ee3d0c"))}
+           (generate "customer | where: uuid_col = '1c50ee25-4938-4b77-b831-bc41a0ee3d0c'")))))

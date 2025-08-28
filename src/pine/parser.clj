@@ -145,7 +145,7 @@
     (make-condition column-pattern "=" (dt/number value))
 
     [:condition column-pattern [:equals] [:null]]
-    (make-condition column-pattern "IS" (dt/symbol "NULL"))
+    (make-condition column-pattern "IS" (dt/pine-symbol "NULL"))
 
     [:condition column-pattern [:equals] [:string & characters]]
     (make-condition column-pattern "=" (parse-characters characters))
@@ -154,7 +154,7 @@
     (make-condition column-pattern "=" (parse-characters characters) cast-type)
 
     [:condition column-pattern [:equals] [:boolean b]]
-    (make-condition column-pattern "=" (dt/symbol b))
+    (make-condition column-pattern "=" (dt/pine-symbol b))
 
     [:condition column-pattern [:equals] [:date value]]
     (make-condition column-pattern "=" (dt/date value))
@@ -168,7 +168,7 @@
     (make-condition column-pattern "!=" (dt/number value))
 
     [:condition column-pattern [:does-not-equal] [:null]]
-    (make-condition column-pattern "IS NOT" (dt/symbol "NULL"))
+    (make-condition column-pattern "IS NOT" (dt/pine-symbol "NULL"))
 
     [:condition column-pattern [:does-not-equal] [:string & characters]]
     (make-condition column-pattern "!=" (parse-characters characters))
@@ -177,7 +177,7 @@
     (make-condition column-pattern "!=" (parse-characters characters) cast-type)
 
     [:condition column-pattern [:does-not-equal] [:boolean b]]
-    (make-condition column-pattern "!=" (dt/symbol b))
+    (make-condition column-pattern "!=" (dt/pine-symbol b))
 
     [:condition column-pattern [:does-not-equal] [:date value]]
     (make-condition column-pattern "!=" (dt/date value))
@@ -188,10 +188,10 @@
 
     ;; IS NULL operations
     [:condition column-pattern [:is] [:null]]
-    (make-condition column-pattern "IS" (dt/symbol "NULL"))
+    (make-condition column-pattern "IS" (dt/pine-symbol "NULL"))
 
     [:condition column-pattern [:is-not] [:null]]
-    (make-condition column-pattern "IS NOT" (dt/symbol "NULL"))
+    (make-condition column-pattern "IS NOT" (dt/pine-symbol "NULL"))
 
     ;; LIKE operations
     [:condition column-pattern [:like] [:string & characters]]
@@ -375,10 +375,10 @@
     {:column (extract-column-info column-pattern) :value (dt/number value)}
 
     [:update-assignment column-pattern [:boolean b]]
-    {:column (extract-column-info column-pattern) :value (dt/symbol b)}
+    {:column (extract-column-info column-pattern) :value (dt/pine-symbol b)}
 
     [:update-assignment column-pattern [:null]]
-    {:column (extract-column-info column-pattern) :value (dt/symbol "NULL")}
+    {:column (extract-column-info column-pattern) :value (dt/pine-symbol "NULL")}
 
     [:update-assignment column-pattern [:date value]]
     {:column (extract-column-info column-pattern) :value (dt/date value)}

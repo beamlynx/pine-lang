@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS customers (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   is_active BOOLEAN DEFAULT true,
-  loyalty_points INTEGER DEFAULT 0
+  loyalty_points INTEGER DEFAULT 0,
+  data JSONB  -- For testing schema-based type conversion
 );
 
 -- Customer addresses table

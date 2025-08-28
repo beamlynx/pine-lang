@@ -201,4 +201,27 @@
 
     (is (= {:type :where-partial
             :value {:complete-conditions [] :partial-condition {:column "name" :operator :like}}}
-           (generate :operation "company | w: name like")))))
+           (generate :operation "company | w: name like"))))
+
+  (testing "Schema-based type conversion in UPDATE operations"
+    ;; Test that JSONB column gets proper type conversion
+    (is (= {:assignments [{:column {:alias nil :column "data"}
+                           :value (dt/jsonb "{\"test\": 1}")}]}
+           (generate :update "customer | update! data = '{\"test\": 1}'")))
+
+    ;; Test that string column remains string - need to add name column to customer in fixtures
+    ;; (is (= {:assignments [{:column {:alias nil :column "name"} 
+    ;;                       :value (dt/string "John")}]}
+    ;;        (generate :update "customer | update! name = 'John'")))
+    )
+
+  (testing "Schema-based type conversion in WHERE operations"
+    ;; Test that JSONB column gets proper type conversion in WHERE clause
+    (let [where-result (generate :where "customer | w: data = '{\"key\": \"value\"}'")]
+      (is (= 1 (count where-result)))
+      (let [[alias col cast operator value] (first where-result)]
+        (is (= alias "c_0"))
+        (is (= col "data"))
+        (is (= operator "="))
+        (is (= (:type value) :jsonb))
+        (is (= (:value value) "{\"key\": \"value\"}"))))))

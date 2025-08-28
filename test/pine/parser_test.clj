@@ -97,22 +97,22 @@
     (is (= [{:type :limit, :value 10}]  (p "10"))))
 
   (testing "Parse `where` expressions"
-    (is (= [{:type :where, :value [(dt/column "name") "=" (dt/string "John Doe")]}]                       (p "where: name='John Doe'")))
-    (is (= [{:type :where, :value [(dt/column "name") "=" (dt/string "John Doe")]}]                       (p "w: name='John Doe'")))
-    (is (= [{:type :where, :value [(dt/column "name") "=" (dt/string "John Doe")]}]                       (p "name = 'John Doe'")))
-    (is (= [{:type :where, :value [(dt/column "name") "=" (dt/string "John Doe")]}]                       (p "name='John Doe'")))
-    (is (= [{:type :where, :value [(dt/column "name") "LIKE" (dt/string "John%")]}]                       (p "name like 'John%'")))
-    (is (= [{:type :where, :value [(dt/column "name") "NOT LIKE" (dt/string "John%")]}]                   (p "name not like 'John%'")))
-    (is (= [{:type :where, :value [(dt/column "name") "ILIKE" (dt/string "john%")]}]                      (p "name ilike 'john%'")))
-    (is (= [{:type :where, :value [(dt/column "name") "NOT ILIKE" (dt/string "john%")]}]                  (p "name not ilike 'john%'")))
-    (is (= [{:type :where, :value [(dt/column "age") "IS" (dt/symbol "NULL")]}]                           (p "age is null")))
-    (is (= [{:type :where, :value [(dt/column "age") "=" (dt/number "24")]}]                              (p "age = 24")))
-    (is (= [{:type :where, :value [(dt/column "age") "!=" (dt/number "24")]}]                             (p "age != 24")))
-    (is (= [{:type :where, :value [(dt/column "name") "=" (dt/column "first_name")]}]                     (p "name = first_name")))
-    (is (= [{:type :where, :value [(dt/column "name") "=" (dt/aliased-column "x" "first_name")]}]                 (p "name = x.first_name")))
-    (is (= [{:type :where, :value [(dt/column "public") "=" (dt/symbol "true")]}]                         (p "public = true")))
-    (is (= [{:type :where, :value [(dt/column "public") "=" (dt/symbol "false")]}]                        (p "public = false")))
-    (is (= [{:type :where, :value [(dt/column "public") "!=" (dt/symbol "false")]}]                       (p "public != false")))
+    (is (= [{:type :where, :value [(dt/column "name") "=" (dt/string "John Doe")]}]                           (p "where: name='John Doe'")))
+    (is (= [{:type :where, :value [(dt/column "name") "=" (dt/string "John Doe")]}]                           (p "w: name='John Doe'")))
+    (is (= [{:type :where, :value [(dt/column "name") "=" (dt/string "John Doe")]}]                           (p "name = 'John Doe'")))
+    (is (= [{:type :where, :value [(dt/column "name") "=" (dt/string "John Doe")]}]                           (p "name='John Doe'")))
+    (is (= [{:type :where, :value [(dt/column "name") "LIKE" (dt/string "John%")]}]                           (p "name like 'John%'")))
+    (is (= [{:type :where, :value [(dt/column "name") "NOT LIKE" (dt/string "John%")]}]                       (p "name not like 'John%'")))
+    (is (= [{:type :where, :value [(dt/column "name") "ILIKE" (dt/string "john%")]}]                          (p "name ilike 'john%'")))
+    (is (= [{:type :where, :value [(dt/column "name") "NOT ILIKE" (dt/string "john%")]}]                      (p "name not ilike 'john%'")))
+    (is (= [{:type :where, :value [(dt/column "age") "IS" (dt/pine-symbol "NULL")]}]                          (p "age is null")))
+    (is (= [{:type :where, :value [(dt/column "age") "=" (dt/number "24")]}]                                  (p "age = 24")))
+    (is (= [{:type :where, :value [(dt/column "age") "!=" (dt/number "24")]}]                                 (p "age != 24")))
+    (is (= [{:type :where, :value [(dt/column "name") "=" (dt/column "first_name")]}]                         (p "name = first_name")))
+    (is (= [{:type :where, :value [(dt/column "name") "=" (dt/aliased-column "x" "first_name")]}]             (p "name = x.first_name")))
+    (is (= [{:type :where, :value [(dt/column "public") "=" (dt/pine-symbol "true")]}]                        (p "public = true")))
+    (is (= [{:type :where, :value [(dt/column "public") "=" (dt/pine-symbol "false")]}]                       (p "public = false")))
+    (is (= [{:type :where, :value [(dt/column "public") "!=" (dt/pine-symbol "false")]}]                      (p "public != false")))
     (is (= [{:type :where, :value [(dt/column "name") "=" (dt/aliased-column "x" "first_name")]}]             (p "name = x.first_name")))
     (is (= [{:type :where, :value [(dt/aliased-column "x" "name") "=" (dt/aliased-column "x" "first_name")]}] (p "x.name = x.first_name"))))
 
@@ -167,9 +167,9 @@
            (p "update! name = 'John Doe'")))
     (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "age"} :value (dt/number "25")}]}}]
            (p "update! age = 25")))
-    (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "active"} :value (dt/symbol "true")}]}}]
+    (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "active"} :value (dt/pine-symbol "true")}]}}]
            (p "update! active = true")))
-    (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "deleted_at"} :value (dt/symbol "NULL")}]}}]
+    (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "deleted_at"} :value (dt/pine-symbol "NULL")}]}}]
            (p "update! deleted_at = null")))
     (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "name"} :value (dt/string "John")}
                                                          {:column {:alias nil :column "age"} :value (dt/number "30")}]}}]
