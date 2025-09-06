@@ -154,3 +154,25 @@ FROM information_schema.columns"]
         affected-rows (first result)
         _ (prn (format "Affected rows: %d" affected-rows))]
     affected-rows))
+
+(defn run-sql [id sql-query]
+  "Execute raw SQL query. Automatically detects if it's a SELECT or action query."
+  (when (or (nil? sql-query) (clojure.string/blank? sql-query))
+    (throw (IllegalArgumentException. "SQL query cannot be null or empty")))
+  
+  (let [pool (connections/get-connection-pool id)
+        trimmed-query (clojure.string/trim (clojure.string/upper-case sql-query))
+        is-select? (or (clojure.string/starts-with? trimmed-query "SELECT")
+                       (clojure.string/starts-with? trimmed-query "WITH")
+                       (clojure.string/starts-with? trimmed-query "SHOW")
+                       (clojure.string/starts-with? trimmed-query "EXPLAIN"))
+        _ (prn (format "Running raw SQL: %s" sql-query))
+        result (with-open [conn (.getConnection pool)]
+                 (if is-select?
+                   (jdbc/query {:connection conn} sql-query {:as-arrays? true :identifiers identity})
+                   (jdbc/execute! {:connection conn} sql-query)))
+        _ (prn "Done!")]
+    (if is-select?
+      result
+      ;; Return array format for action queries to match expected structure
+      [["Rows affected"] [(first result)]])))
