@@ -159,7 +159,7 @@ FROM information_schema.columns"]
   "Execute raw SQL query. Automatically detects if it's a SELECT or action query."
   (when (or (nil? sql-query) (clojure.string/blank? sql-query))
     (throw (IllegalArgumentException. "SQL query cannot be null or empty")))
-  
+
   (let [pool (connections/get-connection-pool id)
         trimmed-query (clojure.string/trim (clojure.string/upper-case sql-query))
         is-select? (or (clojure.string/starts-with? trimmed-query "SELECT")

@@ -59,11 +59,11 @@
   ([state rows]
    (let [state-columns (-> state :columns)
          row-columns (if (seq rows)
-                      (-> rows first)
-                      [])
+                       (-> rows first)
+                       [])
          remaining-columns (->> row-columns
-                               (drop (count state-columns))
-                               (map (fn [col] {:column col :alias (-> state :current)})))]
+                                (drop (count state-columns))
+                                (map (fn [col] {:column col :alias (-> state :current)})))]
      (concat state-columns
              remaining-columns
              (when-let [alias (state :alias)]
@@ -126,11 +126,11 @@
       (nil? sql-query)
       {:connection-id connection-name
        :error "SQL query is required. Please provide a 'query' parameter in the request body."}
-      
+
       (clojure.string/blank? sql-query)
       {:connection-id connection-name
        :error "SQL query cannot be empty."}
-      
+
       :else
       (try
         (let [result (db/run-sql @db/connection-id sql-query)
@@ -169,12 +169,12 @@
   ;; query building and evaluation
   (POST "/api/v1/build" [expression] (->> expression api-build response))
   (POST "/api/v1/eval" [expression] (->> expression trim-pipes api-eval response))
-  
+
   ;; raw SQL execution
   (POST "/api/v1/sql" {params :params}
     (let [query (:query params)]
       (->> query api-sql response)))
-  
+
   ;; Legacy
   ;;
   ;; pine-mode.el
