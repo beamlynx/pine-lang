@@ -4,6 +4,10 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.26.1] - 2025-09-07
+### Changed
+- Using a readonly db user for the playground
+
 ## [0.26.0] - 2025-09-06
 ### Added
 - Support for raw SQL queries:

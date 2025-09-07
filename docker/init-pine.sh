@@ -12,8 +12,8 @@ for i in $(seq 1 20); do
         \"host\": \"sample-db-ecommerce\",
         \"port\": 5432,
         \"dbname\": \"pine\",
-        \"user\": \"pine\",
-        \"password\": \"pine\",
+        \"user\": \"pine_readonly\",
+        \"password\": \"pine_readonly\",
         \"schema\": \"public\"
       }")
     
