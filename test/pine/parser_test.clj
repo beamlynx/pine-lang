@@ -154,7 +154,21 @@
     (is (= [{:type :order, :value [{:column  "name" :direction "DESC"}]}]            (p "order: name desc")))
     (is (= [{:type :order, :value [{:column  "name" :direction "ASC"}]}]            (p "order: name asc")))
     (is (= [{:type :order, :value [{:column  "name" :direction "DESC"}
-                                   {:column "created_at" :direction "ASC"}]}]       (p "order: name, created_at asc"))))
+                                   {:column "created_at" :direction "ASC"}]}]       (p "order: name, created_at asc")))
+    ;; Test aliased columns
+    (is (= [{:type :order, :value [{:alias "e" :column "name" :direction "DESC"}]}]  (p "order: e.name")))
+    (is (= [{:type :order, :value [{:alias "e" :column "name" :direction "ASC"}]}]   (p "order: e.name asc")))
+    (is (= [{:type :order, :value [{:alias "e" :column "name" :direction "DESC"}]}]  (p "order: e.name desc")))
+    (is (= [{:type :order, :value [{:alias "e" :column "name" :direction "DESC"}
+                                   {:alias "e" :column "created_at" :direction "ASC"}]}] (p "order: e.name, e.created_at asc")))
+    
+    ;; Test multiple columns (mixed aliased and non-aliased)
+    (is (= [{:type :order, :value [{:column "name" :direction "DESC"}
+                                   {:column "age" :direction "DESC"}]}] (p "order: name desc, age desc")))
+    (is (= [{:type :order, :value [{:alias "e" :column "name" :direction "DESC"}
+                                   {:column "title" :direction "ASC"}]}] (p "order: e.name desc, title asc")))
+    (is (= [{:type :order, :value [{:column "created_at" :direction "ASC"}
+                                   {:alias "u" :column "name" :direction "DESC"}]}] (p "order: created_at asc, u.name desc"))))
 
   (testing "Parse `count` expressions"
     (is (= [{:type :count, :value {:column "*"}}] (p "count:"))))

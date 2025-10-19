@@ -73,7 +73,23 @@
            (generate :order "company | o: country")))
     (is (= [{:alias "c_0" :column "country" :direction "DESC" :operation-index 1}
             {:alias "c_0" :column "created_at" :direction "DESC" :operation-index 1}]
-           (generate :order "company | o: country, created_at"))))
+           (generate :order "company | o: country, created_at")))
+    ;; Test aliased order columns
+    (is (= [{:alias "e" :column "name" :direction "DESC" :operation-index 1}]
+           (generate :order "employee as e | o: e.name")))
+    (is (= [{:alias "e" :column "name" :direction "ASC" :operation-index 1}]
+           (generate :order "employee as e | o: e.name asc")))
+    (is (= [{:alias "e" :column "name" :direction "DESC" :operation-index 1}
+            {:alias "e" :column "created_at" :direction "ASC" :operation-index 1}]
+           (generate :order "employee as e | o: e.name, e.created_at asc")))
+    
+    ;; Test mixed aliased and non-aliased order columns
+    (is (= [{:alias "c_0" :column "name" :direction "DESC" :operation-index 1}
+            {:alias "c_0" :column "age" :direction "DESC" :operation-index 1}]
+           (generate :order "company | o: name desc, age desc")))
+    (is (= [{:alias "e" :column "name" :direction "DESC" :operation-index 2}
+            {:alias "d_1" :column "title" :direction "ASC" :operation-index 2}]
+           (generate :order "employee as e | document | o: e.name desc, title asc"))))
 
   (testing "Generate ast for `limit`"
     (is (= 10

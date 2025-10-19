@@ -146,7 +146,25 @@
   (testing "order"
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" ORDER BY \"c_0\".\"country\" DESC LIMIT 250",
             :params nil}
-           (generate "company | order: country"))))
+           (generate "company | order: country")))
+    ;; Test aliased order columns
+    (is (= {:query "SELECT \"e\".id AS \"__e__id\", \"e\".* FROM \"employee\" AS \"e\" ORDER BY \"e\".\"name\" DESC LIMIT 250",
+            :params nil}
+           (generate "employee as e | order: e.name")))
+    (is (= {:query "SELECT \"e\".id AS \"__e__id\", \"e\".* FROM \"employee\" AS \"e\" ORDER BY \"e\".\"name\" ASC LIMIT 250",
+            :params nil}
+           (generate "employee as e | order: e.name asc")))
+    (is (= {:query "SELECT \"e\".id AS \"__e__id\", \"e\".* FROM \"employee\" AS \"e\" ORDER BY \"e\".\"name\" DESC, \"e\".\"created_at\" ASC LIMIT 250",
+            :params nil}
+           (generate "employee as e | order: e.name, e.created_at asc")))
+    
+    ;; Test mixed aliased and non-aliased order columns
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" ORDER BY \"c_0\".\"name\" DESC, \"c_0\".\"age\" DESC LIMIT 250",
+            :params nil}
+           (generate "company | order: name desc, age desc")))
+    (is (= {:query "SELECT \"e\".id AS \"__e__id\", \"d_1\".id AS \"__d_1__id\", \"d_1\".* FROM \"employee\" AS \"e\" JOIN \"document\" AS \"d_1\" ON \"e\".\"id\" = \"d_1\".\"employee_id\" ORDER BY \"e\".\"name\" DESC, \"d_1\".\"title\" ASC LIMIT 250",
+            :params nil}
+           (generate "employee as e | document | order: e.name desc, title asc"))))
 
   (testing "columns"
     (is (= {:query "SELECT \"c\".\"id\", \"c\".id AS \"__c__id\" FROM \"company\" AS \"c\" LIMIT 250",

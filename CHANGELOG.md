@@ -4,6 +4,12 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- Column aliases are supported in the order operation e.g.
+```
+company as c | o: c.name asc
+```
+
 ## [0.26.1] - 2025-09-07
 ### Changed
 - Using a readonly db user for the playground

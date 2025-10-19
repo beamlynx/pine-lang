@@ -54,3 +54,20 @@ This means that the following need to be updated:
 - @parser.clj and @parser_test.clj 
 - @main.clj and @ast_test.clj 
 - @eval.clj and @eval_test.clj 
+
+
+## Support for specifying the alias in the order operation
+
+I want to be able to specify the alias in the order operation. I want to use a table modifier (see
+`order-column` in @pine.bnf ) to specify this e.g.
+
+Example:
+```
+employee as e | o: e.name desc
+```
+
+This means that the following need to be updated:
+- @pine.bnf 
+- @parser.clj and @parser_test.clj 
+- @main.clj and @ast_test.clj 
+- @eval.clj and @eval_test.clj 

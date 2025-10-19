@@ -85,10 +85,17 @@
 ;; ------
 
 (defn- -normalize-order-col [column]
-  (match column
-    [:order-column [:column [:symbol c]]]   {:column c :direction "DESC"}
-    [:order-column [:column [:symbol c]] d] {:column c :direction (s/upper-case d)}
-    :else                                   (throw (ex-info "Unknown ORDER operation" {:_ column}))))
+  (let [normalize-direction (fn [d] (if d (s/upper-case d) "DESC"))]
+    (match column
+      ;; Column with alias
+      [:order-column [:column [:alias [:symbol a]] [:symbol c]]]   {:alias a :column c :direction "DESC"}
+      [:order-column [:column [:alias [:symbol a]] [:symbol c]] d] {:alias a :column c :direction (normalize-direction d)}
+      ;; Simple column
+      [:order-column [:column [:symbol c]]]                        {:column c :direction "DESC"}
+      [:order-column [:column [:symbol c]] d]                      {:column c :direction (normalize-direction d)}
+      
+      :else 
+      (throw (ex-info "Unknown ORDER operation" {:_ column})))))
 
 (defn -normalize-order [payload type]
   (match payload
