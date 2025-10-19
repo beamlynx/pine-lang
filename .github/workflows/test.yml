@@ -87,6 +87,9 @@ jobs:
       # - name: Get zprint version
       #   run: zprint --version
 
+      - name: Check version sync
+        run: ./scripts/check-version-sync.sh
+
       - name: Check format
         run: clojure -M:fmt check
 
