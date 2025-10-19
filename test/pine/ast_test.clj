@@ -82,7 +82,7 @@
     (is (= [{:alias "e" :column "name" :direction "DESC" :operation-index 1}
             {:alias "e" :column "created_at" :direction "ASC" :operation-index 1}]
            (generate :order "employee as e | o: e.name, e.created_at asc")))
-    
+
     ;; Test mixed aliased and non-aliased order columns
     (is (= [{:alias "c_0" :column "name" :direction "DESC" :operation-index 1}
             {:alias "c_0" :column "age" :direction "DESC" :operation-index 1}]
@@ -235,9 +235,17 @@
     ;; Test that JSONB column gets proper type conversion in WHERE clause
     (let [where-result (generate :where "customer | w: data = '{\"key\": \"value\"}'")]
       (is (= 1 (count where-result)))
-      (let [[alias col cast operator value] (first where-result)]
+      (let [[alias col _ operator value] (first where-result)]
         (is (= alias "c_0"))
         (is (= col "data"))
         (is (= operator "="))
         (is (= (:type value) :jsonb))
         (is (= (:value value) "{\"key\": \"value\"}"))))))
+
+(testing "AST generation with comments"
+  (is (= [{:schema nil :table "company" :alias "c_0" :parent nil :join-column nil :join nil}]
+         (generate :tables "-- get all companies\ncompany")))
+  (is (= [[nil "name" nil "=" (dt/string "Acme")]]
+         (generate :where "/* filter by name */ name = 'Acme'")))
+  (is (= 10
+         (generate :limit "limit: 10 -- max results"))))

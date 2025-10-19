@@ -157,7 +157,7 @@
     (is (= {:query "SELECT \"e\".id AS \"__e__id\", \"e\".* FROM \"employee\" AS \"e\" ORDER BY \"e\".\"name\" DESC, \"e\".\"created_at\" ASC LIMIT 250",
             :params nil}
            (generate "employee as e | order: e.name, e.created_at asc")))
-    
+
     ;; Test mixed aliased and non-aliased order columns
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" ORDER BY \"c_0\".\"name\" DESC, \"c_0\".\"age\" DESC LIMIT 250",
             :params nil}
@@ -261,3 +261,14 @@
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"uuid_col\" = ?::uuid LIMIT 250",
             :params (list (dt/uuid "1c50ee25-4938-4b77-b831-bc41a0ee3d0c"))}
            (generate "customer | where: uuid_col = '1c50ee25-4938-4b77-b831-bc41a0ee3d0c'")))))
+
+(testing "SQL generation with comments"
+  (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" LIMIT 250",
+          :params nil}
+         (generate "-- select companies\ncompany")))
+  (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" = ? LIMIT 250",
+          :params (map dt/string ["Acme"])}
+         (generate "company /* get by name */ | where: name = 'Acme' -- exact match")))
+  (is (= {:query "SELECT \"c_0\".\"id\", \"e_1\".\"name\", \"c_0\".id AS \"__c_0__id\", \"e_1\".id AS \"__e_1__id\" FROM \"company\" AS \"c_0\" JOIN \"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250",
+          :params nil}
+         (generate "-- companies and employees\ncompany | s: id /* company id */ | employee | s: name -- employee name"))))

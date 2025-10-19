@@ -93,8 +93,8 @@
       ;; Simple column
       [:order-column [:column [:symbol c]]]                        {:column c :direction "DESC"}
       [:order-column [:column [:symbol c]] d]                      {:column c :direction (normalize-direction d)}
-      
-      :else 
+
+      :else
       (throw (ex-info "Unknown ORDER operation" {:_ column})))))
 
 (defn -normalize-order [payload type]

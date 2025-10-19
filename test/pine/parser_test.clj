@@ -161,7 +161,7 @@
     (is (= [{:type :order, :value [{:alias "e" :column "name" :direction "DESC"}]}]  (p "order: e.name desc")))
     (is (= [{:type :order, :value [{:alias "e" :column "name" :direction "DESC"}
                                    {:alias "e" :column "created_at" :direction "ASC"}]}] (p "order: e.name, e.created_at asc")))
-    
+
     ;; Test multiple columns (mixed aliased and non-aliased)
     (is (= [{:type :order, :value [{:column "name" :direction "DESC"}
                                    {:column "age" :direction "DESC"}]}] (p "order: name desc, age desc")))
@@ -202,5 +202,57 @@
 
     ;; with aliases
     (is (= [{:type :group, :value {:columns [{:alias "x", :column "status"}], :functions ["count"]}}]
-           (p "group: x.status  => count")))))
+           (p "group: x.status  => count"))))
+
+  (testing "Parse expressions with line comments"
+    (is (= [{:type :table, :value {:table "user"}}]
+           (p "user -- this is a comment")))
+    (is (= [{:type :table, :value {:table "user"}}]
+           (p "-- comment before\nuser")))
+    (is (= [{:type :where, :value [(dt/column "name") "=" (dt/string "John")]}]
+           (p "name = 'John' -- comment after condition")))
+    (is (= [{:type :limit, :value 10}]
+           (p "limit: 10 -- limit to 10 rows"))))
+
+  (testing "Parse expressions with block comments"
+    (is (= [{:type :table, :value {:table "user"}}]
+           (p "user /* block comment */")))
+    (is (= [{:type :table, :value {:table "user"}}]
+           (p "/* comment before */ user")))
+    (is (= [{:type :where, :value [(dt/column "name") "=" (dt/string "John")]}]
+           (p "name /* comment */ = /* another */ 'John'")))
+    (is (= [{:type :table, :value {:table "user"}}]
+           (p "user /* multi\nline\ncomment */"))))
+
+  (testing "Parse expressions with mixed comments"
+    (is (= [{:type :table, :value {:table "company"}}
+            {:type :where, :value [(dt/column "id") "=" (dt/number "1")]}]
+           (p "company -- get company\n| where: id = 1 /* by id */")))
+    (is (= [{:type :table, :value {:table "user"}}
+            {:type :limit, :value 10}]
+           (p "-- fetch users\nuser | /* limit results */ limit: 10"))))
+
+  (testing "Comments do not affect strings"
+    (is (= [{:type :where, :value [(dt/column "comment") "=" (dt/string "-- not a comment")]}]
+           (p "comment = '-- not a comment'")))
+    (is (= [{:type :where, :value [(dt/column "text") "=" (dt/string "/* also not a comment */")]}]
+           (p "text = '/* also not a comment */'")))
+    (is (= [{:type :where, :value [(dt/column "title") "LIKE" (dt/string "A% /* test */")]}]
+           (p "title like 'A% /* test */'")))
+    (is (= [{:type :where, :value [(dt/column "name") "=" (dt/string "John -- comment in string")]}]
+           (p "name = 'John -- comment in string'")))
+    (is (= [{:type :where, :value [(dt/column "description") "=" (dt/string "Multi\nline /* block */ comment")]}]
+           (p "description = 'Multi\nline /* block */ comment'"))))
+
+  (testing "Parse expressions with consecutive comments"
+    (is (= [{:type :table, :value {:table "user"}}]
+           (p "-- comment 1\n-- comment 2\nuser")))
+    (is (= [{:type :table, :value {:table "user"}}]
+           (p "user /* comment 1 */ /* comment 2 */"))))
+
+  (testing "Comments at EOF"
+    (is (= [{:type :table, :value {:table "user"}}]
+           (p "user --")))
+    (is (= [{:type :table, :value {:table "user"}}]
+           (p "user -- comment at end")))))
 

@@ -10,6 +10,12 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 company as c | o: c.name asc
 ```
 
+- Support comments in the expressions e.g.
+```
+company | -- This is a line comment
+company | /* This is a multi-line block comment */
+```
+
 ## [0.26.1] - 2025-09-07
 ### Changed
 - Using a readonly db user for the playground
