@@ -1,3 +1,3 @@
 (ns pine.version)
 
-(def version "0.26.0")
+(def version "0.27.0")

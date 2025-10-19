@@ -4,6 +4,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.27.0] - 2025-10-19
 ### Added
 - Column aliases are supported in the order operation e.g.
 ```
