@@ -36,10 +36,15 @@
      "SELECT "
      (s/join
       ", "
-      (map (fn [{:keys [column alias column-alias symbol auto-id]}]
+      (map (fn [{:keys [column alias column-alias symbol auto-id col-fn]}]
              (let [c (cond
                        ;; Auto-ID columns should render as unquoted id
                        auto-id (str (q alias) ".id")
+                       ;; Column function (currently date functions)
+                       col-fn (let [cast (if (contains? #{"hour" "minute"} col-fn)
+                                           "::timestamp"  ; hour/minute need timestamp
+                                           "::date")]     ; year/month/day can be date
+                                (str "DATE_TRUNC('" col-fn "', " (q alias column) ")" cast))
                        ;; Symbol-based columns (like aggregates)
                        (empty? column) (if alias (str (q alias) "." symbol) symbol)
                        ;; Regular columns
@@ -68,8 +73,14 @@
        "GROUP BY "
        (s/join
         ", "
-        (map (fn [{:keys [alias column]}]
-               (q alias column)) group)))))
+        ;; For each group column, determine the appropriate reference
+        (map (fn [{:keys [alias column column-alias col-fn]}]
+               (if col-fn
+                 ;; Use the column alias for columns with functions applied
+                 (q column-alias)
+                 ;; Use the full qualified column for regular columns
+                 (q alias column)))
+             group)))))
 
 (defn build-select-query [state]
   (let [{:keys [tables _columns limit where aliases]} state

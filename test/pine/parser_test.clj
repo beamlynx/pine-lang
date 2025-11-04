@@ -204,6 +204,26 @@
     (is (= [{:type :group, :value {:columns [{:alias "x", :column "status"}], :functions ["count"]}}]
            (p "group: x.status  => count"))))
 
+  (testing "Parse date extraction functions in select"
+    (is (= [{:type :select, :value [{:column "created_at", :column-function "year"}]}]
+           (p "select: created_at => year")))
+    (is (= [{:type :select, :value [{:column "created_at", :column-function "month"}]}]
+           (p "select: created_at => month")))
+    (is (= [{:type :select, :value [{:column "created_at", :column-function "day"}]}]
+           (p "select: created_at => day")))
+    (is (= [{:type :select, :value [{:column "created_at", :column-function "hour"}]}]
+           (p "select: created_at => hour")))
+    (is (= [{:type :select, :value [{:column "created_at", :column-function "minute"}]}]
+           (p "select: created_at => minute")))
+
+    ;; with alias
+    (is (= [{:type :select, :value [{:alias "e", :column "created_at", :column-function "month"}]}]
+           (p "select: e.created_at => month")))
+
+    ;; mixed with regular columns
+    (is (= [{:type :select, :value [{:column "name"} {:column "created_at", :column-function "year"}]}]
+           (p "select: name, created_at => year"))))
+
   (testing "Parse expressions with line comments"
     (is (= [{:type :table, :value {:table "user"}}]
            (p "user -- this is a comment")))

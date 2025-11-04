@@ -185,6 +185,46 @@
             [{:alias "c" :column "status" :operation-index 1}]]
            (generate [:columns :group] "company as c | group: c.status => count"))))
 
+  (testing "Generate ast for date extraction functions"
+    ;; Helper to filter out auto-id columns
+    (let [non-auto #(filter (fn [c] (not (:auto-id c))) %)]
+      ;; Year extraction creates 1 column with col-fn
+      (is (= [{:column "created_at" :alias "e_0" :column-alias "year"
+               :col-fn "year" :operation-index 1}]
+             (non-auto (generate :columns "employee | select: created_at => year"))))
+
+      ;; Month extraction creates 1 column with col-fn
+      (is (= [{:column "created_at" :alias "e_0" :column-alias "month"
+               :col-fn "month" :operation-index 1}]
+             (non-auto (generate :columns "employee | select: created_at => month"))))
+
+      ;; Day extraction creates 1 column with col-fn
+      (is (= [{:column "created_at" :alias "e_0" :column-alias "day"
+               :col-fn "day" :operation-index 1}]
+             (non-auto (generate :columns "employee | select: created_at => day"))))
+
+      ;; Hour extraction creates 1 column with col-fn
+      (is (= [{:column "created_at" :alias "e_0" :column-alias "hour"
+               :col-fn "hour" :operation-index 1}]
+             (non-auto (generate :columns "employee | select: created_at => hour"))))
+
+      ;; Minute extraction creates 1 column with col-fn
+      (is (= [{:column "created_at" :alias "e_0" :column-alias "minute"
+               :col-fn "minute" :operation-index 1}]
+             (non-auto (generate :columns "employee | select: created_at => minute"))))
+
+      ;; With alias
+      (is (= [{:column "created_at" :alias "e" :column-alias "month"
+               :col-fn "month" :operation-index 1}]
+             (non-auto (generate :columns "employee as e | select: e.created_at => month"))))
+
+      ;; Mixed with regular columns (excluding auto-id)
+      (let [cols (non-auto (generate :columns "employee | select: name, created_at => year"))]
+        (is (= 2 (count cols)))
+        (is (= "name" (:column (first cols))))
+        (is (= "created_at" (:column (second cols))))
+        (is (= "year" (:col-fn (second cols)))))))
+
   (testing "Generate ast for `where-partial`"
     ;; Empty where-partial should have no conditions in :where
     (is (= []

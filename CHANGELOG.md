@@ -4,6 +4,21 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- Support for date extraction functions in the select operation e.g.
+```
+employee | select: created_at => year
+```
+
+which should be evaluated to:
+
+
+```
+SELECT DATE_TRUNC('year', "employee"."created_at")::date AS "year" FROM "employee"
+```
+
+Supported functions are: `year`, `month`, `day`, `hour`, `minute`
+
 ## [0.27.0] - 2025-10-19
 ### Added
 - Column aliases are supported in the order operation e.g.

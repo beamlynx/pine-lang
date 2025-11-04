@@ -38,7 +38,7 @@ count-op          := <"count:">
 table-mods        := (<ws+> table-mod)*
 table-mod         := <":"> ("parent"|"child"|"left"|"right") | as-alias | hint-column
 
-group-args          := aliased-columns <ws*> <"=>"> <ws*> aggregate-functions
+group-args          := columns <ws*> <"=>"> <ws*> aggregate-functions
 aggregate-functions := aggregate-function (<","> <ws*> aggregate-function)*
 aggregate-function  := "count" | "string_agg" | "sum" | "avg" | "min" | "max"
 
@@ -64,7 +64,8 @@ order-column  := column | column <ws+> ("desc"|"asc")
 hint-column     := <"."> symbol
 
 columns            := column (<","> <ws*> column)*
-column             := qualified-symbol
+column             := qualified-symbol <ws*> <"=>"> <ws*> column-function | qualified-symbol
+column-function    := "minute" | "hour" | "day" | "month" | "year"
 <qualified-symbol> := symbol | alias <"."> symbol
 
 alias    := symbol

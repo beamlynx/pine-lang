@@ -191,6 +191,48 @@
             :params nil}
            (generate "email | group: status => count"))))
 
+  (testing "date extraction functions"
+    ;; Year extraction
+    (is (= {:query "SELECT DATE_TRUNC('year', \"e_0\".\"created_at\")::date AS \"year\", \"e_0\".id AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250",
+            :params nil}
+           (generate "employee | select: created_at => year")))
+
+    ;; Month extraction
+    (is (= {:query "SELECT DATE_TRUNC('month', \"e_0\".\"created_at\")::date AS \"month\", \"e_0\".id AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250",
+            :params nil}
+           (generate "employee | select: created_at => month")))
+
+    ;; Day extraction
+    (is (= {:query "SELECT DATE_TRUNC('day', \"e_0\".\"created_at\")::date AS \"day\", \"e_0\".id AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250",
+            :params nil}
+           (generate "employee | select: created_at => day")))
+
+    ;; Hour extraction (uses timestamp)
+    (is (= {:query "SELECT DATE_TRUNC('hour', \"e_0\".\"created_at\")::timestamp AS \"hour\", \"e_0\".id AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250",
+            :params nil}
+           (generate "employee | select: created_at => hour")))
+
+    ;; With alias
+    (is (= {:query "SELECT DATE_TRUNC('month', \"e\".\"created_at\")::date AS \"month\", \"e\".id AS \"__e__id\" FROM \"employee\" AS \"e\" LIMIT 250",
+            :params nil}
+           (generate "employee as e | select: e.created_at => month")))
+
+    ;; Mixed with regular columns
+    (is (= {:query "SELECT \"e_0\".\"name\", DATE_TRUNC('year', \"e_0\".\"created_at\")::date AS \"year\", \"e_0\".id AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250",
+            :params nil}
+           (generate "employee | select: name, created_at => year"))))
+
+  (testing "date extraction with grouping"
+    ;; Group by name with month extraction
+    (is (= {:query "SELECT \"e_0\".\"name\", DATE_TRUNC('month', \"e_0\".\"created_at\")::date AS \"month\", COUNT(1) FROM \"employee\" AS \"e_0\" GROUP BY \"e_0\".\"name\", \"month\"",
+            :params nil}
+           (generate "employee | select: name, created_at => month | group: name, created_at => count")))
+
+    ;; Group by just the extracted date
+    (is (= {:query "SELECT DATE_TRUNC('month', \"e_0\".\"created_at\")::date AS \"month\", COUNT(1) FROM \"employee\" AS \"e_0\" GROUP BY \"month\"",
+            :params nil}
+           (generate "employee | select: created_at => month | group: created_at => count"))))
+
   (testing "delete action"
     (is (= {:query "DELETE FROM \"company\" WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" )",
             :params nil}

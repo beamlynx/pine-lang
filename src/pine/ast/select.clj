@@ -3,10 +3,21 @@
 (defn handle [state value]
   (let [i       (state :index)
         current (state :current)
-        columns (map #(-> %1
-                          (assoc :alias (or (:alias %1) current))
-                          (assoc :operation-index i))
-                     value)]
+        ;; Process each column and handle date functions
+        columns (mapcat (fn [col]
+                          (let [col-with-defaults (-> col
+                                                      (assoc :alias (or (:alias col) current))
+                                                      (assoc :operation-index i))]
+                            (if-let [col-fn (:column-function col)]
+                              ;; Column function: apply function to column
+                              [{:column (:column col)
+                                :alias (:alias col-with-defaults)
+                                :column-alias col-fn  ; Just use the function name as alias
+                                :col-fn col-fn        ; Mark which function to apply
+                                :operation-index i}]
+                              ;; Regular column - return as is
+                              [col-with-defaults])))
+                        value)]
     (-> state
         (update :columns into columns))))
 

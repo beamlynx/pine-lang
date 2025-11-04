@@ -65,6 +65,9 @@
     [:aliased-column [:column [:symbol c]] [:alias [:symbol ca]]]                      {:column c :column-alias ca}
     [:aliased-column [:column [:alias [:symbol a]] [:symbol c]] [:alias [:symbol ca]]] {:alias a :column c :column-alias ca}
     [:aliased-column [:alias [:symbol a]] [:star _star]]                                {:alias a :column "" :symbol "*"}
+    ;; Date extraction with column functions
+    [:aliased-column [:column [:symbol c] [:column-function fn]]]                      {:column c :column-function fn}
+    [:aliased-column [:column [:alias [:symbol a]] [:symbol c] [:column-function fn]]] {:alias a :column c :column-function fn}
     :else                 (throw (ex-info "Unknown COLUMN operation" {:_ column}))))
 
 (defn normalize-select [payload type]
@@ -352,11 +355,17 @@
 ;; GROUP
 ;; -----
 
+(defn- -normalize-group-column [column]
+  (match column
+    [:column [:symbol c]]                       {:column c}
+    [:column [:alias [:symbol a]] [:symbol c]]  {:alias a :column c}
+    :else (throw (ex-info "Unknown GROUP column" {:_ column}))))
+
 (defmethod -normalize-op :GROUP [[_ payload]]
   (match payload
-    [:group-args [:aliased-columns & columns] [:aggregate-functions & functions]]
+    [:group-args [:columns & columns] [:aggregate-functions & functions]]
     {:type :group
-     :value {:columns (mapv -normalize-column columns)
+     :value {:columns (mapv -normalize-group-column columns)
              :functions (map second functions)}}
     :else (throw (ex-info "Unknown GROUP operation" {:_ payload}))))
 
