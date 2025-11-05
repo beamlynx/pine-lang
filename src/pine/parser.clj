@@ -65,9 +65,12 @@
     [:aliased-column [:column [:symbol c]] [:alias [:symbol ca]]]                      {:column c :column-alias ca}
     [:aliased-column [:column [:alias [:symbol a]] [:symbol c]] [:alias [:symbol ca]]] {:alias a :column c :column-alias ca}
     [:aliased-column [:alias [:symbol a]] [:star _star]]                                {:alias a :column "" :symbol "*"}
-    ;; Date extraction with column functions
+    ;; Column functions without alias
     [:aliased-column [:column [:symbol c] [:column-function fn]]]                      {:column c :column-function fn}
     [:aliased-column [:column [:alias [:symbol a]] [:symbol c] [:column-function fn]]] {:alias a :column c :column-function fn}
+    ;; Column functions with alias
+    [:aliased-column [:column [:symbol c] [:column-function fn]] [:alias [:symbol ca]]] {:column c :column-function fn :column-alias ca}
+    [:aliased-column [:column [:alias [:symbol a]] [:symbol c] [:column-function fn]] [:alias [:symbol ca]]] {:alias a :column c :column-function fn :column-alias ca}
     :else                 (throw (ex-info "Unknown COLUMN operation" {:_ column}))))
 
 (defn normalize-select [payload type]

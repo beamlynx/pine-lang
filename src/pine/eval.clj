@@ -120,6 +120,91 @@
     {:query (str "WITH x AS ( " query " ) SELECT COUNT(*) FROM x")
      :params params}))
 
+(defn- build-inner-select-for-group
+  "Build the inner SELECT for a GROUP query CTE. Includes non-aggregate columns only."
+  [state]
+  (let [{:keys [tables columns where aliases joins]} state
+        {a :alias} (first tables)
+        {table :table schema :schema} (get aliases a)
+        ;; Filter out aggregate function columns (those with :symbol but no :column)
+        non-aggregate-cols (filter #(or (:column %) (:auto-id %)) columns)
+        ;; Create a temporary state for building the SELECT clause with only non-aggregate columns
+        temp-state (assoc state
+                          :columns non-aggregate-cols
+                          :operation {:type :group})
+        ;; Build SELECT clause using the same logic as regular queries, but add aliases to all columns
+        select-parts (s/join
+                      ", "
+                      (map (fn [{:keys [column alias column-alias symbol auto-id col-fn]}]
+                             (let [c (cond
+                                       ;; Auto-ID columns should render as unquoted id
+                                       auto-id (str (q alias) ".id")
+                                       ;; Column function (currently date functions)
+                                       col-fn (let [cast (if (contains? #{"hour" "minute"} col-fn)
+                                                           "::timestamp"  ; hour/minute need timestamp
+                                                           "::date")]     ; year/month/day can be date
+                                                (str "DATE_TRUNC('" col-fn "', " (q alias column) ")" cast))
+                                       ;; Regular columns
+                                       :else (q alias column))
+                                   ;; Always use an alias: either column-alias or column name
+                                   col-alias (or column-alias column)]
+                               (str c " AS " (q col-alias))))
+                           non-aggregate-cols))
+        select-clause (str "SELECT " select-parts)
+        from (str "FROM " (q schema table) " AS " (q a))
+        join (build-join-clause {:tables tables :joins joins :aliases aliases})
+        where-clause (when (not-empty where)
+                       (str "WHERE "
+                            (s/join " AND "
+                                    (for [[alias col cast operator value] where]
+                                      (if (or (= operator "IN") (= operator "NOT IN"))
+                                        (str (q alias col) " " operator " (" (s/join ", " (repeat (count value) "?"))  ")")
+                                        (str (q alias col) (when cast (str "::" cast)) " " operator " " (cond
+                                                                                                          (= (:type value) :symbol) (:value value)
+                                                                                                          (= (:type value) :column) (let [[a col] (:value value)] (q a col))
+                                                                                                          (and (= (:type value) :jsonb) (not cast)) "?::jsonb"
+                                                                                                          (and (= (:type value) :uuid) (not cast)) "?::uuid"
+                                                                                                          (and (= (:type value) :date) (not cast)) "?::timestamp"
+                                                                                                          :else "?")))))))]
+    (s/join " " (filter some? [select-clause from join where-clause]))))
+
+(defn- build-outer-select-for-group
+  "Build the outer SELECT for a GROUP query. References CTE columns and includes aggregates."
+  [cte-alias {:keys [columns group]}]
+  (let [;; Get group columns - use column-alias if present, otherwise column name
+        group-cols (map #(or (:column-alias %) (:column %)) group)
+        select-items (map (fn [{:keys [column column-alias symbol col-fn]}]
+                            (cond
+                             ;; Aggregate function (has symbol, no column)
+                              (and symbol (empty? column))
+                              (if column-alias
+                                (str symbol " AS " (q column-alias))
+                                symbol)
+                             ;; Non-aggregate column - reference from CTE
+                             ;; Use the same alias that was assigned in the inner query
+                              :else (q cte-alias (or column-alias column))))
+                          columns)
+        group-by (str "GROUP BY " (s/join ", " (map #(q cte-alias %) group-cols)))]
+    {:select (str "SELECT " (s/join ", " select-items) " FROM " (q cte-alias))
+     :group-by group-by}))
+
+(defn build-group-query [state]
+  (let [{:keys [index]} state
+        cte-alias (str "x_" index)
+        ;; Build inner query (base SELECT with non-aggregate columns)
+        inner-query (build-inner-select-for-group state)
+        ;; Build outer query (SELECT from CTE with aggregates and GROUP BY)
+        {:keys [select group-by]} (build-outer-select-for-group cte-alias state)
+        ;; Combine into CTE
+        query (str "WITH " (q cte-alias) " AS ( " inner-query " ) " select " " group-by)
+        ;; Extract params from WHERE clause
+        params (when (not-empty (:where state))
+                 (->> (:where state)
+                      (map (fn [[_alias _col _cast _operator value]] (if (coll? value) value [value])))
+                      remove-symbols
+                      flatten))]
+    {:query query :params params}))
+
 (defn build-delete-query [state]
   (let [{:keys [delete current aliases]} state
         {table :table schema :schema}     (get aliases current)
@@ -165,7 +250,7 @@
       (= type :delete-action) (build-delete-query state)
       (= type :update-action) (build-update-query state)
       (= type :count) (build-count-query state)
-      (= type :group) (build-select-query state)
+      (= type :group) (build-group-query state)
       ;; no op
       (= type :delete) {:query " /* No SQL. Evaluate the pine expression for results */ "}
       :else (build-select-query (update state :limit #(or % 250))))))

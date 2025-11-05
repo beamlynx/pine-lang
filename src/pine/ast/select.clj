@@ -12,8 +12,8 @@
                               ;; Column function: apply function to column
                               [{:column (:column col)
                                 :alias (:alias col-with-defaults)
-                                :column-alias col-fn  ; Just use the function name as alias
-                                :col-fn col-fn        ; Mark which function to apply
+                                :column-alias (or (:column-alias col) col-fn)  ; Use custom alias or function name
+                                :col-fn col-fn                                 ; Mark which function to apply
                                 :operation-index i}]
                               ;; Regular column - return as is
                               [col-with-defaults])))

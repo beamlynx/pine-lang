@@ -216,9 +216,17 @@
     (is (= [{:type :select, :value [{:column "created_at", :column-function "minute"}]}]
            (p "select: created_at => minute")))
 
-    ;; with alias
+    ;; with table alias
     (is (= [{:type :select, :value [{:alias "e", :column "created_at", :column-function "month"}]}]
            (p "select: e.created_at => month")))
+
+    ;; with custom column alias
+    (is (= [{:type :select, :value [{:column "created_at", :column-function "month", :column-alias "created_at_month"}]}]
+           (p "select: created_at => month as created_at_month")))
+
+    ;; with both table and custom column alias
+    (is (= [{:type :select, :value [{:alias "e", :column "created_at", :column-function "year", :column-alias "yr"}]}]
+           (p "select: e.created_at => year as yr")))
 
     ;; mixed with regular columns
     (is (= [{:type :select, :value [{:column "name"} {:column "created_at", :column-function "year"}]}]
