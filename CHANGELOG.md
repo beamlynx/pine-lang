@@ -11,7 +11,7 @@ employee | select: created_at => year
 employee | select: created_at => year as created_at_year
 ```
 
-Supported functions are: `year`, `month`, `day`, `hour`, `minute`
+Supported functions are: `year`, `month`, `week`, `day`, `hour`, `minute`
 
 - Group on derived columns e.g.
 ```

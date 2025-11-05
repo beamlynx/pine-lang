@@ -211,6 +211,8 @@
            (p "select: created_at => month")))
     (is (= [{:type :select, :value [{:column "created_at", :column-function "day"}]}]
            (p "select: created_at => day")))
+    (is (= [{:type :select, :value [{:column "created_at", :column-function "week"}]}]
+           (p "select: created_at => week")))
     (is (= [{:type :select, :value [{:column "created_at", :column-function "hour"}]}]
            (p "select: created_at => hour")))
     (is (= [{:type :select, :value [{:column "created_at", :column-function "minute"}]}]

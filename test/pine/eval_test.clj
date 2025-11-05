@@ -207,6 +207,11 @@
             :params nil}
            (generate "employee | select: created_at => day")))
 
+    ;; Week extraction
+    (is (= {:query "SELECT DATE_TRUNC('week', \"e_0\".\"created_at\")::date AS \"week\", \"e_0\".id AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250",
+            :params nil}
+           (generate "employee | select: created_at => week")))
+
     ;; Hour extraction (uses timestamp)
     (is (= {:query "SELECT DATE_TRUNC('hour', \"e_0\".\"created_at\")::timestamp AS \"hour\", \"e_0\".id AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250",
             :params nil}

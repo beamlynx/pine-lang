@@ -203,6 +203,11 @@
                :col-fn "day" :operation-index 1}]
              (non-auto (generate :columns "employee | select: created_at => day"))))
 
+      ;; Week extraction creates 1 column with col-fn
+      (is (= [{:column "created_at" :alias "e_0" :column-alias "week"
+               :col-fn "week" :operation-index 1}]
+             (non-auto (generate :columns "employee | select: created_at => week"))))
+
       ;; Hour extraction creates 1 column with col-fn
       (is (= [{:column "created_at" :alias "e_0" :column-alias "hour"
                :col-fn "hour" :operation-index 1}]

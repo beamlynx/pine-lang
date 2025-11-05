@@ -65,7 +65,7 @@ hint-column     := <"."> symbol
 
 columns            := column (<","> <ws*> column)*
 column             := qualified-symbol <ws*> <"=>"> <ws*> column-function | qualified-symbol
-column-function    := "minute" | "hour" | "day" | "month" | "year"
+column-function    := "minute" | "hour" | "day" | "week" | "month" | "year"
 <qualified-symbol> := symbol | alias <"."> symbol
 
 alias    := symbol
