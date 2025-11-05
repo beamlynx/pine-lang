@@ -71,6 +71,26 @@
     (is (= [{:type :table, :value {:schema "public" :table "user" :alias "u" :join-column "other_id" :join "LEFT"}}] (p "public.user .other_id as u :left")))
     (is (= [{:type :table, :value {:schema "public" :table "user" :alias "u" :join-column "other_id" :join "RIGHT"}}] (p "public.user .other_id as u :right"))))
 
+  (testing "Parse `table` expressions with explicit join columns"
+    ;; Basic explicit columns
+    (is (= [{:type :table, :value {:table "b" :join-left-column "id" :join-right-column "a_id"}}]
+           (p "b .a_id = .id")))
+    
+    ;; With schema
+    (is (= [{:type :table, :value {:table "user" :schema "public" :join-left-column "id" :join-right-column "user_id"}}]
+           (p "public.user .user_id = .id")))
+    
+    ;; With alias
+    (is (= [{:type :table, :value {:table "employee" :alias "e" :join-left-column "company_id" :join-right-column "id"}}]
+           (p "employee as e .id = .company_id")))
+    
+    ;; Combined with join type
+    (is (= [{:type :table, :value {:table "user" :join "LEFT" :join-left-column "user_id" :join-right-column "id"}}]
+           (p "user .id = .user_id :left")))
+    
+    (is (= [{:type :table, :value {:table "user" :join "RIGHT" :join-left-column "user_id" :join-right-column "id"}}]
+           (p "user .id = .user_id :right"))))
+
   (testing "Parse `from` expressions"
     (is (= [{:type :from, :value {:alias "u"}}] (p "from: u"))))
 

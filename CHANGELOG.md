@@ -18,6 +18,11 @@ Supported functions are: `year`, `month`, `week`, `day`, `hour`, `minute`
 employee | select: created_at => month | group: month => count
 ```
 
+- Explicit join columns are supported in the join operation e.g.
+```
+company | employee .company_id = .id
+```
+
 ## [0.27.0] - 2025-10-19
 ### Added
 - Column aliases are supported in the order operation e.g.

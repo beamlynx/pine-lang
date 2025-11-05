@@ -37,10 +37,19 @@
   reason to get the tables from the state is that they have been assigned an
   alias. We only use the join column from the current value being processed."
   [state current]
-  (let [{:keys [join-column parent join]} current
+  (let [{:keys [join-column join-left-column join-right-column parent join]} current
         from-alias                   (state :context)]
     (cond
       (nil? from-alias) state
+      ;; Explicit columns case: left table's column = right table's column
+      ;; In "a | b .a_id = .id", left-col is "id" (from a), right-col is "a_id" (from b)
+      (and join-left-column join-right-column)
+      (let [x (-> state :aliases (get from-alias))
+            join-result [(x :alias) join-left-column :has (current :alias) join-right-column]]
+        (-> state
+            (assoc-in [:join-map (x :alias) (current :alias)] join-result)
+            (update :joins conj [(x :alias) (current :alias) join-result join])))
+      
       :else (let [x (-> state :aliases (get from-alias))
                   join-result (join-tables state x current join-column parent)]
               (-> state
@@ -54,9 +63,11 @@
 ;; todo: spec for the :value for a :table
 (defn handle [state value]
   (let [index (state :index)
-        {:keys [table alias schema parent join-column join]} value
+        {:keys [table alias schema parent join-column join-left-column join-right-column join]} value
         a (or alias (str (make-alias table) "_" (state :table-count)))
-        current {:schema schema :table table :alias a :parent parent :join-column join-column :join join}]
+        current {:schema schema :table table :alias a :parent parent 
+                 :join-column join-column :join-left-column join-left-column 
+                 :join-right-column join-right-column :join join}]
     (-> state
         ;; pre
         (assoc  :context (state :current))

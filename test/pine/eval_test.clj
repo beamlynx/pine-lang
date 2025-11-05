@@ -138,6 +138,42 @@
             :params nil}
            (generate "x.company | y.employee :left | z.document :right"))))
 
+  (testing "Joins with explicit columns"
+    ;; Basic explicit join (tables a, b, c don't exist in schema so no auto-id columns)
+    (is (= {:query "SELECT \"b_1\".* FROM \"a\" AS \"a_0\" JOIN \"b\" AS \"b_1\" ON \"a_0\".\"id\" = \"b_1\".\"a_id\" LIMIT 250",
+            :params nil}
+           (generate "a | b .a_id = .id")))
+    
+    ;; With real tables
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"company\" AS \"c_0\" JOIN \"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250",
+            :params nil}
+           (generate "company | employee .company_id = .id")))
+    
+    ;; With different column names (tables don't exist in schema)
+    (is (= {:query "SELECT \"b_1\".* FROM \"a\" AS \"a_0\" JOIN \"b\" AS \"b_1\" ON \"a_0\".\"custom_id\" = \"b_1\".\"foreign_id\" LIMIT 250",
+            :params nil}
+           (generate "a | b .foreign_id = .custom_id")))
+    
+    ;; With LEFT JOIN
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"company\" AS \"c_0\" LEFT JOIN \"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250",
+            :params nil}
+           (generate "company | employee .company_id = .id :left")))
+    
+    ;; With RIGHT JOIN
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"company\" AS \"c_0\" RIGHT JOIN \"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250",
+            :params nil}
+           (generate "company | employee .company_id = .id :right")))
+    
+    ;; With schema-qualified tables
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"x\".\"company\" AS \"c_0\" JOIN \"y\".\"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250",
+            :params nil}
+           (generate "x.company | y.employee .company_id = .id")))
+    
+    ;; Multiple joins with explicit columns (tables don't exist in schema)
+    (is (= {:query "SELECT \"c_2\".* FROM \"a\" AS \"a_0\" JOIN \"b\" AS \"b_1\" ON \"a_0\".\"id\" = \"b_1\".\"a_id\" JOIN \"c\" AS \"c_2\" ON \"b_1\".\"id\" = \"c_2\".\"b_id\" LIMIT 250",
+            :params nil}
+           (generate "a | b .a_id = .id | c .b_id = .id"))))
+
   (testing "Joins with a context"
     (is (= {:query "SELECT \"c\".id AS \"__c__id\", \"e_1\".id AS \"__e_1__id\", \"d_2\".id AS \"__d_2__id\", \"d_2\".* FROM \"x\".\"company\" AS \"c\" JOIN \"y\".\"employee\" AS \"e_1\" ON \"c\".\"id\" = \"e_1\".\"company_id\" JOIN \"z\".\"document\" AS \"d_2\" ON \"c\".\"id\" = \"d_2\".\"company_id\" LIMIT 250",
             :params nil}

@@ -20,23 +20,23 @@
 (deftest test-ast
 
   (testing "Generate ast for `tables`"
-    (is (= [{:schema nil :table "company" :alias "c" :parent nil :join-column nil :join nil}]
+    (is (= [{:schema nil :table "company" :alias "c" :parent nil :join-column nil :join-left-column nil :join-right-column nil :join nil}]
            (generate :tables "company as c")))
-    (is (= [{:schema nil :table "user" :alias "u_0" :parent nil  :join-column nil :join nil}]
+    (is (= [{:schema nil :table "user" :alias "u_0" :parent nil  :join-column nil :join-left-column nil :join-right-column nil :join nil}]
            (generate :tables "user")))
-    (is (= [{:schema "public" :table "user" :alias "u_0" :parent nil  :join-column nil :join nil}]
+    (is (= [{:schema "public" :table "user" :alias "u_0" :parent nil  :join-column nil :join-left-column nil :join-right-column nil :join nil}]
            (generate :tables "public.user")))
-    (is (= [{:schema "public" :table "user" :alias "u_0" :parent true  :join-column nil :join nil}]
+    (is (= [{:schema "public" :table "user" :alias "u_0" :parent true  :join-column nil :join-left-column nil :join-right-column nil :join nil}]
            (generate :tables "public.user :parent"))))
 
   (testing "Generate ast for `tables` with join types"
-    (is (= [{:schema nil :table "user" :alias "u_0" :parent nil :join-column nil :join "LEFT"}]
+    (is (= [{:schema nil :table "user" :alias "u_0" :parent nil :join-column nil :join-left-column nil :join-right-column nil :join "LEFT"}]
            (generate :tables "user :left")))
-    (is (= [{:schema nil :table "user" :alias "u_0" :parent nil :join-column nil :join "RIGHT"}]
+    (is (= [{:schema nil :table "user" :alias "u_0" :parent nil :join-column nil :join-left-column nil :join-right-column nil :join "RIGHT"}]
            (generate :tables "user :right")))
-    (is (= [{:schema "public" :table "user" :alias "u_0" :parent nil :join-column nil :join "LEFT"}]
+    (is (= [{:schema "public" :table "user" :alias "u_0" :parent nil :join-column nil :join-left-column nil :join-right-column nil :join "LEFT"}]
            (generate :tables "public.user :left")))
-    (is (= [{:schema "public" :table "user" :alias "u_0" :parent nil :join-column nil :join "RIGHT"}]
+    (is (= [{:schema "public" :table "user" :alias "u_0" :parent nil :join-column nil :join-left-column nil :join-right-column nil :join "RIGHT"}]
            (generate :tables "public.user :right"))))
 
   (testing "Generate ast for `from`"
@@ -137,7 +137,13 @@
     (is (= [{"a_0" {"b_1" nil}} [["a_0" "b_1" nil nil]]]
            (generate [:join-map :joins] "a | b")))
     (is (= [{"a_0" {"b_1" nil}} [["a_0" "b_1" nil nil]]]
-           (generate [:join-map :joins] "a | b .a_id"))))
+           (generate [:join-map :joins] "a | b .a_id")))
+
+    ;; Explicit join columns
+    (is (= [{"a_0" {"b_1" ["a_0" "id" :has "b_1" "a_id"]}} [["a_0" "b_1" ["a_0" "id" :has "b_1" "a_id"] nil]]]
+           (generate [:join-map :joins] "a | b .a_id = .id")))
+
+    )
 
   (testing "Generate ast for `join` where there is a relation"
     (is (= [{"c_0" {"e_1" ["c_0" "id" :has "e_1" "company_id"]}} [["c_0" "e_1" ["c_0" "id" :has "e_1" "company_id"] nil]]]
@@ -166,6 +172,22 @@
            (generate [:join-map :joins] "employee | employee :parent")))
     (is (= [{"e_0" {"e_1" ["e_0" "reports_to" :of "e_1" "id"]}} [["e_0" "e_1" ["e_0" "reports_to" :of "e_1" "id"] nil]]]
            (generate [:join-map :joins] "employee | employee :parent .reports_to"))))
+
+  (testing "Generate ast for `join` with explicit columns"
+    ;; Basic explicit columns with real tables
+    (is (= [{"c_0" {"e_1" ["c_0" "id" :has "e_1" "company_id"]}} [["c_0" "e_1" ["c_0" "id" :has "e_1" "company_id"] nil]]]
+           (generate [:join-map :joins] "company | employee .company_id = .id")))
+    
+    ;; Explicit columns with different column names
+    (is (= [{"a_0" {"b_1" ["a_0" "custom_id" :has "b_1" "foreign_id"]}} [["a_0" "b_1" ["a_0" "custom_id" :has "b_1" "foreign_id"] nil]]]
+           (generate [:join-map :joins] "a | b .foreign_id = .custom_id")))
+    
+    ;; Explicit columns with join type
+    (is (= [{"c_0" {"e_1" ["c_0" "id" :has "e_1" "company_id"]}} [["c_0" "e_1" ["c_0" "id" :has "e_1" "company_id"] "LEFT"]]]
+           (generate [:join-map :joins] "company | employee .company_id = .id :left")))
+    
+    (is (= [{"c_0" {"e_1" ["c_0" "id" :has "e_1" "company_id"]}} [["c_0" "e_1" ["c_0" "id" :has "e_1" "company_id"] "RIGHT"]]]
+           (generate [:join-map :joins] "company | employee .company_id = .id :right"))))
 
   (testing "Generate ast for `count`"
     (is (= {:column "*"} (generate :count "company | count:"))))
@@ -288,7 +310,7 @@
         (is (= (:value value) "{\"key\": \"value\"}"))))))
 
 (testing "AST generation with comments"
-  (is (= [{:schema nil :table "company" :alias "c_0" :parent nil :join-column nil :join nil}]
+  (is (= [{:schema nil :table "company" :alias "c_0" :parent nil :join-column nil :join-left-column nil :join-right-column nil :join nil}]
          (generate :tables "-- get all companies\ncompany")))
   (is (= [[nil "name" nil "=" (dt/string "Acme")]]
          (generate :where "/* filter by name */ name = 'Acme'")))

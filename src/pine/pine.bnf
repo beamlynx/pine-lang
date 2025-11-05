@@ -36,7 +36,7 @@ count-op          := <"count:">
 
 <table>           := symbol* | symbol* <"."> symbol*
 table-mods        := (<ws+> table-mod)*
-table-mod         := <":"> ("parent"|"child"|"left"|"right") | as-alias | hint-column
+table-mod         := <":"> ("parent"|"child"|"left"|"right") | as-alias | hint-columns
 
 group-args          := columns <ws*> <"=>"> <ws*> aggregate-functions
 aggregate-functions := aggregate-function (<","> <ws*> aggregate-function)*
@@ -62,6 +62,9 @@ order-columns := order-column (<","> <ws*> order-column)*
 order-column  := column | column <ws+> ("desc"|"asc")
 
 hint-column     := <"."> symbol
+
+hint-columns      := hint-column | explicit-columns
+explicit-columns  := hint-column <ws*> <"="> <ws*> hint-column
 
 columns            := column (<","> <ws*> column)*
 column             := qualified-symbol <ws*> <"=>"> <ws*> column-function | qualified-symbol

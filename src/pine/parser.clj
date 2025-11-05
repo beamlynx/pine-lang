@@ -30,8 +30,14 @@
               ;; Alias modifier
               [:table-mod [:alias [:symbol alias]]] (assoc acc :alias alias)
 
-              ;; Hint column modifier
-              [:table-mod [:hint-column [:symbol column]]] (assoc acc :join-column column)
+              ;; Hint column modifier (single column)
+              [:table-mod [:hint-columns [:hint-column [:symbol column]]]] (assoc acc :join-column column)
+
+              ;; Explicit columns modifier (two columns with =)
+              ;; In "a | b .a_id = .id", first column is from right table (b.a_id), second is from left table (a.id)
+              ;; So we swap them: left-column gets the second, right-column gets the first
+              [:table-mod [:hint-columns [:explicit-columns [:hint-column [:symbol right-col]] [:hint-column [:symbol left-col]]]]]
+              (assoc acc :join-left-column left-col :join-right-column right-col)
 
               ;; Unknown modifier - ignore
               _ acc))
