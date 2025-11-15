@@ -47,7 +47,7 @@
             {:connection-id connection-name
              :version version
              :query (-> expression trim-pipes generate-state :result eval/build-query eval/formatted-query)
-             :ast (dissoc state :references :join-map)}))
+             :ast (dissoc state :references)}))
       (catch Exception e {:connection-id connection-name
                           :error (.getMessage e)}))))
 

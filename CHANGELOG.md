@@ -23,6 +23,9 @@ employee | select: created_at => month | group: month => count
 company | employee .company_id = .id
 ```
 
+### Removed
+- Internal state field `:join-map` has been removed. This was legacy dead code kept since v0.8.0 that was never actually used. The `:joins` vector format continues to be used for SQL generation.
+
 ## [0.27.0] - 2025-10-19
 ### Added
 - Column aliases are supported in the order operation e.g.

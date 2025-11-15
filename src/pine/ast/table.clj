@@ -46,15 +46,11 @@
       (and join-left-column join-right-column)
       (let [x (-> state :aliases (get from-alias))
             join-result [(x :alias) join-left-column :has (current :alias) join-right-column]]
-        (-> state
-            (assoc-in [:join-map (x :alias) (current :alias)] join-result)
-            (update :joins conj [(x :alias) (current :alias) join-result join])))
+        (update state :joins conj [(x :alias) (current :alias) join-result join]))
 
       :else (let [x (-> state :aliases (get from-alias))
                   join-result (join-tables state x current join-column parent)]
-              (-> state
-                  (assoc-in [:join-map (x :alias) (current :alias)] join-result)
-                  (update :joins conj [(x :alias) (current :alias) join-result join]))))))
+              (update state :joins conj [(x :alias) (current :alias) join-result join])))))
 (defn make-alias [s]
   (let [words (if (not-empty s) (s/split s #"_") ["x"])
         initials (map #(subs % 0 1) words)]

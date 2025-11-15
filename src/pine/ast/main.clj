@@ -19,13 +19,16 @@
             :references {}
 
             ;; ast
+            ;; - tables
+            ;; Needed for backend operations e.g. SQL generation, Hints, etc
             :tables          []           ;; e.g. [{ :table "user" :schema "public" :alias "u" }] ;; schema is nilable
+            ;; - selected-tables
+            ;; Needed for frontend operations e.g. visualize the graph with the already selected tables
             :selected-tables []           ;; e.g. [{ :table "user" :schema "public" :alias "u" }] ;; schema is nilable
             :columns         []           ;; e.g. [{ :alias "u" :column "name"  }]
             :limit           nil          ;; number ;; nilable
             :aliases         {}           ;; e.g. [{ :schema "public" :table "user" }] ;; schema is nilable
             :joins           []           ;; Vector of joins e.g. [ "u" "c" ".. relation .."]
-            :join-map        {}           ;; Map of aliases of the joined tables e.g. { "u" { "c" [".. relation .."]}}
             :where           []           ;; e.g. [ "name" "=" "john" ]
             :order           []           ;; e.g. [{ :alias "u" :column "name" :direction "DESC" }]
             :group           []           ;; e.g. [{ :alias "u" :column "name" }]
