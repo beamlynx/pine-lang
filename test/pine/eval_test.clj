@@ -143,32 +143,32 @@
     (is (= {:query "SELECT \"b_1\".* FROM \"a\" AS \"a_0\" JOIN \"b\" AS \"b_1\" ON \"a_0\".\"id\" = \"b_1\".\"a_id\" LIMIT 250",
             :params nil}
            (generate "a | b .a_id = .id")))
-    
+
     ;; With real tables
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"company\" AS \"c_0\" JOIN \"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250",
             :params nil}
            (generate "company | employee .company_id = .id")))
-    
+
     ;; With different column names (tables don't exist in schema)
     (is (= {:query "SELECT \"b_1\".* FROM \"a\" AS \"a_0\" JOIN \"b\" AS \"b_1\" ON \"a_0\".\"custom_id\" = \"b_1\".\"foreign_id\" LIMIT 250",
             :params nil}
            (generate "a | b .foreign_id = .custom_id")))
-    
+
     ;; With LEFT JOIN
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"company\" AS \"c_0\" LEFT JOIN \"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250",
             :params nil}
            (generate "company | employee .company_id = .id :left")))
-    
+
     ;; With RIGHT JOIN
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"company\" AS \"c_0\" RIGHT JOIN \"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250",
             :params nil}
            (generate "company | employee .company_id = .id :right")))
-    
+
     ;; With schema-qualified tables
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"x\".\"company\" AS \"c_0\" JOIN \"y\".\"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250",
             :params nil}
            (generate "x.company | y.employee .company_id = .id")))
-    
+
     ;; Multiple joins with explicit columns (tables don't exist in schema)
     (is (= {:query "SELECT \"c_2\".* FROM \"a\" AS \"a_0\" JOIN \"b\" AS \"b_1\" ON \"a_0\".\"id\" = \"b_1\".\"a_id\" JOIN \"c\" AS \"c_2\" ON \"b_1\".\"id\" = \"c_2\".\"b_id\" LIMIT 250",
             :params nil}

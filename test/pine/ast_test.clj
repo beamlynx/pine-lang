@@ -141,9 +141,7 @@
 
     ;; Explicit join columns
     (is (= [{"a_0" {"b_1" ["a_0" "id" :has "b_1" "a_id"]}} [["a_0" "b_1" ["a_0" "id" :has "b_1" "a_id"] nil]]]
-           (generate [:join-map :joins] "a | b .a_id = .id")))
-
-    )
+           (generate [:join-map :joins] "a | b .a_id = .id"))))
 
   (testing "Generate ast for `join` where there is a relation"
     (is (= [{"c_0" {"e_1" ["c_0" "id" :has "e_1" "company_id"]}} [["c_0" "e_1" ["c_0" "id" :has "e_1" "company_id"] nil]]]
@@ -177,15 +175,15 @@
     ;; Basic explicit columns with real tables
     (is (= [{"c_0" {"e_1" ["c_0" "id" :has "e_1" "company_id"]}} [["c_0" "e_1" ["c_0" "id" :has "e_1" "company_id"] nil]]]
            (generate [:join-map :joins] "company | employee .company_id = .id")))
-    
+
     ;; Explicit columns with different column names
     (is (= [{"a_0" {"b_1" ["a_0" "custom_id" :has "b_1" "foreign_id"]}} [["a_0" "b_1" ["a_0" "custom_id" :has "b_1" "foreign_id"] nil]]]
            (generate [:join-map :joins] "a | b .foreign_id = .custom_id")))
-    
+
     ;; Explicit columns with join type
     (is (= [{"c_0" {"e_1" ["c_0" "id" :has "e_1" "company_id"]}} [["c_0" "e_1" ["c_0" "id" :has "e_1" "company_id"] "LEFT"]]]
            (generate [:join-map :joins] "company | employee .company_id = .id :left")))
-    
+
     (is (= [{"c_0" {"e_1" ["c_0" "id" :has "e_1" "company_id"]}} [["c_0" "e_1" ["c_0" "id" :has "e_1" "company_id"] "RIGHT"]]]
            (generate [:join-map :joins] "company | employee .company_id = .id :right"))))
 

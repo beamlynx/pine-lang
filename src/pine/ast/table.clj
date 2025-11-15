@@ -49,7 +49,7 @@
         (-> state
             (assoc-in [:join-map (x :alias) (current :alias)] join-result)
             (update :joins conj [(x :alias) (current :alias) join-result join])))
-      
+
       :else (let [x (-> state :aliases (get from-alias))
                   join-result (join-tables state x current join-column parent)]
               (-> state
@@ -65,8 +65,8 @@
   (let [index (state :index)
         {:keys [table alias schema parent join-column join-left-column join-right-column join]} value
         a (or alias (str (make-alias table) "_" (state :table-count)))
-        current {:schema schema :table table :alias a :parent parent 
-                 :join-column join-column :join-left-column join-left-column 
+        current {:schema schema :table table :alias a :parent parent
+                 :join-column join-column :join-left-column join-left-column
                  :join-right-column join-right-column :join join}]
     (-> state
         ;; pre

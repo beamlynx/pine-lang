@@ -75,19 +75,19 @@
     ;; Basic explicit columns
     (is (= [{:type :table, :value {:table "b" :join-left-column "id" :join-right-column "a_id"}}]
            (p "b .a_id = .id")))
-    
+
     ;; With schema
     (is (= [{:type :table, :value {:table "user" :schema "public" :join-left-column "id" :join-right-column "user_id"}}]
            (p "public.user .user_id = .id")))
-    
+
     ;; With alias
     (is (= [{:type :table, :value {:table "employee" :alias "e" :join-left-column "company_id" :join-right-column "id"}}]
            (p "employee as e .id = .company_id")))
-    
+
     ;; Combined with join type
     (is (= [{:type :table, :value {:table "user" :join "LEFT" :join-left-column "user_id" :join-right-column "id"}}]
            (p "user .id = .user_id :left")))
-    
+
     (is (= [{:type :table, :value {:table "user" :join "RIGHT" :join-left-column "user_id" :join-right-column "id"}}]
            (p "user .id = .user_id :right"))))
 
