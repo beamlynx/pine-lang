@@ -9,6 +9,17 @@
   ([a]
    (str "\"" a "\"")))
 
+(defn- col-fn-format
+  "Map column function names to TO_CHAR format strings"
+  [col-fn]
+  (case col-fn
+    "year"   "YYYY"
+    "month"  "YYYY-MM"
+    "day"    "YYYY-MM-DD"
+    "week"   "YYYY-MM-DD"
+    "hour"   "YYYY-MM-DD HH24"
+    "minute" "YYYY-MM-DD HH24:MI"))
+
 (defn- build-join-clause [{:keys [tables joins aliases]}]
   (when (not-empty (rest tables))
     (let [join-statements (map (fn [[_from-alias to-alias relation join]]
@@ -41,10 +52,7 @@
                        ;; Auto-ID columns should render as unquoted id
                        auto-id (str (q alias) ".id")
                        ;; Column function (currently date functions)
-                       col-fn (let [cast (if (contains? #{"hour" "minute"} col-fn)
-                                           "::timestamp"  ; hour/minute need timestamp
-                                           "::date")]     ; year/month/day can be date
-                                (str "DATE_TRUNC('" col-fn "', " (q alias column) ")" cast))
+                       col-fn (str "TO_CHAR(DATE_TRUNC('" col-fn "', " (q alias column) "), '" (col-fn-format col-fn) "')")
                        ;; Symbol-based columns (like aggregates)
                        (empty? column) (if alias (str (q alias) "." symbol) symbol)
                        ;; Regular columns
@@ -140,10 +148,7 @@
                                        ;; Auto-ID columns should render as unquoted id
                                        auto-id (str (q alias) ".id")
                                        ;; Column function (currently date functions)
-                                       col-fn (let [cast (if (contains? #{"hour" "minute"} col-fn)
-                                                           "::timestamp"  ; hour/minute need timestamp
-                                                           "::date")]     ; year/month/day can be date
-                                                (str "DATE_TRUNC('" col-fn "', " (q alias column) ")" cast))
+                                       col-fn (str "TO_CHAR(DATE_TRUNC('" col-fn "', " (q alias column) "), '" (col-fn-format col-fn) "')")
                                        ;; Regular columns
                                        :else (q alias column))
                                    ;; Always use an alias: either column-alias or column name
