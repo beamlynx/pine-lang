@@ -4,6 +4,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.28.0] - 2025-12-08
 ### Added
 - Support for date extraction functions in the select operation e.g.
 ```
