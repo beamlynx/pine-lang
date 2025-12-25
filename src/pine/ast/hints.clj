@@ -161,16 +161,22 @@
       ;; Otherwise, return all hints
       :else hints)))
 
-(defn handle [state]
-  (let [type (-> state :operation :type)
-        hints (case type
-                :table (generate-table-hints state)
-                :select (generate-column-hints state (state :columns))
-                :select-partial (generate-column-hints state (state :columns))
-                :order-partial (generate-column-hints state (state :order))
-                :order (generate-column-hints state (state :order))
-                :where-partial (generate-where-hints state)
-                :where (generate-all-column-hints state)
-                [])
-        type (case type :select-partial :select :order-partial :order :where-partial :where type)]
-    (assoc-in state [:hints type] (or hints []))))
+(defn handle
+  "Generate hints based on the current operation. 
+   If truncated-state is provided, use it for hint generation context."
+  ([state]
+   (handle state nil))
+  ([state truncated-state]
+   (let [state-for-hints (or truncated-state state)
+         type (-> state-for-hints :operation :type)
+         hints (case type
+                 :table (generate-table-hints state-for-hints)
+                 :select (generate-column-hints state-for-hints (state-for-hints :columns))
+                 :select-partial (generate-column-hints state-for-hints (state-for-hints :columns))
+                 :order-partial (generate-column-hints state-for-hints (state-for-hints :order))
+                 :order (generate-column-hints state-for-hints (state-for-hints :order))
+                 :where-partial (generate-where-hints state-for-hints)
+                 :where (generate-all-column-hints state-for-hints)
+                 [])
+         type (case type :select-partial :select :order-partial :order :where-partial :where type)]
+     (assoc-in state [:hints type] (or hints [])))))

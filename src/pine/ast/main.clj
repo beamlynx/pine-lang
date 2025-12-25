@@ -1,5 +1,6 @@
 (ns pine.ast.main
   (:require
+   [clojure.string :as str]
    [pine.ast.count :as pine-count]
    [pine.ast.delete-action :as delete-action]
    [pine.ast.from :as from]
@@ -11,12 +12,15 @@
    [pine.ast.table :as table]
    [pine.ast.update-action :as update-action]
    [pine.ast.where :as where]
-   [pine.db.main :as db]))
+   [pine.db.main :as db]
+   [pine.parser :as parser]))
 
 (def state {;; pre
             ;; - connection
             :connection-id nil
             :references {}
+            :expression      nil          ;; Expression string for cursor-aware hints
+            :cursor          nil          ;; Cursor position {:line N :character M} (zero-indexed)
 
             ;; ast
             ;; - tables
@@ -50,11 +54,13 @@
             ;; - hints
             :hints          {:table [] :select [] :order [] :where []}})
 
-(defn pre-handle [state connection-id ops-count]
+(defn pre-handle [state connection-id ops-count expression cursor]
   (-> state
       (assoc :references (db/init-references connection-id))
       (assoc :connection-id connection-id)
-      (assoc :pending-count ops-count)))
+      (assoc :pending-count ops-count)
+      (assoc :expression expression)
+      (assoc :cursor cursor)))
 
 (defn handle-op [state {:keys [type value]}]
   (case type
@@ -85,9 +91,40 @@
           state
           (map-indexed vector ops)))  ; Pair each operation with its index
 
-(defn post-handle [state]
+(declare generate)
+
+(defn- truncate-at-cursor
+  "Truncate expression at cursor position. Cursor is {:line N :character M} (zero-indexed)"
+  [expression cursor]
+  (if (nil? cursor)
+    expression
+    (let [{:keys [line character]} cursor
+          lines (str/split-lines expression)]
+      (if (>= line (count lines))
+        expression
+        (let [lines-before (take line lines)
+              current-line (nth lines line)
+              truncated-current (subs current-line 0 (min character (count current-line)))]
+          (str/join "\n" (concat lines-before [truncated-current])))))))
+
+(defn- generate-truncated-state
+  "Generate state for truncated expression at cursor position. 
+   Keep references for hint generation."
+  [expression cursor connection-id]
+  (let [truncated-expr (truncate-at-cursor expression cursor)
+        {:keys [result error]} (parser/parse truncated-expr)]
+    (if (or error (nil? result))
+      ;; Parse error or no result, return nil
+      nil
+      ;; Successfully parsed, build state without going through post-handle
+      ;; to preserve references for hint generation
+      (-> state
+          (pre-handle connection-id (count result) nil nil)
+          (handle-ops result)))))
+
+(defn post-handle [state truncated-state]
   (-> state
-      hints/handle
+      (hints/handle truncated-state)
       ;; Add auto-ID columns based on final operation type
       select/add-auto-id-columns
       (assoc :selected-tables (let [tables (state :tables)
@@ -101,10 +138,14 @@
 
 (defn generate
   ([parse-tree]
-   (generate parse-tree @db/connection-id))
+   (generate parse-tree @db/connection-id nil nil))
   ([parse-tree connection-id]
-   (-> state
-       (pre-handle connection-id (count parse-tree))
-       (handle-ops parse-tree)
-       post-handle)))
+   (generate parse-tree connection-id nil nil))
+  ([parse-tree connection-id expression cursor]
+   (let [full-state (-> state
+                        (pre-handle connection-id (count parse-tree) expression cursor)
+                        (handle-ops parse-tree))
+         truncated-state (when (and cursor expression)
+                           (generate-truncated-state expression cursor connection-id))]
+     (post-handle full-state truncated-state))))
 

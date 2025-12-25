@@ -4,6 +4,10 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.29.0] - 2025-12-25
+### Added
+- Support for cursor position aware hints. This is helpful when the user isn't at the end of the expression. Hints are generated based on the cursor position. The build endpoint supports a new parameter `cursor` which must contain the `line` and `character` position of the cursor.
+
 ## [0.28.0] - 2025-12-08
 ### Added
 - Support for date extraction functions in the select operation e.g.

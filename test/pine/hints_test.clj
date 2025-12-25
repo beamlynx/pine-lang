@@ -6,12 +6,14 @@
 
 (defn- gen
   "Helper function to generate and get the relevant part in the ast"
-  [expression]
-  (-> expression
-      parser/parse
-      :result
-      (ast/generate :test)
-      :hints))
+  ([expression]
+   (gen expression nil))
+  ([expression cursor]
+   (-> expression
+       parser/parse
+       :result
+       (ast/generate :test expression cursor)
+       :hints)))
 
 (deftest test-hints
   (testing "Generate hints"
@@ -115,4 +117,37 @@
     ;; Right now it shows the same hints as the left hand side
     ;; (is (= [{:column "id" :alias "c_0"}]     (->  "company | w: id ="      gen :where)))
     ;; (is (= ["reports_to"  "company_id" "id"] (->> "y.employee | w: id ="   gen :where (map :column))))
-    ))
+    )
+
+  (testing "Generate hints with cursor position"
+    ;; Basic cursor truncation test - cursor at "company | s: " should show select hints for company
+    (is (= [{:column "created_at" :alias "c_0"} {:column "id" :alias "c_0"}]
+           (-> (gen "company | s: id | employee | s: " {:line 0 :character 13}) :select)))
+
+    ;; Cursor at different positions in single line expression
+    (is (= [{:column "id" :alias "c_0"}]
+           (-> (gen "company | s: id | employee | s: " {:line 0 :character 14}) :select)))
+
+    ;; Cursor at "company | s: id | employee | s:" should show all columns
+    (is (= ["reports_to" "company_id" "id"]
+           (->> (gen "company | s: id | employee | s: id, " {:line 0 :character 31})
+                :select
+                (map :column))))
+
+    ;; Multi-line expression with cursor on first line (should show table hints)
+    (is (= [{:schema "x" :table "company" :pine "x.company"}]
+           (-> (gen "company\n | s: id | employee | s: " {:line 0 :character 7}) :table)))
+
+    ;; Multi-line expression with cursor on second line
+    (is (= [{:column "created_at" :alias "c_0"} {:column "id" :alias "c_0"}]
+           (-> (gen "company\n | s: " {:line 1 :character 6}) :select)))
+
+    ;; Edge case: cursor at start (should show select hints for company)
+    (is (= [{:column "id" :alias "c_0"}]
+           (-> (gen "company | s: id" {:line 0 :character 14}) :select)))
+
+    ;; Edge case: cursor at end should behave like no cursor
+    (is (= ["reports_to" "company_id" "id"]
+           (->> (gen "company | s: id | employee | s: " {:line 0 :character 100})
+                :select
+                (map :column))))))

@@ -26,11 +26,14 @@
 
 (def version v/version)
 
-(defn- generate-state [expression]
-  (let [{:keys [result error]} (->> expression parser/parse)]
-    (if result {:result (-> result ast/generate)}
-        {:error-type "parse"
-         :error error})))
+(defn- generate-state
+  ([expression]
+   (generate-state expression nil))
+  ([expression cursor]
+   (let [{:keys [result error]} (->> expression parser/parse)]
+     (if result {:result (ast/generate result @db/connection-id expression cursor)}
+         {:error-type "parse"
+          :error error}))))
 
 (defn- trim-pipes [s]
   (-> s
@@ -38,18 +41,21 @@
       (str/replace #"^\|\s*|\s*\|$" "")
       (str/trim)))
 
-(defn api-build [expression]
-  (let [connection-name (connections/get-connection-name @db/connection-id)]
-    (try
-      (let [result (generate-state expression)
-            {state :result error :error} result]
-        (if error result
-            {:connection-id connection-name
-             :version version
-             :query (-> expression trim-pipes generate-state :result eval/build-query eval/formatted-query)
-             :ast (dissoc state :references)}))
-      (catch Exception e {:connection-id connection-name
-                          :error (.getMessage e)}))))
+(defn api-build
+  ([expression]
+   (api-build expression nil))
+  ([expression cursor]
+   (let [connection-name (connections/get-connection-name @db/connection-id)]
+     (try
+       (let [result (generate-state expression cursor)
+             {state :result error :error} result]
+         (if error result
+             {:connection-id connection-name
+              :version version
+              :query (-> expression trim-pipes generate-state :result eval/build-query eval/formatted-query)
+              :ast (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where])}))
+       (catch Exception e {:connection-id connection-name
+                           :error (.getMessage e)})))))
 
 (defn- get-columns
   ([rows]
@@ -167,7 +173,7 @@
          :time (str (java.time.LocalDateTime/now))} response))
 
   ;; query building and evaluation
-  (POST "/api/v1/build" [expression] (->> expression api-build response))
+  (POST "/api/v1/build" [expression cursor] (->> (api-build expression cursor) response))
   (POST "/api/v1/eval" [expression] (->> expression trim-pipes api-eval response))
 
   ;; raw SQL execution
