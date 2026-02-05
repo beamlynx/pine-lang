@@ -4,6 +4,11 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-02-04
+### Added
+- Support for heuristic relations based on column naming conventions. This is helpful when foreign keys are not explicitly specified.
+
+
 ## [0.29.0] - 2025-12-25
 ### Added
 - Support for cursor position aware hints. This is helpful when the user isn't at the end of the expression. Hints are generated based on the cursor position. The build endpoint supports a new parameter `cursor` which must contain the `line` and `character` position of the cursor.
