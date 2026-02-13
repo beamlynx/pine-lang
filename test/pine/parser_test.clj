@@ -1,6 +1,6 @@
 (ns pine.parser-test
   (:require [clojure.test :refer [deftest is testing]]
-            [pine.parser :refer [parse-or-fail]]
+            [pine.parser :refer [parse-or-fail prettify]]
             [pine.data-types :as dt]))
 
 (defn- p [e]
@@ -305,4 +305,35 @@
            (p "user --")))
     (is (= [{:type :table, :value {:table "user"}}]
            (p "user -- comment at end")))))
+
+(deftest test-prettify
+
+  (testing "Single operation"
+    (is (= {:result "company"}
+           (prettify "company"))))
+
+  (testing "Multiple operations"
+    (is (= {:result "company\n | where: name = 'Acme'\n | select: id"}
+           (prettify "company | where: name = 'Acme' | select: id"))))
+
+  (testing "Pipe inside string value is preserved"
+    (is (= {:result "company\n | where: name = 'test | test'"}
+           (prettify "company | where: name = 'test | test'"))))
+
+  (testing "Extra whitespace is normalized"
+    (is (= {:result "company\n | where: id = 1\n | select: name"}
+           (prettify "company   |   where: id = 1   |   select: name"))))
+
+  (testing "Already formatted expression"
+    (is (= {:result "company\n | where: name = 'Acme'"}
+           (prettify "company\n | where: name = 'Acme'"))))
+
+  (testing "Trailing pipe is preserved"
+    (is (= {:result "company\n | "}
+           (prettify "company | ")))
+    (is (= {:result "company\n | where: id = 1\n | "}
+           (prettify "company | where: id = 1 | "))))
+
+  (testing "Incomplete expressions return an error"
+    (is (contains? (prettify "company | w: name = 'test |") :error))))
 
