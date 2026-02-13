@@ -451,3 +451,18 @@
 
 (defn parse-or-fail [expression]
   (-> expression parser normalize-ops))
+
+(defn prettify
+  "Prettify a Pine expression by formatting each operation on its own line.
+   Uses the parser to correctly handle pipes inside string values.
+   Returns {:error ...} on parse failure so the caller can keep the original string."
+  [expression]
+  (let [result (parser expression)]
+    (if (insta/failure? result)
+      {:error (with-out-str (println (insta/get-failure result)))}
+      (let [operations (rest result)
+            op-texts (map (fn [op]
+                           (let [[start end] (insta/span op)]
+                             (s/trim (subs expression start end))))
+                         operations)]
+        {:result (s/join "\n | " op-texts)}))))
