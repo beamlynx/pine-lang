@@ -4,7 +4,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 ### Added
-r Support for prettifying Pine expressions:
+Support for prettifying Pine expressions:
 ```
 POST /api/v1/prettify
 ```
