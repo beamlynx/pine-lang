@@ -462,7 +462,7 @@
       {:error (with-out-str (println (insta/get-failure result)))}
       (let [operations (rest result)
             op-texts (map (fn [op]
-                           (let [[start end] (insta/span op)]
-                             (s/trim (subs expression start end))))
-                         operations)]
+                            (let [[start end] (insta/span op)]
+                              (s/trim (subs expression start end))))
+                          operations)]
         {:result (s/join "\n | " op-texts)}))))
