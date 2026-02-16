@@ -4,6 +4,12 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-02-16
+### Added
+Build endpoint returns:
+- Prettified expression in the `ast.prettified` property.
+- Ranges for the operations in the `ast.ranges` property.
+
 ## [0.30.0] - 2026-02-04
 ### Added
 - Support for heuristic relations based on column naming conventions. This is helpful when foreign keys are not explicitly specified.

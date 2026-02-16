@@ -53,7 +53,7 @@
              {:connection-id connection-name
               :version version
               :query (-> expression trim-pipes generate-state :result eval/build-query eval/formatted-query)
-              :ast (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where])}))
+              :ast (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where :prettified :ranges])}))
        (catch Exception e {:connection-id connection-name
                            :error (.getMessage e)})))))
 
