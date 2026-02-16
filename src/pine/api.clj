@@ -53,7 +53,7 @@
              {:connection-id connection-name
               :version version
               :query (-> expression trim-pipes generate-state :result eval/build-query eval/formatted-query)
-              :ast (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where])}))
+              :ast (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where :prettified :ranges])}))
        (catch Exception e {:connection-id connection-name
                            :error (.getMessage e)})))))
 
@@ -117,20 +117,6 @@
     (-> id test-connection :connection-id set-connection-pool)
     (catch Exception e {:error (.getMessage e)})))
 
-(defn- trim-leading-pipe [s]
-  (-> s
-      (str/trim)
-      (str/replace #"^\|\s*" "")
-      (str/trim)))
-
-(defn api-prettify [expression]
-  (try
-    (let [{:keys [result error]} (parser/prettify (trim-leading-pipe expression))]
-      (if error
-        {:error error}
-        {:result result :version version}))
-    (catch Exception e {:error (.getMessage e)})))
-
 (defn api-sql [sql-query]
   "Execute raw SQL query directly without pine expression evaluation.
    
@@ -189,7 +175,6 @@
   ;; query building and evaluation
   (POST "/api/v1/build" [expression cursor] (->> (api-build expression cursor) response))
   (POST "/api/v1/eval" [expression] (->> expression trim-pipes api-eval response))
-  (POST "/api/v1/prettify" [expression] (->> expression api-prettify response))
 
   ;; raw SQL execution
   (POST "/api/v1/sql" {params :params}

@@ -63,7 +63,8 @@
         a (or alias (str (make-alias table) "_" (state :table-count)))
         current {:schema schema :table table :alias a :parent parent
                  :join-column join-column :join-left-column join-left-column
-                 :join-right-column join-right-column :join join}]
+                 :join-right-column join-right-column :join join
+                 :index index}]
     (-> state
         ;; pre
         (assoc  :context (state :current))

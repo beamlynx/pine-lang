@@ -309,29 +309,45 @@
 (deftest test-prettify
 
   (testing "Single operation"
-    (is (= {:result "company"}
+    (is (= {:result "company"
+            :operations [{:expression "company" :start 0 :end 7}]}
            (prettify "company"))))
 
   (testing "Multiple operations"
-    (is (= {:result "company\n | where: name = 'Acme'\n | select: id"}
+    (is (= {:result "company\n | where: name = 'Acme'\n | select: id"
+            :operations [{:expression "company" :start 0 :end 7}
+                         {:expression "where: name = 'Acme'" :start 10 :end 30}
+                         {:expression "select: id" :start 33 :end 43}]}
            (prettify "company | where: name = 'Acme' | select: id"))))
 
   (testing "Pipe inside string value is preserved"
-    (is (= {:result "company\n | where: name = 'test | test'"}
+    (is (= {:result "company\n | where: name = 'test | test'"
+            :operations [{:expression "company" :start 0 :end 7}
+                         {:expression "where: name = 'test | test'" :start 10 :end 37}]}
            (prettify "company | where: name = 'test | test'"))))
 
   (testing "Extra whitespace is normalized"
-    (is (= {:result "company\n | where: id = 1\n | select: name"}
+    (is (= {:result "company\n | where: id = 1\n | select: name"
+            :operations [{:expression "company" :start 0 :end 7}
+                         {:expression "where: id = 1" :start 14 :end 27}
+                         {:expression "select: name" :start 34 :end 46}]}
            (prettify "company   |   where: id = 1   |   select: name"))))
 
   (testing "Already formatted expression"
-    (is (= {:result "company\n | where: name = 'Acme'"}
+    (is (= {:result "company\n | where: name = 'Acme'"
+            :operations [{:expression "company" :start 0 :end 7}
+                         {:expression "where: name = 'Acme'" :start 11 :end 31}]}
            (prettify "company\n | where: name = 'Acme'"))))
 
   (testing "Trailing pipe is preserved"
-    (is (= {:result "company\n | "}
+    (is (= {:result "company\n | "
+            :operations [{:expression "company" :start 0 :end 7}
+                         {:expression "" :start 9 :end 9}]}
            (prettify "company | ")))
-    (is (= {:result "company\n | where: id = 1\n | "}
+    (is (= {:result "company\n | where: id = 1\n | "
+            :operations [{:expression "company" :start 0 :end 7}
+                         {:expression "where: id = 1" :start 10 :end 23}
+                         {:expression "" :start 25 :end 25}]}
            (prettify "company | where: id = 1 | "))))
 
   (testing "Incomplete expressions return an error"

@@ -15,14 +15,18 @@
    [pine.db.main :as db]
    [pine.parser :as parser]))
 
-(def state {;; pre
+(def state {;; ---
+            ;; PRE
+            ;; ---
             ;; - connection
             :connection-id nil
             :references {}
             :expression      nil          ;; Expression string for cursor-aware hints
             :cursor          nil          ;; Cursor position {:line N :character M} (zero-indexed)
 
-            ;; ast
+            ;; ---
+            ;; AST
+            ;; ---
             ;; - tables
             ;; Needed for backend operations e.g. SQL generation, Hints, etc
             :tables          []           ;; e.g. [{ :table "user" :schema "public" :alias "u" }] ;; schema is nilable
@@ -41,8 +45,8 @@
             :index           0
             :operation       {:type  nil
                               :value nil} ;; [ ] 1. For post-handle. e.g. set hints if operation is table.
-                                          ;; [ ] 2. For backwards compat with version < 0.5.
-                                          ;;        If op is :table, then the context  in the api handler has one less table
+            ;; [ ] 2. For backwards compat with version < 0.5.
+            ;;        If op is :table, then the context  in the api handler has one less table
 
             :current        nil           ;; alias of the current table
             :context        nil           ;; alias of the table in context
@@ -50,7 +54,15 @@
             :table-count    0
             :pending-count  0
 
-            ;; post
+            ;; ------
+            ;; Parsed
+            ;; ------
+            :prettified     nil
+            :ranges         nil
+
+            ;; ---
+            ;; POST
+            ;; ---
             ;; - hints
             :hints          {:table [] :select [] :order [] :where []}})
 
@@ -122,6 +134,47 @@
           (pre-handle connection-id (count result) nil nil)
           (handle-ops result)))))
 
+(defn- offset->position
+  "Convert a 0-based character offset to {:line N :character M} (both 0-based)
+   by counting newlines in the expression up to that offset."
+  [expression offset]
+  (let [prefix (subs expression 0 (min offset (count expression)))
+        lines (str/split prefix #"\n" -1)
+        line (dec (count lines))
+        character (count (last lines))]
+    {:line line :character character}))
+
+(defn- compute-ranges
+  "Compute alias ranges for each operation in the original expression.
+   selected-tables entries have :index indicating which operation added them.
+   operations is a vector of {:expression ... :start ... :end ...} from prettify."
+  [expression selected-tables operations]
+  (let [table-entries (sort-by :index selected-tables)]
+    (mapv
+     (fn [i {:keys [start end]}]
+       (let [alias (->> table-entries
+                        (filter #(<= (:index %) i))
+                        last
+                        :alias)]
+         {:alias alias
+          :start (offset->position expression start)
+          :end (offset->position expression end)}))
+     (range (count operations))
+     operations)))
+
+(defn- add-prettify
+  "Add :prettified and :ranges to the state using the original expression."
+  [state]
+  (let [expression (:expression state)]
+    (if expression
+      (let [{:keys [result operations]} (parser/prettify expression)
+            selected-tables (:selected-tables state)
+            ranges (when operations (compute-ranges expression selected-tables operations))]
+        (-> state
+            (assoc :prettified result)
+            (assoc :ranges ranges)))
+      state)))
+
 (defn post-handle [state truncated-state]
   (-> state
       (hints/handle truncated-state)
@@ -133,7 +186,7 @@
                                  (= type :table)
                                   (-> tables reverse rest reverse)
                                   tables)))
-
+      add-prettify
       (dissoc :references)))
 
 (defn generate
