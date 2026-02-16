@@ -6,8 +6,9 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [0.31.0] - 2026-02-16
 ### Added
-- Returning the prettified expression in the build response in the `ast.prettified` property.
-- Returning the ranges of the operations in the build response in the `ast.ranges` property.
+Build endpoint returns:
+- Prettified expression in the `ast.prettified` property.
+- Ranges for the operations in the `ast.ranges` property.
 
 ## [0.30.0] - 2026-02-04
 ### Added
