@@ -303,7 +303,12 @@
     ;; Test JSONB type conversion
     (is (= {:query "UPDATE \"customer\" SET \"data\" = ?::jsonb WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )",
             :params (list (dt/jsonb "{\"test\": 1}") (dt/number "1"))}
-           (generate "customer | where: id = 1 | update! data = '{\"test\": 1}'"))))
+           (generate "customer | where: id = 1 | update! data = '{\"test\": 1}'")))
+
+    ;; Test update with explicit table alias (disambiguates when multiple tables in context)
+    (is (= {:query "UPDATE \"company\" SET \"x\" = ? WHERE id IN ( SELECT \"c\".\"id\" FROM \"company\" AS \"c\" JOIN \"document\" AS \"d_1\" ON \"c\".\"id\" = \"d_1\".\"company_id\" )",
+            :params (list (dt/string "y"))}
+           (generate "company as c | document | update! c.x = 'y'"))))
 
   (testing "delete"
     (is (= {:query " /* No SQL. Evaluate the pine expression for results */ "}

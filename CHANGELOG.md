@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Fixed
+- `update!` now uses the table alias when columns are qualified (e.g. `c.name`), so updates target the correct table when multiple tables are in context:
+```
+company as c | w: id = 1 | document | w: type = 'invoice' | update! c.deleted_at = '2026-01-01'
+```
 
 ## [0.31.0] - 2026-02-16
 ### Added

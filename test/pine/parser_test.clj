@@ -207,7 +207,9 @@
            (p "update! deleted_at = null")))
     (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "name"} :value (dt/string "John")}
                                                          {:column {:alias nil :column "age"} :value (dt/number "30")}]}}]
-           (p "update! name = 'John', age = 30"))))
+           (p "update! name = 'John', age = 30")))
+    (is (= [{:type :update-action, :value {:assignments [{:column {:alias "c" :column "x"} :value (dt/string "y")}]}}]
+           (p "update! c.x = 'y'"))))
 
   (testing "Parse No Operation expressions"
     (is (= [{:value {:table "company"}, :type :table} {:type :delete, :value nil}] (p "company | d:"))))

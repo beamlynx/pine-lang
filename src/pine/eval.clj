@@ -221,8 +221,12 @@
 
 (defn build-update-query [state]
   (let [{:keys [update current aliases]} state
-        {table :table schema :schema}     (get aliases current)
         {:keys [assignments]}             update
+        ;; Use alias from first assignment's column when present (e.g. c.x),
+        ;; otherwise fall back to current table
+        update-alias (or (some :alias (map :column assignments))
+                         current)
+        {table :table schema :schema}     (get aliases update-alias)
         ;; Build the SET clause
         set-clause (s/join ", "
                            (map (fn [{:keys [column value]}]
@@ -238,7 +242,7 @@
         ;; Create a modified state for the subquery that only selects id
         ;; and has the operation type set to :select to avoid adding .*
         state-for-subquery (-> state
-                               (assoc :columns [{:column "id" :alias current}])
+                               (assoc :columns [{:column "id" :alias update-alias}])
                                (assoc :operation {:type :select :value nil}))
         {:keys [query params]} (build-select-query state-for-subquery)
         ;; Extract parameters from update assignments
