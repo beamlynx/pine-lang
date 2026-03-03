@@ -3,6 +3,10 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Added
+- Multi-table `update!` support: when assignments target different tables (e.g. `c.deleted_at` and `d.deleted_at`), multiple UPDATE queries are run—one per table.
+- API eval response for `update!` now includes per-table results: `[["Table" "Rows updated"] ["company" 5] ["document" 3]]`.
+
 ### Fixed
 - `update!` now uses the table alias when columns are qualified (e.g. `c.name`), so updates target the correct table when multiple tables are in context:
 ```

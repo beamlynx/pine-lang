@@ -290,25 +290,35 @@
            (generate "company | delete! .id"))))
 
   (testing "update action"
-    (is (= {:query "UPDATE \"company\" SET \"name\" = ? WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )",
-            :params (list (dt/string "John Doe") (dt/number "1"))}
+    (is (= {:queries [{:table "company"
+                       :query "UPDATE \"company\" SET \"name\" = ? WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
+                       :params (list (dt/string "John Doe") (dt/number "1"))}]}
            (generate "company | where: id = 1 | update! name = 'John Doe'")))
-    (is (= {:query "UPDATE \"company\" SET \"name\" = ?, \"age\" = ? WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )",
-            :params (list (dt/string "John") (dt/number "30") (dt/number "1"))}
+    (is (= {:queries [{:table "company"
+                       :query "UPDATE \"company\" SET \"name\" = ?, \"age\" = ? WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
+                       :params (list (dt/string "John") (dt/number "30") (dt/number "1"))}]}
            (generate "company | where: id = 1 | update! name = 'John', age = 30")))
-    (is (= {:query "UPDATE \"company\" SET \"active\" = true WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )",
-            :params (list (dt/number "1"))}
+    (is (= {:queries [{:table "company"
+                       :query "UPDATE \"company\" SET \"active\" = true WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
+                       :params (list (dt/number "1"))}]}
            (generate "company | where: id = 1 | update! active = true")))
 
     ;; Test JSONB type conversion
-    (is (= {:query "UPDATE \"customer\" SET \"data\" = ?::jsonb WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )",
-            :params (list (dt/jsonb "{\"test\": 1}") (dt/number "1"))}
+    (is (= {:queries [{:table "customer"
+                       :query "UPDATE \"customer\" SET \"data\" = ?::jsonb WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
+                       :params (list (dt/jsonb "{\"test\": 1}") (dt/number "1"))}]}
            (generate "customer | where: id = 1 | update! data = '{\"test\": 1}'")))
 
     ;; Test update with explicit table alias (disambiguates when multiple tables in context)
-    (is (= {:query "UPDATE \"company\" SET \"x\" = ? WHERE id IN ( SELECT \"c\".\"id\" FROM \"company\" AS \"c\" JOIN \"document\" AS \"d_1\" ON \"c\".\"id\" = \"d_1\".\"company_id\" )",
-            :params (list (dt/string "y"))}
-           (generate "company as c | document | update! c.x = 'y'"))))
+    (is (= {:queries [{:table "company"
+                       :query "UPDATE \"company\" SET \"x\" = ? WHERE id IN ( SELECT \"c\".\"id\" FROM \"company\" AS \"c\" JOIN \"document\" AS \"d_1\" ON \"c\".\"id\" = \"d_1\".\"company_id\" )"
+                       :params (list (dt/string "y"))}]}
+           (generate "company as c | document | update! c.x = 'y'")))
+
+    ;; Test multi-table update (runs multiple queries, one per table)
+    (let [result (generate "company as c | w: id = 1 | document as d | w: type = 'invoice' | update! c.deleted_at = '2026-01-01', d.deleted_at = '2026-01-01'")]
+      (is (= 2 (count (:queries result))))
+      (is (= #{"company" "document"} (set (map :table (:queries result)))))))
 
   (testing "delete"
     (is (= {:query " /* No SQL. Evaluate the pine expression for results */ "}

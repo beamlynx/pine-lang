@@ -81,13 +81,18 @@
       (let [result (generate-state expression)
             {state :result error :error} result]
         (if error result
-            (let [rows (eval/run-query state)]
+            (let [rows (eval/run-query state)
+                  op-type (get-in state [:operation :type])
+                  ;; For action results we control the format; columns come from header row
+                  columns (if (contains? #{:update-action :delete-action} op-type)
+                            (get-columns rows)
+                            (get-columns state rows))]
               {:connection-id connection-name
                :version version
                 ;;  :time (db/run-query (state :connection-id) {:query "SELECT NOW() as now, NOW() AT TIME ZONE 'UTC' AS utc;"})
                 ;;  :server_time (str (java.time.Instant/now))
                :result rows
-               :columns (get-columns state rows)})))
+               :columns columns})))
 
       (catch Exception e {:connection-id connection-name
                           :error (.getMessage e)}))))

@@ -37,6 +37,9 @@
 (defn run-action-query [id query]
   (postgres/run-action-query id query))
 
+(defn run-action-queries-in-transaction [id queries]
+  (postgres/run-action-queries-in-transaction id queries))
+
 (defn run-sql [id sql-query]
   (postgres/run-sql id sql-query))
 

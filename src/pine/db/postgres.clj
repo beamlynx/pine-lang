@@ -262,6 +262,25 @@ FROM information_schema.columns"]
         _ (prn (format "Affected rows: %d" affected-rows))]
     affected-rows))
 
+(defn run-action-queries-in-transaction
+  "Runs multiple action queries in a single transaction using jdbc/db-transaction*.
+   If any query fails, the entire transaction is rolled back.
+   Uses a connection from the HikariCP pool."
+  [id queries]
+  (let [pool (connections/get-connection-pool id)]
+    (with-open [conn (.getConnection pool)]
+      (jdbc/db-transaction*
+       {:connection conn}
+       (fn [tx]
+         (mapv (fn [{:keys [table query params]}]
+                 (let [params (map convert-param-for-postgres (or params []))
+                       _ (prn (format "Running action (tx): %s" query))
+                       result (jdbc/execute! tx (cons query params) {:transaction? false})
+                       affected (first result)]
+                   (prn (format "Affected rows: %d" affected))
+                   [(or table "table") affected]))
+               queries))))))
+
 (defn run-sql [id sql-query]
   "Execute raw SQL query. Automatically detects if it's a SELECT or action query."
   (when (or (nil? sql-query) (clojure.string/blank? sql-query))
