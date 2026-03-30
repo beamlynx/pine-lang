@@ -44,11 +44,13 @@
          (let [direction (nth vd 3)
                parent? (= direction :refers-to)
                schema (nth vd 4)
-               column (nth vd (if parent? 2 6))]
+               column (nth vd (if parent? 2 6))
+               heuristic? (= (last vd) :heuristic)]
            {:schema schema
             :table table
             :column column
-            :parent parent?}))
+            :parent parent?
+            :heuristic heuristic?}))
        via-details))
 
 (defn- create-hint-from-relations [relations]

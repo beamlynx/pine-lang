@@ -3,11 +3,14 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [0.32.0] - 2026-03-30
 ### Added
 - Multi-table `update!` support: when assignments target different tables (e.g. `c.deleted_at` and `d.deleted_at`), multiple UPDATE queries are run—one per table.
 - API eval response for `update!` now includes per-table results: `[["Table" "Rows updated"] ["company" 5] ["document" 3]]`.
 
 ### Fixed
+- Recursive delete no longer follows heuristic relations — only real foreign key constraints are traversed. Heuristic relations are now flagged in `ast.hints.table` via a `heuristic` boolean so clients can distinguish them.
 - `update!` now uses the table alias when columns are qualified (e.g. `c.name`), so updates target the correct table when multiple tables are in context:
 ```
 company as c | w: id = 1 | document | w: type = 'invoice' | update! c.deleted_at = '2026-01-01'
