@@ -21,13 +21,13 @@
              :pine "x.company"}]
            (-> "co" gen :table)))
 
-    (is (= [{:schema "y", :table "employee" :column "company_id" :parent false
+    (is (= [{:schema "y", :table "employee" :column "company_id" :parent false :heuristic false
              :pine "y.employee .company_id"}
-            {:schema "z", :table "document", :column "company_id", :parent false,
+            {:schema "z", :table "document", :column "company_id", :parent false, :heuristic false
              :pine "z.document .company_id"}]
            (-> "company | e" gen :table)))
 
-    (is (= [{:schema "x", :table "company" :column "company_id" :parent true
+    (is (= [{:schema "x", :table "company" :column "company_id" :parent true :heuristic false
              :pine "x.company .company_id :parent"}]
            (-> "employee | co" gen :table)))
 
@@ -45,11 +45,13 @@
              :table "document"
              :column "employee_id"
              :parent false
+             :heuristic false
              :pine "z.document .employee_id"}
             {:schema "z"
              :table "document"
              :column "created_by"
              :parent false
+             :heuristic false
              :pine "z.document .created_by"}]
            (-> "employee | doc" gen :table))))
 
@@ -58,17 +60,20 @@
              :table "employee"
              :column "reports_to"
              :parent true
+             :heuristic false
              :pine "y.employee .reports_to :parent"}
             {:schema "y"
              :table "employee"
              :column "reports_to"
              :parent false
+             :heuristic false
              :pine "y.employee .reports_to"}]
            (-> "employee | employee" gen :table)))
     (is (= [{:schema "y"
              :table "employee"
              :column "reports_to"
              :parent true
+             :heuristic false
              :pine "y.employee .reports_to :parent"}]
            (-> "employee | employee :parent" gen :table))))
 

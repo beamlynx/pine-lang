@@ -223,16 +223,16 @@
   (let [{:keys [aliases]}              state
         {table :table schema :schema}  (get aliases update-alias)
         set-clause (s/join ", "
-                          (map (fn [{:keys [column value]}]
-                                 (let [{:keys [alias column]} column]
-                                   (str (q column) " = " (cond
-                                                           (= (:type value) :symbol) (:value value)
-                                                           (= (:type value) :column) (let [{:keys [alias column]} value] (q alias column))
-                                                           (= (:type value) :jsonb) "?::jsonb"
-                                                           (= (:type value) :uuid) "?::uuid"
-                                                           (= (:type value) :date) "?::timestamp"
-                                                           :else "?"))))
-                               assignments))
+                           (map (fn [{:keys [column value]}]
+                                  (let [{:keys [alias column]} column]
+                                    (str (q column) " = " (cond
+                                                            (= (:type value) :symbol) (:value value)
+                                                            (= (:type value) :column) (let [{:keys [alias column]} value] (q alias column))
+                                                            (= (:type value) :jsonb) "?::jsonb"
+                                                            (= (:type value) :uuid) "?::uuid"
+                                                            (= (:type value) :date) "?::timestamp"
+                                                            :else "?"))))
+                                assignments))
         state-for-subquery (-> state
                                (assoc :columns [{:column "id" :alias update-alias}])
                                (assoc :operation {:type :select :value nil}))
@@ -294,7 +294,7 @@
         (= operation-type :update-action)
         ;; Run update queries; use transaction when multiple tables to rollback all on failure
         (let [queries (or (:queries build-result)
-                         [{:table nil :query (:query build-result) :params (:params build-result)}])
+                          [{:table nil :query (:query build-result) :params (:params build-result)}])
               results (if (> (count queries) 1)
                         (db/run-action-queries-in-transaction connection-id queries)
                         (mapv (fn [{:keys [table query params]}]
