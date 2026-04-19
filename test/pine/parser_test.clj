@@ -216,6 +216,8 @@
 
   (testing "Parse `group` expressions"
     (is (= [{:type :group, :value {:columns [{:column "status"}], :functions ["count"]}}]
+           (p "group: status")))
+    (is (= [{:type :group, :value {:columns [{:column "status"}], :functions ["count"]}}]
            (p "group: status => count")))
     (is (= [{:type :group, :value {:columns [{:column "status"}], :functions ["count", "sum"]}}]
            (p "group: status => count, sum")))

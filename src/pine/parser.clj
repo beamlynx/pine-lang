@@ -376,6 +376,10 @@
     {:type :group
      :value {:columns (mapv -normalize-group-column columns)
              :functions (map second functions)}}
+    [:group-args [:columns & columns]]
+    {:type :group
+     :value {:columns (mapv -normalize-group-column columns)
+             :functions ["count"]}}
     :else (throw (ex-info "Unknown GROUP operation" {:_ payload}))))
 
 ;; -----

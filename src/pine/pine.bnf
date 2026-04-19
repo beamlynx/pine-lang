@@ -38,7 +38,7 @@ count-op          := <"count:">
 table-mods        := (<ws+> table-mod)*
 table-mod         := <":"> ("parent"|"child"|"left"|"right") | as-alias | hint-columns
 
-group-args          := columns <ws*> <"=>"> <ws*> aggregate-functions
+group-args          := columns (<ws*> <"=>"> <ws*> aggregate-functions)?
 aggregate-functions := aggregate-function (<","> <ws*> aggregate-function)*
 aggregate-function  := "count" | "string_agg" | "sum" | "avg" | "min" | "max"
 
