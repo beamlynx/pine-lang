@@ -137,6 +137,12 @@
         ;; Column + operator, show all columns for next condition
         (generate-all-column-hints state current-alias)))))
 
+(defn generate-update-hints [state]
+  (let [assignments (get-in state [:update :assignments] [])
+        assigned-columns (map (fn [a] {:column (get-in a [:column :column])}) assignments)
+        hints (generate-all-column-hints state (state :current))]
+    (exclude-columns hints assigned-columns)))
+
 (defn generate-column-hints [state columns]
   ;; Generic column hints logic that works for most operations:
   ;; - Complete operations (select, order, where): filter hints to match current column being typed
@@ -179,6 +185,7 @@
                  :order (generate-column-hints state-for-hints (state-for-hints :order))
                  :where-partial (generate-where-hints state-for-hints)
                  :where (generate-all-column-hints state-for-hints)
+                 :update-partial (generate-update-hints state-for-hints)
                  [])
-         type (case type :select-partial :select :order-partial :order :where-partial :where type)]
+         type (case type :select-partial :select :order-partial :order :where-partial :where :update-partial :update type)]
      (assoc-in state [:hints type] (or hints [])))))

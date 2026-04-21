@@ -262,6 +262,7 @@
       (= (-> state :current) "x_0") {:query "" :params nil}
       (= type :delete-action) (build-delete-query state)
       (= type :update-action) {:queries (build-update-queries state)}
+      (= type :update-partial) {:queries (build-update-queries state)}
       (= type :count) (build-count-query state)
       (= type :group) (build-group-query state)
       ;; no op
@@ -291,7 +292,7 @@
           build-result  (build-query state)
           operation-type (-> state :operation :type)]
       (cond
-        (= operation-type :update-action)
+        (contains? #{:update-action :update-partial} operation-type)
         ;; Run update queries; use transaction when multiple tables to rollback all on failure
         (let [queries (or (:queries build-result)
                           [{:table nil :query (:query build-result) :params (:params build-result)}])

@@ -64,7 +64,7 @@
             ;; POST
             ;; ---
             ;; - hints
-            :hints          {:table [] :select [] :order [] :where []}})
+            :hints          {:table [] :select [] :order [] :where [] :update []}})
 
 (defn pre-handle [state connection-id ops-count expression cursor]
   (-> state
@@ -89,6 +89,7 @@
     :count (pine-count/handle state value)
     :delete-action (delete-action/handle state value)
     :update-action (update-action/handle state value)
+    :update-partial (update-action/handle state value)
     ;; No operations
     :no-op state
     (update state :errors conj [type "Unknown operation type in parse tree"])))

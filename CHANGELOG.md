@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [0.33.0] - 2026-04-20
+### Added
+- Column hints for the `update!` / `u!` operation. Typing `u!` or `u! col = val,` now suggests remaining assignable columns, excluding those already assigned.
+
 ### Changed
 - The `=> count` in the `group` operation is now optional. `count` is used by default when omitted:
 ```

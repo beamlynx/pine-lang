@@ -424,6 +424,14 @@
     {:type :update-action :value {:assignments (mapv parse-update-assignment assignments)}}
     :else (throw (ex-info "Unknown UPDATE-ACTION operation" {:_ payload}))))
 
+(defmethod -normalize-op :UPDATE-PARTIAL [[_ payload]]
+  (if (empty? payload)
+    {:type :update-partial :value {:assignments []}}
+    (match payload
+      [:update-assignments & assignments]
+      {:type :update-partial :value {:assignments (mapv parse-update-assignment assignments)}}
+      :else (throw (ex-info "Unknown UPDATE-PARTIAL operation" {:_ payload})))))
+
 ;; -----
 ;; NO-OP
 ;; -----
