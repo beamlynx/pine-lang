@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
 
-# Deploy or refresh the Docker playground stack: git pull then compose up.
-#
-# Intended to run as the deploying user that owns the clone and Docker socket
-# (often a dedicated Unix account named "bot"), e.g. from an admin SSH session:
-#   su - bot -c '/path/to/pine-lang/scripts/playground-deploy.sh'
-# or after cd into the repo as that user:
-#   ./scripts/playground-deploy.sh
+# Login to the playground and run:
+# su -c 'cd ~/beamlynx/pine-lang/ && scripts/playground-deploy.sh' bot # deploy updates
 
 set -euo pipefail
 
