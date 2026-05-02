@@ -25,6 +25,9 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:33333:33333"
+    mem_limit: 384m
+    environment:
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=70.0 -XX:+UseSerialGC"
 
   init:
     image: curlimages/curl:8.7.1
