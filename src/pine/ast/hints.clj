@@ -139,9 +139,13 @@
 
 (defn generate-update-hints [state]
   (let [assignments (get-in state [:update :assignments] [])
+        partial-column (get-in state [:update :partial-column])
         assigned-columns (map (fn [a] {:column (get-in a [:column :column])}) assignments)
-        hints (generate-all-column-hints state (state :current))]
-    (exclude-columns hints assigned-columns)))
+        hints (-> (generate-all-column-hints state (state :current))
+                  (exclude-columns assigned-columns))]
+    (if partial-column
+      (find-relevant-columns hints partial-column)
+      hints)))
 
 (defn generate-column-hints [state columns]
   ;; Generic column hints logic that works for most operations:

@@ -18,7 +18,7 @@ ORDER             := <order-op>         order-columns
 
 DELETE-ACTION     := <delete-action-op> hint-column
 DELETE            := <delete-op>
-UPDATE-PARTIAL    := <update-action-op> update-assignments? <",">?
+UPDATE-PARTIAL    := <update-action-op> update-assignments <","> <ws*> partial-update-column  |  <update-action-op> partial-update-column  |  <update-action-op> update-assignments? <",">?
 UPDATE-ACTION     := <update-action-op> update-assignments
 COUNT             := <count-op>
 
@@ -45,6 +45,7 @@ aggregate-function  := "count" | "string_agg" | "sum" | "avg" | "min" | "max"
 
 update-assignments := update-assignment (<","> <ws*> update-assignment)*
 update-assignment  := column <ws*> <"="> <ws*> (column|string|number|boolean|null|date)
+partial-update-column := column
 
 conditions          := condition (<","> <ws*> condition)*
 condition           := column <ws*> (condition-default|condition-in) (<ws*> cast)?

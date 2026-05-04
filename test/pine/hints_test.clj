@@ -128,7 +128,9 @@
     (is (= [{:column "created_at" :alias "c_0"} {:column "id" :alias "c_0"}]
            (-> "company | u!" gen :update)))
     (is (= [{:column "created_at" :alias "c_0"}]
-           (-> "company | u! id = '1'," gen :update))))
+           (-> "company | u! id = '1'," gen :update)))
+    (is (= [{:column "id" :alias "c_0"}]
+           (-> "company | u! i" gen :update))))
 
   (testing "Generate hints with cursor position"
     ;; Basic cursor truncation test - cursor at "company | s: " should show select hints for company

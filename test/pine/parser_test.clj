@@ -211,6 +211,21 @@
     (is (= [{:type :update-action, :value {:assignments [{:column {:alias "c" :column "x"} :value (dt/string "y")}]}}]
            (p "update! c.x = 'y'"))))
 
+  (testing "Parse `update-partial` / `u!` expressions"
+    (is (= [{:type :update-partial :value {:assignments [] :partial-column nil}}]
+           (p "u!")))
+    (is (= [{:type :update-partial :value {:assignments []
+                                           :partial-column {:alias nil :column "i"}}}]
+           (p "u! i")))
+    (is (= [{:type :update-partial :value {:assignments [{:column {:alias nil :column "id"}
+                                                          :value (dt/string "1")}]
+                                           :partial-column nil}}]
+           (p "u! id = '1',")))
+    (is (= [{:type :update-partial :value {:assignments [{:column {:alias nil :column "id"}
+                                                          :value (dt/string "1")}]
+                                           :partial-column {:alias nil :column "n"}}}]
+           (p "u! id = '1', n"))))
+
   (testing "Parse No Operation expressions"
     (is (= [{:value {:table "company"}, :type :table} {:type :delete, :value nil}] (p "company | d:"))))
 

@@ -13,6 +13,7 @@
       (assoc assignment :value (dt/convert-value-to-db-type value db-type))
       assignment)))
 
-(defn handle [state assignments]
-  (let [converted-assignments (mapv #(convert-assignment-value % state) (:assignments assignments))]
-    (assoc state :update (assoc assignments :assignments converted-assignments))))
+(defn handle [state {:keys [assignments partial-column] :or {assignments []}}]
+  (let [converted-assignments (mapv #(convert-assignment-value % state) assignments)]
+    (assoc state :update (cond-> {:assignments converted-assignments}
+                           partial-column (assoc :partial-column partial-column)))))
