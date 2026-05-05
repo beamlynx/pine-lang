@@ -4,6 +4,10 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-05-05
+### Added
+- Per-session database connections: `build`, `eval`, and `sql` endpoints now accept an optional `connection-id` parameter. Queries run against that specific connection pool; when absent, the global connection is used (backward compatible).
+
 ## [0.34.0] - 2026-05-04
 ### Added
 - Update partial column hints: `u!` can be followed by an incomplete column token (for example `company | u! i`), parsed like `where` partials and suggesting matching assignable columns. After completed assignments, `u! id = '1', col` supports partial completion for the next column name.
