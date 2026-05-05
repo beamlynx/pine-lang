@@ -114,6 +114,13 @@
             hints)
     hints))
 
+(defn- column-hint-sort-key [hint]
+  (let [c (:column hint)]
+    [(count c) (str/lower-case c)]))
+
+(defn- sort-column-hints [hints]
+  (vec (sort-by column-hint-sort-key hints)))
+
 (defn generate-where-hints [state]
   ;; Where conditions need custom logic unlike order/select partials because:
   ;; - Order partial: simple exclude-already-selected logic works with generic generate-column-hints
@@ -180,8 +187,8 @@
    (handle state nil))
   ([state truncated-state]
    (let [state-for-hints (or truncated-state state)
-         type (-> state-for-hints :operation :type)
-         hints (case type
+         op-type (-> state-for-hints :operation :type)
+         hints (case op-type
                  :table (generate-table-hints state-for-hints)
                  :select (generate-column-hints state-for-hints (state-for-hints :columns))
                  :select-partial (generate-column-hints state-for-hints (state-for-hints :columns))
@@ -191,5 +198,15 @@
                  :where (generate-all-column-hints state-for-hints)
                  :update-partial (generate-update-hints state-for-hints)
                  [])
-         type (case type :select-partial :select :order-partial :order :where-partial :where :update-partial :update type)]
-     (assoc-in state [:hints type] (or hints [])))))
+         hints (if (#{:select :select-partial :order :order-partial
+                      :where :where-partial :update-partial}
+                    op-type)
+                 (sort-column-hints hints)
+                 hints)
+         hint-key (case op-type
+                    :select-partial :select
+                    :order-partial :order
+                    :where-partial :where
+                    :update-partial :update
+                    op-type)]
+     (assoc-in state [:hints hint-key] (or hints [])))))
