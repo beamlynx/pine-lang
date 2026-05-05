@@ -28,10 +28,13 @@
 
 (defn- generate-state
   ([expression]
-   (generate-state expression nil))
+   (generate-state expression nil nil))
   ([expression cursor]
-   (let [{:keys [result error]} (->> expression parser/parse)]
-     (if result {:result (ast/generate result @db/connection-id expression cursor)}
+   (generate-state expression cursor nil))
+  ([expression cursor connection-id]
+   (let [{:keys [result error]} (->> expression parser/parse)
+         conn-id (or connection-id @db/connection-id)]
+     (if result {:result (ast/generate result conn-id expression cursor)}
          {:error-type "parse"
           :error error}))))
 
@@ -43,16 +46,19 @@
 
 (defn api-build
   ([expression]
-   (api-build expression nil))
+   (api-build expression nil nil))
   ([expression cursor]
-   (let [connection-name (connections/get-connection-name @db/connection-id)]
+   (api-build expression cursor nil))
+  ([expression cursor connection-id]
+   (let [conn-id (or connection-id @db/connection-id)
+         connection-name (connections/get-connection-name conn-id)]
      (try
-       (let [result (generate-state expression cursor)
+       (let [result (generate-state expression cursor conn-id)
              {state :result error :error} result]
          (if error result
              {:connection-id connection-name
               :version version
-              :query (-> expression trim-pipes generate-state :result eval/build-query eval/formatted-query)
+              :query (-> expression trim-pipes (generate-state nil conn-id) :result eval/build-query eval/formatted-query)
               :ast (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where :prettified :ranges])}))
        (catch Exception e {:connection-id connection-name
                            :error (.getMessage e)})))))
@@ -75,27 +81,31 @@
              (when-let [alias (state :alias)]
                [alias])))))
 
-(defn api-eval [expression]
-  (let [connection-name (connections/get-connection-name @db/connection-id)]
-    (try
-      (let [result (generate-state expression)
-            {state :result error :error} result]
-        (if error result
-            (let [rows (eval/run-query state)
-                  op-type (get-in state [:operation :type])
-                  ;; For action results we control the format; columns come from header row
-                  columns (if (contains? #{:update-action :delete-action} op-type)
-                            (get-columns rows)
-                            (get-columns state rows))]
-              {:connection-id connection-name
-               :version version
-                ;;  :time (db/run-query (state :connection-id) {:query "SELECT NOW() as now, NOW() AT TIME ZONE 'UTC' AS utc;"})
-                ;;  :server_time (str (java.time.Instant/now))
-               :result rows
-               :columns columns})))
+(defn api-eval
+  ([expression]
+   (api-eval expression nil))
+  ([expression connection-id]
+   (let [conn-id (or connection-id @db/connection-id)
+         connection-name (connections/get-connection-name conn-id)]
+     (try
+       (let [result (generate-state expression nil conn-id)
+             {state :result error :error} result]
+         (if error result
+             (let [rows (eval/run-query state)
+                   op-type (get-in state [:operation :type])
+                   ;; For action results we control the format; columns come from header row
+                   columns (if (contains? #{:update-action :delete-action} op-type)
+                             (get-columns rows)
+                             (get-columns state rows))]
+               {:connection-id connection-name
+                :version version
+                 ;;  :time (db/run-query (state :connection-id) {:query "SELECT NOW() as now, NOW() AT TIME ZONE 'UTC' AS utc;"})
+                 ;;  :server_time (str (java.time.Instant/now))
+                :result rows
+                :columns columns})))
 
-      (catch Exception e {:connection-id connection-name
-                          :error (.getMessage e)}))))
+       (catch Exception e {:connection-id connection-name
+                           :error (.getMessage e)})))))
 
 (defn get-connection []
   (let [connection-id   @db/connection-id]
@@ -122,36 +132,31 @@
     (-> id test-connection :connection-id set-connection-pool)
     (catch Exception e {:error (.getMessage e)})))
 
-(defn api-sql [sql-query]
-  "Execute raw SQL query directly without pine expression evaluation.
-   
-   Usage via HTTP POST to /api/v1/sql:
-   - For SELECT queries: Returns result set with rows
-   - For INSERT/UPDATE/DELETE: Returns affected row count
-   
-   Example requests:
-   POST /api/v1/sql with body: {\"query\": \"SELECT * FROM users LIMIT 10\"}
-   POST /api/v1/sql with body: {\"query\": \"UPDATE users SET active = true WHERE id = 1\"}"
-  (let [connection-name (connections/get-connection-name @db/connection-id)]
-    (cond
-      (nil? sql-query)
-      {:connection-id connection-name
-       :error "SQL query is required. Please provide a 'query' parameter in the request body."}
+(defn api-sql
+  ([sql-query]
+   (api-sql sql-query nil))
+  ([sql-query connection-id]
+   (let [conn-id (or connection-id @db/connection-id)
+         connection-name (connections/get-connection-name conn-id)]
+     (cond
+       (nil? sql-query)
+       {:connection-id connection-name
+        :error "SQL query is required. Please provide a 'query' parameter in the request body."}
 
-      (clojure.string/blank? sql-query)
-      {:connection-id connection-name
-       :error "SQL query cannot be empty."}
+       (clojure.string/blank? sql-query)
+       {:connection-id connection-name
+        :error "SQL query cannot be empty."}
 
-      :else
-      (try
-        (let [result (db/run-sql @db/connection-id sql-query)
-              columns (when (vector? result) (get-columns result))]
-          {:connection-id connection-name
-           :version version
-           :result result
-           :columns columns})
-        (catch Exception e {:connection-id connection-name
-                            :error (.getMessage e)})))))
+       :else
+       (try
+         (let [result (db/run-sql conn-id sql-query)
+               columns (when (vector? result) (get-columns result))]
+           {:connection-id connection-name
+            :version version
+            :result result
+            :columns columns})
+         (catch Exception e {:connection-id connection-name
+                             :error (.getMessage e)}))))))
 
 (defn wrap-logger
   [handler]
@@ -178,18 +183,24 @@
          :time (str (java.time.LocalDateTime/now))} response))
 
   ;; query building and evaluation
-  (POST "/api/v1/build" [expression cursor] (->> (api-build expression cursor) response))
-  (POST "/api/v1/eval" [expression] (->> expression trim-pipes api-eval response))
+  (POST "/api/v1/build" {params :params}
+    (let [{:keys [expression cursor connection-id]} params]
+      (->> (api-build expression cursor connection-id) response)))
+  (POST "/api/v1/eval" {params :params}
+    (let [{:keys [expression connection-id]} params]
+      (->> (api-eval (trim-pipes expression) connection-id) response)))
 
   ;; raw SQL execution
   (POST "/api/v1/sql" {params :params}
-    (let [query (:query params)]
-      (->> query api-sql response)))
+    (let [{:keys [query connection-id]} params]
+      (->> (api-sql query connection-id) response)))
 
   ;; Legacy
   ;;
   ;; pine-mode.el
-  (POST "/api/v1/build-with-params" [expression] (->> expression trim-pipes api-build :query response))
+  (POST "/api/v1/build-with-params" {params :params}
+    (let [{:keys [expression connection-id]} params]
+      (->> (api-build (trim-pipes expression) nil connection-id) :query response)))
   ;; default case
   (route/not-found "Not Found"))
 (def app

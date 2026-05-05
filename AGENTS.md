@@ -49,6 +49,16 @@ When adding new features, follow this order:
 
 ---
 
+## Formatting
+
+Run the formatter before committing:
+
+```
+clj -M:fmt fix
+```
+
+---
+
 ## Version Synchronization
 
 **Important**: `src/pine/version.clj` must match `playground.docker-compose.yml` Docker image version.
