@@ -67,7 +67,7 @@ x
 - **Scoping**: variables accumulate left-to-right. Each expression sees all variables defined before it.
 - **Column hints**: when a variable has explicit output columns (from `s:`, `g:`, etc.), hints reflect those columns, not the full schema of the source table. Variables using `*` (no explicit selection) inherit the source table's columns.
 - **No LIMIT in CTE body**: limits only apply to the outer query.
-- **No auto-id columns**: Pine's hidden `id` tracking columns are not added for variable tables. See [auto-id.md](auto-id.md).
+- **No auto-id columns**: Pine's hidden `id` tracking columns are not added for variable tables. See [result-updates.md](result-updates.md).
 
 ## Constraints
 

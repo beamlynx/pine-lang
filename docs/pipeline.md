@@ -93,7 +93,7 @@ Instaparse runs the BNF grammar over the input string. The raw parse tree is nor
 
 **`post-handle`** — runs after all operations:
 - `ast/hints/handle` computes autocomplete hints using the truncated-at-cursor state.
-- `ast/select/add-auto-id-columns` appends hidden `id` columns for each real table. See [auto-id.md](auto-id.md).
+- `ast/select/add-auto-id-columns` appends hidden `id` columns for each real table. See [result-updates.md](result-updates.md).
 - `add-prettify` attaches a formatted expression and per-operation character ranges for cursor highlighting.
 
 The final state map:
