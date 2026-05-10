@@ -56,8 +56,7 @@
         initials (map #(subs % 0 1) words)]
     (apply str initials)))
 
-;; todo: spec for the :value for a :table
-(defn handle [state value]
+(defn- handle-as-table [state value]
   (let [index (state :index)
         {:keys [table alias schema parent join-column join-left-column join-right-column join]} value
         a (or alias (str (make-alias table) "_" (state :table-count)))
@@ -66,18 +65,36 @@
                  :join-right-column join-right-column :join join
                  :index index}]
     (-> state
-        ;; pre
         (assoc  :context (state :current))
         (assoc  :current a)
         (assoc  :current-index index)
-        ;;
         (update :tables conj current)
         (update :aliases assoc a current)
         (update-joins current)
-        ;; post
-        ;;
-        ;; TODO: These are metadata - mayebe I should move them to a different
-        ;; ns e.g. if the operation is table, then I update the following there
-        ;;
         (update :table-count inc))))
+
+(defn- handle-as-variable [state value var-ast]
+  (let [index (state :index)
+        {:keys [table alias join-column join-left-column join-right-column join]} value
+        a (or alias (str (make-alias table) "_" (state :table-count)))
+        current {:schema nil :table table :ast var-ast :alias a
+                 :join-column join-column :join-left-column join-left-column
+                 :join-right-column join-right-column :join join
+                 :index index}]
+    (-> state
+        (assoc  :context (state :current))
+        (assoc  :current a)
+        (assoc  :current-index index)
+        (update :tables conj current)
+        (update :aliases assoc a current)
+        (update-joins current)
+        (update :table-count inc))))
+
+;; todo: spec for the :value for a :table
+(defn handle [state value]
+  (let [{:keys [table]} value
+        var-ast (get-in state [:variables table])]
+    (if var-ast
+      (handle-as-variable state value var-ast)
+      (handle-as-table state value))))
 

@@ -21,6 +21,8 @@
             ;; - connection
             :connection-id nil
             :references {}
+            :variables {}               ;; {"varname" <nested-AST>}, populated from |= assignments
+            :assign    nil              ;; variable name from |=, set after handle-ops
             :expression      nil          ;; Expression string for cursor-aware hints
             :cursor          nil          ;; Cursor position {:line N :character M} (zero-indexed)
 
@@ -66,13 +68,42 @@
             ;; - hints
             :hints          {:table [] :select [] :order [] :where [] :update []}})
 
-(defn pre-handle [state connection-id ops-count expression cursor]
-  (-> state
-      (assoc :references (db/init-references connection-id))
-      (assoc :connection-id connection-id)
-      (assoc :pending-count ops-count)
-      (assoc :expression expression)
-      (assoc :cursor cursor)))
+(defn- seed-variable-references
+  "Copy reference entries from the real source tables of a variable into the
+  local references map under the variable name, so join resolution treats the
+  variable identically to a real table."
+  [refs var-ast varname]
+  (let [columns  (:columns var-ast)
+        aliases  (:aliases var-ast)
+        explicit (remove :auto-id columns)
+        source-tables (if (empty? explicit)
+                        (when-let [current-alias (:current var-ast)]
+                          [(get-in aliases [current-alias :table])])
+                        (->> explicit
+                             (map #(get-in aliases [(:alias %) :table]))
+                             (remove nil?)
+                             distinct))]
+    (reduce (fn [r source-table]
+              (let [source-refs (get-in r [:table source-table])]
+                (if source-refs
+                  (update-in r [:table varname] merge source-refs)
+                  r)))
+            refs
+            source-tables)))
+
+(defn pre-handle [state connection-id ops-count expression cursor variables]
+  (let [refs (db/init-references connection-id)
+        aug-refs (reduce (fn [r [varname var-ast]]
+                           (seed-variable-references r var-ast varname))
+                         refs
+                         variables)]
+    (-> state
+        (assoc :references aug-refs)
+        (assoc :connection-id connection-id)
+        (assoc :pending-count ops-count)
+        (assoc :expression expression)
+        (assoc :cursor cursor)
+        (assoc :variables variables))))
 
 (defn handle-op [state {:keys [type value]}]
   (case type
@@ -121,9 +152,9 @@
           (str/join "\n" (concat lines-before [truncated-current])))))))
 
 (defn- generate-truncated-state
-  "Generate state for truncated expression at cursor position. 
+  "Generate state for truncated expression at cursor position.
    Keep references for hint generation."
-  [expression cursor connection-id]
+  [expression cursor connection-id variables]
   (let [truncated-expr (truncate-at-cursor expression cursor)
         {:keys [result error]} (parser/parse truncated-expr)]
     (if (or error (nil? result))
@@ -132,7 +163,7 @@
       ;; Successfully parsed, build state without going through post-handle
       ;; to preserve references for hint generation
       (-> state
-          (pre-handle connection-id (count result) nil nil)
+          (pre-handle connection-id (count result) nil nil variables)
           (handle-ops result)))))
 
 (defn- offset->position
@@ -192,14 +223,17 @@
 
 (defn generate
   ([parse-tree]
-   (generate parse-tree @db/connection-id nil nil))
+   (generate parse-tree @db/connection-id nil nil {} nil))
   ([parse-tree connection-id]
-   (generate parse-tree connection-id nil nil))
+   (generate parse-tree connection-id nil nil {} nil))
   ([parse-tree connection-id expression cursor]
+   (generate parse-tree connection-id expression cursor {} nil))
+  ([parse-tree connection-id expression cursor variables assign]
    (let [full-state (-> state
-                        (pre-handle connection-id (count parse-tree) expression cursor)
-                        (handle-ops parse-tree))
+                        (pre-handle connection-id (count parse-tree) expression cursor variables)
+                        (handle-ops parse-tree)
+                        (assoc :assign assign))
          truncated-state (when (and cursor expression)
-                           (generate-truncated-state expression cursor connection-id))]
+                           (generate-truncated-state expression cursor connection-id variables))]
      (post-handle full-state truncated-state))))
 

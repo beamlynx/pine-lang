@@ -1,6 +1,6 @@
 (ns pine.parser-test
   (:require [clojure.test :refer [deftest is testing]]
-            [pine.parser :refer [parse-or-fail prettify]]
+            [pine.parser :refer [parse parse-or-fail prettify]]
             [pine.data-types :as dt]))
 
 (defn- p [e]
@@ -361,14 +361,29 @@
   (testing "Trailing pipe is preserved"
     (is (= {:result "company\n | "
             :operations [{:expression "company" :start 0 :end 7}
-                         {:expression "" :start 9 :end 9}]}
+                         {:expression "" :start 10 :end 10}]}
            (prettify "company | ")))
     (is (= {:result "company\n | where: id = 1\n | "
             :operations [{:expression "company" :start 0 :end 7}
                          {:expression "where: id = 1" :start 10 :end 23}
-                         {:expression "" :start 25 :end 25}]}
+                         {:expression "" :start 26 :end 26}]}
            (prettify "company | where: id = 1 | "))))
 
   (testing "Incomplete expressions return an error"
     (is (contains? (prettify "company | w: name = 'test |") :error))))
+
+(deftest test-assign
+  (testing "|= sets :assign in parse result"
+    (is (= "active_companies" (:assign (parse "company |= active_companies"))))
+    (is (= "active_companies" (:assign (parse "company | = active_companies"))))
+    (is (nil?                 (:assign (parse "company")))))
+
+  (testing ":result ops do not include the assign node"
+    (is (= 1 (count (:result (parse "company |= active_companies")))))
+    (is (= [{:type :table :value {:table "company"}}]
+           (:result (parse "company |= active_companies")))))
+
+  (testing "|= works after a full expression"
+    (is (= "my_var" (:assign (parse "company | where: id = 1 | s: name |= my_var"))))
+    (is (= 3 (count (:result (parse "company | where: id = 1 | s: name |= my_var")))))))
 

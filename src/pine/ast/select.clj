@@ -56,8 +56,11 @@
           next-operation-index (inc (:index state))
           references (:references state)
           aliases (:aliases state)
-          ;; Only create auto-ID columns for tables that actually have an 'id' column
-          valid-aliases (filter #(has-id-column? references aliases %) table-aliases)
+          variables (:variables state)
+          ;; Only create auto-ID columns for real tables (not variables/CTEs) that have an 'id' column
+          valid-aliases (filter #(and (not (contains? variables (get-in aliases [% :table])))
+                                      (has-id-column? references aliases %))
+                                table-aliases)
           auto-id-columns (map-indexed #(create-auto-id-column %2 (+ next-operation-index %1)) valid-aliases)]
       (update state :columns into auto-id-columns))
     state))

@@ -90,7 +90,7 @@
                  (q alias column)))
              group)))))
 
-(defn build-select-query [state]
+(defn- build-bare-select [state]
   (let [{:keys [tables _columns limit where aliases]} state
         from         (let [{a :alias} (first tables)
                            {table :table schema :schema} (get aliases a)]
@@ -122,6 +122,57 @@
                       flatten))]
 
     {:query query :params params}))
+
+(defn- build-cte-body
+  "Generate the inner SQL for a variable's AST used as a CTE.
+  When the current table has no explicit user columns, .* is added and already
+  includes id — so the auto-id column is dropped to avoid duplicate id names.
+  When explicit columns are present (no .*), the auto-id is kept but its alias
+  is stripped so id is accessible for join conditions.
+  Returns {:query ... :params ...}."
+  [ast]
+  (let [current-alias    (:current ast)
+        user-columns     (remove :auto-id (:columns ast))
+        has-explicit?    (some #(= (:alias %) current-alias) user-columns)
+        columns          (keep (fn [col]
+                                 (if (and (:auto-id col) (= (:alias col) current-alias))
+                                   (when has-explicit? (dissoc col :column-alias))
+                                   col))
+                               (:columns ast))]
+    (build-bare-select (assoc ast :columns columns))))
+
+(defn- collect-ctes
+  "Recursively collect [name query params] triples from variable tables in
+  topological order (deepest dependencies first). Deduplicates by name."
+  [tables aliases]
+  (->> tables
+       (mapcat (fn [{:keys [alias]}]
+                 (let [entry (get aliases alias)]
+                   (when-let [ast (:ast entry)]
+                     (let [var-name    (:table entry)
+                           nested-ctes (collect-ctes (:tables ast) (:aliases ast))
+                           {:keys [query params]} (build-cte-body ast)]
+                       (conj nested-ctes [var-name query params]))))))
+       (reduce (fn [[seen acc] [name _ _ :as cte]]
+                 (if (contains? seen name)
+                   [seen acc]
+                   [(conj seen name) (conj acc cte)]))
+               [#{} []])
+       second))
+
+(defn build-select-query [state]
+  (let [ctes        (collect-ctes (:tables state) (:aliases state))
+        result      (build-bare-select state)
+        cte-params  (mapcat #(nth % 2 nil) ctes)
+        cte-prefix  (when (seq ctes)
+                      (str "WITH "
+                           (s/join ", " (map (fn [[name body _]]
+                                               (str (q name) " AS ( " body " )"))
+                                             ctes))
+                           " "))]
+    (-> result
+        (update :query  #(str cte-prefix %))
+        (update :params #(seq (concat cte-params %))))))
 
 (defn build-count-query [state]
   (let [{:keys [query params]} (build-select-query state)]
@@ -259,7 +310,9 @@
 (defn build-query [state]
   (let [{:keys [type]} (state :operation)]
     (cond
-      (= (-> state :current) "x_0") {:query "" :params nil}
+      (let [cur (-> state :current)]
+        (or (nil? cur)
+            (= "" (get-in state [:aliases cur :table])))) {:query "" :params nil}
       (= type :delete-action) (build-delete-query state)
       (= type :update-action) {:queries (build-update-queries state)}
       (= type :update-partial) {:queries (build-update-queries state)}

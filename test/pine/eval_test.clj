@@ -14,6 +14,20 @@
       (ast/generate :test)
       eval/build-query))
 
+(defn- generate-expressions
+  "Evaluate a list of pine expressions sequentially, threading variables.
+  Returns the SQL of the last expression."
+  [expressions]
+  (let [{:keys [last-state]}
+        (reduce (fn [{:keys [variables]} expr]
+                  (let [{:keys [result assign]} (parser/parse expr)
+                        state (ast/generate result :test nil nil variables assign)]
+                    {:variables (if assign (assoc variables assign state) variables)
+                     :last-state state}))
+                {:variables {} :last-state nil}
+                expressions)]
+    (eval/build-query last-state)))
+
 (deftest test-build-query
 
   (testing "qualify table"
@@ -70,7 +84,7 @@
             :params (map dt/number ["1"])}
            (generate "company | where: id != 1")))
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" IS NULL LIMIT 250",
-            :params []}
+            :params nil}
            (generate "company | where: id is null"))))
 
   (testing "Condition : !="
@@ -85,24 +99,24 @@
 
   (testing "Condition : columns"
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" = \"country\" LIMIT 250",
-            :params (map dt/string [])}
+            :params nil}
            (generate "company | where: name = country")))
     (is (= {:query "SELECT \"c\".id AS \"__c__id\", \"c\".* FROM \"company\" AS \"c\" WHERE \"c\".\"name\" != \"c\".\"country\" LIMIT 250",
-            :params (map dt/string [])}
+            :params nil}
            (generate "company as c | name != c.country")))
     (is (= {:query "SELECT \"c\".id AS \"__c__id\", \"c\".* FROM \"company\" AS \"c\" WHERE \"c\".\"name\" != \"c\".\"country\" LIMIT 250",
-            :params (map dt/string [])}
+            :params nil}
            (generate "company as c | c.name != c.country"))))
 
   (testing "Condition : NULL"
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"deleted_at\" IS NULL LIMIT 250",
-            :params []}
+            :params nil}
            (generate "company | where: deleted_at is null")))
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"deleted_at\" IS NOT NULL LIMIT 250",
-            :params []}
+            :params nil}
            (generate "company | where: deleted_at is not null")))
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"deleted_at\" IS NULL LIMIT 250",
-            :params []}
+            :params nil}
            (generate "company | where: deleted_at = null"))))
 
   (testing "Condition with cast"
@@ -380,3 +394,34 @@
   (is (= {:query "SELECT \"c_0\".\"id\", \"e_1\".\"name\", \"c_0\".id AS \"__c_0__id\", \"e_1\".id AS \"__e_1__id\" FROM \"company\" AS \"c_0\" JOIN \"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250",
           :params nil}
          (generate "-- companies and employees\ncompany | s: id /* company id */ | employee | s: name -- employee name"))))
+
+(deftest test-variables
+  (testing "Single expression with |= produces normal SQL (assign is metadata)"
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= active_companies"]))))
+
+  (testing "Variable used as table generates CTE"
+    (is (= {:query "WITH \"active_companies\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"ac_0\".* FROM \"active_companies\" AS \"ac_0\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= active_companies"
+                                  "active_companies"]))))
+
+  (testing "Variable with WHERE filter generates filtered CTE"
+    (is (= {:query "WITH \"active_companies\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" = ? ) SELECT \"ac_0\".* FROM \"active_companies\" AS \"ac_0\" LIMIT 250"
+            :params (map dt/string ["Acme"])}
+           (generate-expressions ["company | where: name = 'Acme' |= active_companies"
+                                  "active_companies"]))))
+
+  (testing "Join through a variable resolves correctly"
+    (is (= {:query "WITH \"active_companies\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"active_companies\" AS \"ac_0\" JOIN \"employee\" AS \"e_1\" ON \"ac_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= active_companies"
+                                  "active_companies | employee"]))))
+
+  (testing "Composed variables (variable of variable) generates flat CTEs"
+    (is (= {:query "WITH \"active_companies\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ), \"small_active\" AS ( SELECT \"ac_0\".* FROM \"active_companies\" AS \"ac_0\" LIMIT 10 ) SELECT \"sa_0\".* FROM \"small_active\" AS \"sa_0\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= active_companies"
+                                  "active_companies | l: 10 |= small_active"
+                                  "small_active"])))))

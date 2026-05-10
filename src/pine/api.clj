@@ -28,15 +28,34 @@
 
 (defn- generate-state
   ([expression]
-   (generate-state expression nil nil))
+   (generate-state expression nil nil {}))
   ([expression cursor]
-   (generate-state expression cursor nil))
+   (generate-state expression cursor nil {}))
   ([expression cursor connection-id]
-   (let [{:keys [result error]} (->> expression parser/parse)
+   (generate-state expression cursor connection-id {}))
+  ([expression cursor connection-id variables]
+   (let [{:keys [result error assign]} (->> expression parser/parse)
          conn-id (or connection-id @db/connection-id)]
-     (if result {:result (ast/generate result conn-id expression cursor)}
-         {:error-type "parse"
-          :error error}))))
+     (if result
+       {:result (ast/generate result conn-id expression cursor variables assign)}
+       {:error-type "parse"
+        :error error}))))
+
+(defn- evaluate-expressions
+  "Evaluate a sequence of pine expressions, threading variables from |= assignments
+  into subsequent expressions. Returns {:last-state <state> :error <msg>}."
+  [expressions connection-id]
+  (reduce (fn [{:keys [variables]} expression]
+            (let [{:keys [result error]} (generate-state expression nil connection-id variables)]
+              (if error
+                (reduced {:error error})
+                (let [assign (:assign result)]
+                  {:variables (if assign
+                                (assoc variables assign result)
+                                variables)
+                   :last-state result}))))
+          {:variables {} :last-state nil}
+          expressions))
 
 (defn- trim-pipes [s]
   (-> s
@@ -44,22 +63,30 @@
       (str/replace #"^\|\s*|\s*\|$" "")
       (str/trim)))
 
+
 (defn api-build
-  ([expression]
-   (api-build expression nil nil))
-  ([expression cursor]
-   (api-build expression cursor nil))
-  ([expression cursor connection-id]
+  ([expressions]
+   (api-build expressions nil nil))
+  ([expressions cursor]
+   (api-build expressions cursor nil))
+  ([expressions cursor connection-id]
    (let [conn-id (or connection-id @db/connection-id)
          connection-name (connections/get-connection-name conn-id)]
      (try
-       (let [result (generate-state expression cursor conn-id)
-             {state :result error :error} result]
-         (if error result
-             {:connection-id connection-name
-              :version version
-              :query (-> expression trim-pipes (generate-state nil conn-id) :result eval/build-query eval/formatted-query)
-              :ast (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where :prettified :ranges])}))
+       (let [exprs (if (string? expressions) [expressions] expressions)
+             context-exprs (butlast exprs)
+             last-expr     (last exprs)
+             {:keys [variables error]} (evaluate-expressions context-exprs conn-id)]
+         (if error
+           {:connection-id connection-name :error error}
+           (let [result (generate-state last-expr cursor conn-id variables)
+                 {state :result build-error :error} result]
+             (if build-error
+               {:connection-id connection-name :error build-error}
+               {:connection-id connection-name
+                :version version
+                :query (-> last-expr trim-pipes (generate-state nil conn-id variables) :result eval/build-query eval/formatted-query)
+                :ast (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where :prettified :ranges :variables :assign])}))))
        (catch Exception e {:connection-id connection-name
                            :error (.getMessage e)})))))
 
@@ -82,28 +109,30 @@
                [alias])))))
 
 (defn api-eval
-  ([expression]
-   (api-eval expression nil))
-  ([expression connection-id]
+  ([expressions]
+   (api-eval expressions nil))
+  ([expressions connection-id]
    (let [conn-id (or connection-id @db/connection-id)
          connection-name (connections/get-connection-name conn-id)]
      (try
-       (let [result (generate-state expression nil conn-id)
-             {state :result error :error} result]
-         (if error result
-             (let [rows (eval/run-query state)
-                   op-type (get-in state [:operation :type])
-                   ;; For action results we control the format; columns come from header row
-                   columns (if (contains? #{:update-action :delete-action} op-type)
-                             (get-columns rows)
-                             (get-columns state rows))]
-               {:connection-id connection-name
-                :version version
-                 ;;  :time (db/run-query (state :connection-id) {:query "SELECT NOW() as now, NOW() AT TIME ZONE 'UTC' AS utc;"})
-                 ;;  :server_time (str (java.time.Instant/now))
-                :result rows
-                :columns columns})))
-
+       (let [exprs (if (string? expressions) [expressions] expressions)
+             {:keys [last-state error]} (evaluate-expressions exprs conn-id)]
+         (if error
+           {:connection-id connection-name :error error}
+           (let [query (-> last-state eval/build-query eval/formatted-query)]
+             (try
+               (let [rows    (eval/run-query last-state)
+                     op-type (get-in last-state [:operation :type])
+                     columns (if (contains? #{:update-action :delete-action} op-type)
+                               (get-columns rows)
+                               (get-columns last-state rows))]
+                 {:connection-id connection-name
+                  :version version
+                  :result rows
+                  :columns columns})
+               (catch Exception e {:connection-id connection-name
+                                   :error (.getMessage e)
+                                   :query query})))))
        (catch Exception e {:connection-id connection-name
                            :error (.getMessage e)})))))
 
@@ -190,11 +219,17 @@
 
   ;; query building and evaluation
   (POST "/api/v1/build" {params :params}
-    (let [{:keys [expression cursor connection-id]} params]
-      (->> (api-build expression cursor connection-id) response)))
+    (let [{:keys [expressions expression cursor connection-id]} params
+          exprs (or expressions (when expression [expression]))]
+      (->> (api-build exprs cursor connection-id) response)))
   (POST "/api/v1/eval" {params :params}
-    (let [{:keys [expression connection-id]} params]
-      (->> (api-eval (trim-pipes expression) connection-id) response)))
+    (let [{:keys [expressions expression connection-id]} params
+          exprs (or expressions
+                    (when expression
+                      (->> (split-expressions expression)
+                           (map :text)
+                           (map trim-pipes))))]
+      (->> (api-eval exprs connection-id) response)))
 
   ;; raw SQL execution
   (POST "/api/v1/sql" {params :params}
@@ -206,7 +241,7 @@
   ;; pine-mode.el
   (POST "/api/v1/build-with-params" {params :params}
     (let [{:keys [expression connection-id]} params]
-      (->> (api-build (trim-pipes expression) nil connection-id) :query response)))
+      (->> (api-build [(trim-pipes expression)] nil connection-id) :query response)))
   ;; default case
   (route/not-found "Not Found"))
 (def app

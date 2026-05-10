@@ -458,8 +458,16 @@
         grammar (slurp file)]
     (insta/parser grammar)))
 
-(defn- normalize-ops [[_ & ops]]
-  (mapv (fn [[_ op]] (-normalize-op op)) ops))
+(defmethod -normalize-op :ASSIGN [[_ [_ varname]]]
+  {:type :assign :value varname})
+
+(defn- normalize-ops [[_ & nodes]]
+  (mapv (fn [[_ op]] (-normalize-op op))
+        (filter #(= (first %) :OPERATION) nodes)))
+
+(defn- extract-assign [[_ & nodes]]
+  (when-let [node (first (filter #(= (first %) :ASSIGN) nodes))]
+    (let [[_ [_ varname]] node] varname)))
 
 (defn parse
   "Parse an expression and return the normalized operations or failure as a string"
@@ -470,7 +478,8 @@
       (let [failure (insta/get-failure result)
             error (with-out-str (println (insta/get-failure result)))]
         {:error error :failure failure})
-      {:result (normalize-ops result)})))
+      {:result (normalize-ops result)
+       :assign (extract-assign result)})))
 
 (defn parse-or-fail [expression]
   (-> expression parser normalize-ops))
