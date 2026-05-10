@@ -78,6 +78,15 @@ When `build-select-query` runs on a state that has variables, it calls `collect-
 
 When a variable is used as a table, its real source tables need to be known so that joins can be resolved (e.g. joining `active_companies` to `employee` requires knowing `active_companies` wraps `company`). The `seed-variable-references` function in `ast/main.clj` copies the schema reference entries from the underlying real tables into the references map under the variable name at build time.
 
+### Column hints for variables
+
+Column hints (for `select:`, `where:`, etc.) are derived from the references map. For variables, `seed-variable-references` overrides the column list with the CTE's actual output columns rather than leaving the source table's full column list in place:
+
+- **Explicit columns** (`s:`, `g:`, etc.): the hint list is built from the user-selected columns. The column name used is the `column-alias` if one was set, otherwise the `column` name. For group operations, a synthetic `count` column is appended.
+- **No explicit columns** (`*`): the source table's columns are used as-is — the variable inherits the full schema of its underlying table.
+
+This means typing `x | s:` after `company | g: name |= x` shows `name` and `count`, not all columns of `company`.
+
 ### Alias disambiguation
 
 Each table gets an alias derived from its name initials (e.g. `active_companies` → `ac`). Because `make-alias ""` (empty input) also returns `"x"` as a fallback, the empty-expression guard in `build-query` checks the actual table name in the aliases map rather than the alias string, to avoid false matches on a variable named `x`.
