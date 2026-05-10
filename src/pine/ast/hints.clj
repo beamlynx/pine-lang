@@ -14,12 +14,15 @@
 ;; ---------------------------------------------------------------------------
 
 (defn create-hint-from-table [state tables]
-  (let [refs (-> state :references :table)]
+  (let [refs      (-> state :references :table)
+        variables (-> state :variables)]
     (mapcat identity
             (for [table tables
                   :let [schemas (->> table refs :in keys)]]
-              (for [schema schemas]
-                {:schema schema :table table})))))
+              (if (contains? variables table)
+                [{:schema nil :table table}]
+                (for [schema schemas]
+                  {:schema schema :table table}))))))
 
 (defn table-hints
   "No context - get all the tables matching the token"
