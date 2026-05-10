@@ -1,6 +1,8 @@
 # Evaluation Pipeline
 
-How a Pine expression goes from text to SQL results.
+A Pine expression goes through three stages before results come back: **parse**, **generate**, and **eval**.
+
+## Example expression
 
 ```
 user as u | document name="passport" | s: u.email, id | l: 10
@@ -8,140 +10,121 @@ user as u | document name="passport" | s: u.email, id | l: 10
 
 ---
 
-## 1. Parse  (`parser/parse`)
+## Stage 1 — Parse
 
-The expression is tokenised and parsed against the BNF grammar (`pine.bnf`).
-The output is a flat vector of typed operations:
+The text is tokenised against the Pine grammar and turned into a flat list of typed operations — one per pipe segment:
 
 ```
-[ {:type :table,  :value {:table "user"  :alias "u"}}
-  {:type :table,  :value {:table "document" ...}}
-  {:type :select, :value [{:column "email" :alias "u"} {:column "id"}]}
-  {:type :limit,  :value 10} ]
+[ table(user as u),  table(document name="passport"),  select(u.email, id),  limit(10) ]
 ```
 
-Each operation maps 1-to-1 with a pipe segment. Assignment (`|= name`) is
-extracted separately and returned as `:assign` alongside the operation list.
+This list is the input to the next stage. If the expression contains `|= name`, the assigned name is extracted separately and carried alongside the operation list.
 
 ---
 
-## 2. Generate  (`ast/generate`)
+## Stage 2 — Generate
 
-The parse result is fed through `ast/generate`, which:
+Each operation is folded over a state map, left to right. Before the first operation runs, the DB schema is loaded so that join paths and column lists are available. Each operation handler adds its contribution to the state:
 
-1. **`pre-handle`** — loads DB schema via `db/init-references` (cached per
-   connection). If variables are in scope, their FK references are merged in
-   via `seed-variable-references` so join resolution works.
-
-2. **`handle-ops`** — folds each operation over an accumulator state, calling
-   the appropriate handler:
-
-   | Operation | Handler | What it adds to state |
-   |---|---|---|
-   | `:table` | `ast/table` | `tables`, `aliases`, `joins`, `context` |
-   | `:select` | `ast/select` | `columns` |
-   | `:limit` | `ast/limit` | `limit` |
-   | `:where` | `ast/where` | `where` |
-   | `:group` | `ast/group` | `columns`, `group` |
-   | `:order` | `ast/order` | `order` |
-   | `:count` | `ast/count` | `operation` |
-   | `:delete-action` | `ast/delete-action` | `operation` |
-   | `:update-action` | `ast/update-action` | `update` |
-
-3. **`post-handle`** — runs after all operations:
-   - Generates column and table hints (`ast/hints`)
-   - Appends hidden auto-id columns for row tracking (`ast/select/add-auto-id-columns`)
-   - Attaches prettified expression and cursor ranges
-
-The result is a **state map**:
-
-```clojure
-{ :tables   [ {:table "user" :alias "u"} {:table "document" :alias "d_1"} ]
-  :aliases  { "u" {:table "user"} "d_1" {:table "document"} }
-  :context  "d_1"
-  :current  "d_1"
-  :columns  [ {:alias "u" :column "email"} {:alias "d_1" :column "id"} ]
-  :limit    10
-  :joins    [ ... ]
-  :where    []
-  :hints    { :table [...] :select [...] }
-  ... }
-```
-
----
-
-## 3. Eval  (`eval/build-query` and `eval/run-query`)
-
-The state map is passed to the eval layer, which has two independent paths:
-
-### Build only  (`eval/build-query`)
-
-Produces `{:query "SELECT ..." :params [...]}` without hitting the database.
-Used by the `/api/v1/build` endpoint to return the SQL and AST to the UI.
-
-The query builder dispatches on operation type:
-
-| Operation type | Builder |
+| Pipe segment | What it contributes |
 |---|---|
-| default (select) | `build-select-query` |
-| `:count` | `build-count-query` |
-| `:group` | `build-group-query` |
-| `:update-action` | `build-update-queries` |
-| `:delete-action` | `build-delete-query` |
+| `table` | Registers the table, resolves joins, tracks current context |
+| `select` / `s:` | Records which columns to include |
+| `where` / `w:` | Records filter conditions |
+| `group` / `g:` | Records group-by columns and aggregate functions |
+| `order` / `o:` | Records sort columns and direction |
+| `limit` / `l:` | Records the row limit |
+| `count:` | Switches operation to COUNT mode |
+| `update!` | Records assignments for an UPDATE |
+| `delete!` | Marks as a DELETE operation |
 
-For expressions with variables in scope, `build-select-query` prepends CTE
-clauses via `collect-ctes` before the main `SELECT`.
-
-### Run  (`eval/run-query`)
-
-Calls `build-query` internally, then executes the SQL against the database via
-`db/run-query`. Used by the `/api/v1/eval` endpoint.
+After all operations are processed, the stage produces a **state map** — a single structure that fully describes the query: tables, joins, column list, filters, limit, and so on. Hints for autocomplete are also computed here, using the DB schema and the current cursor position.
 
 ---
 
-## Full flow (single expression)
+## Stage 3 — Eval
 
-```
-Pine text
-    │
-    ▼
-parser/parse          ── BNF grammar → [ ops... ]
-    │
-    ▼
-ast/generate
-    ├── db/init-references   ── loads schema from DB (cached)
-    ├── handle-ops           ── folds ops → state map
-    └── post-handle          ── hints, auto-id columns, prettify
-    │
-    ▼
-state map  { tables, aliases, columns, joins, where, limit, ... }
-    │
-    ├──► eval/build-query    ── state → { :query "..." :params [...] }
-    │
-    └──► eval/run-query      ── build-query + db/run-query → rows
-```
+The state map is handed to the eval layer, which has two independent paths:
+
+**Build** — translates the state map into a SQL string and a parameter list. No database call. Used by the UI to display the query as the user types.
+
+**Run** — builds the SQL and then executes it against the database, returning rows.
 
 ---
 
 ## Multi-expression flow (variables)
 
-When multiple expressions are separated by blank lines, the API evaluates them
-left-to-right. Each assigned expression (`|= name`) has its state stored in a
-`variables` map. Subsequent expressions receive that map and treat each entry
-as a CTE.
+When the input contains multiple expressions separated by blank lines, they are evaluated left to right. An expression ending in `|= name` stores its state as a named variable. All subsequent expressions can use that name as a table — Pine injects it as a CTE in the generated SQL.
 
 ```
-expr 1: company | where: active = true |= active_co
-    │
-    ▼  ast/generate  →  state-1  (stored as variables["active_co"])
-    │
-expr 2: active_co | employee
-    │
-    ▼  ast/generate (variables = {"active_co": state-1})
-       └── pre-handle: seeds active_co FK refs from company's schema
-       └── handle-ops: resolves join active_co → employee
-    │
-    ▼  eval/build-query
-       └── collect-ctes: WITH "active_co" AS ( SELECT ... FROM company )
-       └── main SELECT with JOIN
+company | where: active = true |= active_co     ← defines active_co
+
+active_co | employee                             ← uses active_co as a CTE
 ```
+
+Each expression in the sequence sees all variables defined before it.
+
+---
+
+## Technical implementation
+
+### Parse (`parser/parse`, `pine.bnf`)
+
+Instaparse runs the BNF grammar over the input string. The raw parse tree is normalized into a vector of `{:type <keyword> :value <data>}` maps. `|= name` is handled separately — it is extracted as `:assign` and stripped from the operation list so downstream code is unaware of it.
+
+### Generate (`ast/generate`, `ast/main.clj`)
+
+`generate` orchestrates three sub-steps:
+
+1. **`pre-handle`** — seeds the state with the DB schema via `db/init-references` (cached per connection). If variables are in scope, `seed-variable-references` merges their underlying FK references into the schema map so join resolution works through CTEs.
+
+2. **`handle-ops`** — calls `reduce` over the operation list, dispatching each operation to its handler module (`ast/table`, `ast/select`, `ast/where`, `ast/group`, `ast/order`, `ast/limit`, `ast/count`, `ast/delete-action`, `ast/update-action`). Each handler returns a modified state. The operation index (`i`) is threaded through so later stages (hints, auto-id columns) know the order in which columns were introduced.
+
+3. **`post-handle`** — runs after all operations:
+   - `ast/hints/handle` computes autocomplete hints (column hints for `select:`, `where:`, etc.; table hints for join suggestions) using the truncated-at-cursor state so hints reflect what the user has typed so far, not the full expression.
+   - `ast/select/add-auto-id-columns` appends hidden `id` columns for each real (non-variable) table that has one, used by the UI for row identity tracking.
+   - `add-prettify` attaches a formatted version of the expression and per-operation character ranges for cursor-based highlighting.
+
+The final state map shape:
+
+```clojure
+{ :tables   [ {:table "user" :alias "u" :schema nil}
+              {:table "document" :alias "d_1" :schema nil} ]
+  :aliases  { "u"   {:table "user"}
+              "d_1" {:table "document"} }
+  :current  "d_1"          ; alias of the last table in the chain
+  :context  "u"            ; alias of the table before the last
+  :columns  [ {:alias "u"   :column "email"}
+              {:alias "d_1" :column "id"} ]
+  :joins    [ ["u" "d_1" <relation> nil] ]
+  :where    []
+  :limit    10
+  :operation {:type :select}
+  :hints    {:table [...] :select [...] :where [...]}
+  :prettified "user as u\n | document name=\"passport\"\n | s: u.email, id\n | l: 10"
+  :assign   nil }
+```
+
+### Eval (`eval/build-query`, `eval/run-query`)
+
+`build-query` dispatches on `(-> state :operation :type)`:
+
+| Type | Builder |
+|---|---|
+| `:select` (default) | `build-select-query` |
+| `:count` | `build-count-query` |
+| `:group` | `build-group-query` |
+| `:update-action` / `:update-partial` | `build-update-queries` |
+| `:delete-action` | `build-delete-query` |
+
+`build-select-query` checks whether the state has variables in scope and, if so, prepends CTE clauses produced by `collect-ctes`. Each CTE body is built by `build-cte-body` using `build-bare-select` (no LIMIT). WHERE params from inside CTEs are collected and merged with the outer query's params.
+
+`run-query` calls `build-query` then hands the result to `db/run-query`, which executes it against the connection pool and returns rows as a vector of maps.
+
+### Truncated-state and cursor hints
+
+To generate accurate autocomplete hints, `generate` builds a second, truncated version of the state by re-parsing the expression cut off at the cursor position. This truncated state is passed to `hints/handle` so the hint context reflects what the user has typed so far — not the full completed expression.
+
+### Empty-expression guard
+
+`build-query` checks whether the current table name (looked up from the aliases map) is an empty string. This handles the case where the input is blank — no parse output, no table — and returns `{:query "" :params nil}` rather than attempting to generate a SELECT with a missing table.
