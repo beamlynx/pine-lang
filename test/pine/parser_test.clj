@@ -370,7 +370,24 @@
            (prettify "company | where: id = 1 | "))))
 
   (testing "Incomplete expressions return an error"
-    (is (contains? (prettify "company | w: name = 'test |") :error))))
+    (is (contains? (prettify "company | w: name = 'test |") :error)))
+
+  (testing "Assignment is formatted without double pipe"
+    (is (= {:result "company\n | = active_companies"
+            :operations [{:expression "company" :start 0 :end 7}
+                         {:expression "= active_companies" :start 8 :end 27}]}
+           (prettify "company |= active_companies")))
+    (is (= {:result "company\n | = x"
+            :operations [{:expression "company" :start 0 :end 7}
+                         {:expression "= x" :start 8 :end 13}]}
+           (prettify "company | = x")))
+    (is (= {:result "company\n | where: active = true\n | = active_companies"
+            :operations [{:expression "company" :start 0 :end 7}
+                         {:expression "where: active = true" :start 10 :end 30}
+                         {:expression "= active_companies" :start 31 :end 50}]}
+           (prettify "company | where: active = true |= active_companies")))
+    ;; trailing pipe after assignment is a parse error — assignment must be last
+    (is (contains? (prettify "company |= x | ") :error))))
 
 (deftest test-assign
   (testing "|= sets :assign in parse result"

@@ -497,8 +497,15 @@
       {:error (with-out-str (println (insta/get-failure result)))}
       (let [operations (rest result)
             op-infos (mapv (fn [op]
-                             (let [[start end] (insta/span op)]
-                               {:expression (s/trim (subs expression start end))
+                             (let [[start end] (insta/span op)
+                                   raw  (s/trim (subs expression start end))
+                                   ;; ASSIGN spans include the leading "|" from the
+                                   ;; grammar rule. Strip it so the join doesn't
+                                   ;; produce a double pipe ("| | =name").
+                                   expr (if (= (first op) :ASSIGN)
+                                          (s/trim (s/replace-first raw #"^\|" ""))
+                                          raw)]
+                               {:expression expr
                                 :start start
                                 :end end}))
                            operations)]
