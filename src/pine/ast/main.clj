@@ -68,10 +68,22 @@
             ;; - hints
             :hints          {:table [] :select [] :order [] :where [] :update []}})
 
+(defn- variable-output-columns
+  "Return the column list a variable's CTE actually exposes, for hint generation.
+  Returns nil when the CTE selects *, meaning the source table's columns apply."
+  [var-ast]
+  (let [user-cols (remove :auto-id (:columns var-ast))
+        op-type   (-> var-ast :operation :type)]
+    (when (seq user-cols)
+      (let [names     (distinct (map #(or (:column-alias %) (:column %)) user-cols))
+            with-count (if (= op-type :group) (concat names ["count"]) names)]
+        (mapv #(hash-map :column %) with-count)))))
+
 (defn- seed-variable-references
   "Copy reference entries from the real source tables of a variable into the
   local references map under the variable name, so join resolution treats the
-  variable identically to a real table."
+  variable identically to a real table. Column hints are overridden with the
+  CTE's actual output columns when they can be determined."
   [refs var-ast varname]
   (let [columns  (:columns var-ast)
         aliases  (:aliases var-ast)
@@ -82,14 +94,19 @@
                         (->> explicit
                              (map #(get-in aliases [(:alias %) :table]))
                              (remove nil?)
-                             distinct))]
-    (reduce (fn [r source-table]
-              (let [source-refs (get-in r [:table source-table])]
-                (if source-refs
-                  (update-in r [:table varname] merge source-refs)
-                  r)))
-            refs
-            source-tables)))
+                             distinct))
+        seeded (reduce (fn [r source-table]
+                         (let [source-refs (get-in r [:table source-table])]
+                           (if source-refs
+                             (update-in r [:table varname] merge source-refs)
+                             r)))
+                       refs
+                       source-tables)]
+    (if-let [output-cols (variable-output-columns var-ast)]
+      (-> seeded
+          (assoc-in [:table varname :columns] output-cols)
+          (assoc-in [:table varname :column-set] (set output-cols)))
+      seeded)))
 
 (defn pre-handle [state connection-id ops-count expression cursor variables]
   (let [refs (db/init-references connection-id)
