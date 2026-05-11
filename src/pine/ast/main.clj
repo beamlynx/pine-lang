@@ -79,22 +79,29 @@
             with-count (if (= op-type :group) (concat names ["count"]) names)]
         (mapv #(hash-map :column %) with-count)))))
 
+(defn- get-source-tables
+  "Return the tables whose columns are exposed by a variable's CTE.
+  Used by both seeding and bidirectional patching."
+  [var-ast]
+  (let [columns  (:columns var-ast)
+        aliases  (:aliases var-ast)
+        explicit (remove :auto-id columns)]
+    (or (if (empty? explicit)
+          (when-let [current-alias (:current var-ast)]
+            [(get-in aliases [current-alias :table])])
+          (->> explicit
+               (map #(get-in aliases [(:alias %) :table]))
+               (remove nil?)
+               distinct))
+        [])))
+
 (defn- seed-variable-references
   "Copy reference entries from the real source tables of a variable into the
   local references map under the variable name, so join resolution treats the
   variable identically to a real table. Column hints are overridden with the
   CTE's actual output columns when they can be determined."
   [refs var-ast varname]
-  (let [columns  (:columns var-ast)
-        aliases  (:aliases var-ast)
-        explicit (remove :auto-id columns)
-        source-tables (if (empty? explicit)
-                        (when-let [current-alias (:current var-ast)]
-                          [(get-in aliases [current-alias :table])])
-                        (->> explicit
-                             (map #(get-in aliases [(:alias %) :table]))
-                             (remove nil?)
-                             distinct))
+  (let [source-tables (get-source-tables var-ast)
         seeded (reduce (fn [r source-table]
                          (let [source-refs (get-in r [:table source-table])]
                            (if source-refs
@@ -108,12 +115,40 @@
           (assoc-in [:table varname :column-set] (set output-cols)))
       seeded)))
 
+(defn- patch-variable-relations
+  "Bidirectional pass: for each variable V wrapping source S, find every
+  entity (real table or other variable) T where T already knows that S
+  refers to it — i.e. T[:referred-by][S] exists — and register V there too.
+
+  This enables:
+  - 'T | V'  and  'V | T'  (real table ↔ variable)
+  - 'V | W'  and  'W | V'  (variable ↔ variable)
+
+  Must run after all variables have been seeded so that variable entries
+  already carry the inherited :referred-by data from their source tables."
+  [refs variables]
+  (reduce (fn [r [varname var-ast]]
+            (let [source-tables (get-source-tables var-ast)]
+              (reduce (fn [r source-table]
+                        (reduce (fn [r entity-name]
+                                  (let [existing (get-in r [:table entity-name :referred-by source-table])]
+                                    (if existing
+                                      (update-in r [:table entity-name :referred-by varname] merge existing)
+                                      r)))
+                                r
+                                (keys (get r :table {}))))
+                      r
+                      source-tables)))
+          refs
+          variables))
+
 (defn pre-handle [state connection-id ops-count expression cursor variables]
-  (let [refs (db/init-references connection-id)
-        aug-refs (reduce (fn [r [varname var-ast]]
-                           (seed-variable-references r var-ast varname))
-                         refs
-                         variables)]
+  (let [refs       (db/init-references connection-id)
+        seeded-refs (reduce (fn [r [varname var-ast]]
+                              (seed-variable-references r var-ast varname))
+                            refs
+                            variables)
+        aug-refs   (patch-variable-relations seeded-refs variables)]
     (-> state
         (assoc :references aug-refs)
         (assoc :connection-id connection-id)
