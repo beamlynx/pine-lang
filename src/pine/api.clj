@@ -63,7 +63,6 @@
       (str/replace #"^\|\s*|\s*\|$" "")
       (str/trim)))
 
-
 (defn api-build
   ([expressions]
    (api-build expressions nil nil))
@@ -117,26 +116,32 @@
    (let [conn-id (or connection-id @db/connection-id)
          connection-name (connections/get-connection-name conn-id)]
      (try
-       (let [exprs (if (string? expressions) [expressions] expressions)]
-         (if (str/blank? (last exprs))
+       (let [exprs         (if (string? expressions) [expressions] expressions)
+             context-exprs (butlast exprs)
+             last-expr     (last exprs)
+             trimmed       (trim-pipes (or last-expr ""))]
+         (if (str/blank? trimmed)
            {:connection-id connection-name}
-           (let [{:keys [last-state error]} (evaluate-expressions exprs conn-id)]
+           (let [{:keys [variables error]} (evaluate-expressions context-exprs conn-id)]
              (if error
                {:connection-id connection-name :error error}
-               (let [query (-> last-state eval/build-query eval/formatted-query)]
-                 (try
-                   (let [rows    (eval/run-query last-state)
-                         op-type (get-in last-state [:operation :type])
-                         columns (if (contains? #{:update-action :delete-action} op-type)
-                                   (get-columns rows)
-                                   (get-columns last-state rows))]
-                     {:connection-id connection-name
-                      :version version
-                      :result rows
-                      :columns columns})
-                   (catch Exception e {:connection-id connection-name
-                                       :error (.getMessage e)
-                                       :query query})))))))
+               (let [{last-state :result build-error :error} (generate-state trimmed nil conn-id variables)]
+                 (if build-error
+                   {:connection-id connection-name :error build-error}
+                   (let [query (-> last-state eval/build-query eval/formatted-query)]
+                     (try
+                       (let [rows    (eval/run-query last-state)
+                             op-type (get-in last-state [:operation :type])
+                             columns (if (contains? #{:update-action :delete-action} op-type)
+                                       (get-columns rows)
+                                       (get-columns last-state rows))]
+                         {:connection-id connection-name
+                          :version version
+                          :result rows
+                          :columns columns})
+                       (catch Exception e {:connection-id connection-name
+                                           :error (.getMessage e)
+                                           :query query})))))))))
        (catch Exception e {:connection-id connection-name
                            :error (.getMessage e)})))))
 
