@@ -15,6 +15,19 @@
        (ast/generate :test expression cursor)
        :hints)))
 
+(defn- gen-with-variables
+  "Evaluate expressions sequentially, threading variables. Returns :hints from the last expression."
+  [expressions]
+  (let [{:keys [last-hints]}
+        (reduce (fn [{:keys [variables]} expr]
+                  (let [{:keys [result assign]} (parser/parse expr)
+                        state (ast/generate result :test expr nil variables assign)]
+                    {:variables (if assign (assoc variables assign state) variables)
+                     :last-hints (:hints state)}))
+                {:variables {} :last-hints nil}
+                expressions)]
+    last-hints))
+
 (deftest test-hints
   (testing "Generate hints"
     (is (= [{:schema "x", :table "company"
@@ -163,4 +176,17 @@
     (is (= ["id" "company_id" "reports_to"]
            (->> (gen "company | s: id | employee | s: " {:line 0 :character 100})
                 :select
-                (map :column))))))
+                (map :column)))))
+
+  (testing "Variable relation hints"
+    ;; mytest = employee (child); company | my should suggest mytest
+    (is (= [{:schema nil :table "mytest" :column "company_id" :parent false :heuristic false
+             :pine "mytest .company_id"}]
+           (-> (gen-with-variables ["employee |= mytest" "company | my"])
+               :table)))
+
+    ;; mytest = company (parent); employee | my should suggest mytest
+    (is (= [{:schema nil :table "mytest" :column "company_id" :parent true :heuristic false
+             :pine "mytest .company_id :parent"}]
+           (-> (gen-with-variables ["company |= mytest" "employee | my"])
+               :table)))))

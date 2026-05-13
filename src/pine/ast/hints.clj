@@ -67,14 +67,17 @@
 (defn relation-hints [state token]
   (let [from-alias (state :context)
         from-table (-> state :aliases (get from-alias) :table)
-        parents (-> state :references :table (get from-table) :refers-to)
-        children (-> state :references :table (get from-table) :referred-by)
+        variables  (-> state :variables)
+        parents    (-> state :references :table (get from-table) :refers-to)
+        children   (-> state :references :table (get from-table) :referred-by)
         suggestions (filter-relations token (concat parents children))]
-    (-> suggestions
-        create-hint-from-relations
-        ;; TODO: instead of doing a distinct, we can do a reduce and keep track
-        ;; of duplicates
-        distinct)))
+    (->> suggestions
+         create-hint-from-relations
+         (map (fn [h]
+                (if (contains? variables (:table h))
+                  (assoc h :schema nil)
+                  h)))
+         distinct)))
 
 (defn generate-table-hints [state]
   (let [{token :table parent :parent} (-> state :tables reverse first)

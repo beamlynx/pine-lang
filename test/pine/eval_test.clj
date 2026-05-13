@@ -424,4 +424,20 @@
             :params nil}
            (generate-expressions ["company |= active_companies"
                                   "active_companies | l: 10 |= small_active"
-                                  "small_active"])))))
+                                  "small_active"]))))
+
+  (testing "Reverse join: child table navigates to variable wrapping its parent"
+    ;; employee.company_id -> company.id
+    ;; mytest = company (parent); employee | mytest should join employee to the CTE
+    (is (= {:query "WITH \"mytest\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"e_0\".id AS \"__e_0__id\", \"m_1\".* FROM \"employee\" AS \"e_0\" JOIN \"mytest\" AS \"m_1\" ON \"e_0\".\"company_id\" = \"m_1\".\"id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= mytest"
+                                  "employee | mytest"]))))
+
+  (testing "Reverse join: parent table navigates to variable wrapping its child"
+    ;; employee.company_id -> company.id
+    ;; mytest = employee (child); company | mytest should join company to the CTE
+    (is (= {:query "WITH \"mytest\" AS ( SELECT \"e_0\".* FROM \"employee\" AS \"e_0\" ) SELECT \"c_0\".id AS \"__c_0__id\", \"m_1\".* FROM \"company\" AS \"c_0\" JOIN \"mytest\" AS \"m_1\" ON \"c_0\".\"id\" = \"m_1\".\"company_id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["employee |= mytest"
+                                  "company | mytest"])))))

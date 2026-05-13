@@ -115,25 +115,17 @@
           (assoc-in [:table varname :column-set] (set output-cols)))
       seeded)))
 
-(defn- patch-variable-relations
-  "Bidirectional pass: for each variable V wrapping source S, find every
-  entity (real table or other variable) T where T already knows that S
-  refers to it — i.e. T[:referred-by][S] exists — and register V there too.
-
-  This enables:
-  - 'T | V'  and  'V | T'  (real table ↔ variable)
-  - 'V | W'  and  'W | V'  (variable ↔ variable)
-
-  Must run after all variables have been seeded so that variable entries
-  already carry the inherited :referred-by data from their source tables."
-  [refs variables]
+(defn- patch-direction
+  "For each variable V wrapping source S, copy T[direction][S] → T[direction][V]
+  for every entity T in the references map. Used by patch-variable-relations."
+  [refs variables direction]
   (reduce (fn [r [varname var-ast]]
             (let [source-tables (get-source-tables var-ast)]
               (reduce (fn [r source-table]
                         (reduce (fn [r entity-name]
-                                  (let [existing (get-in r [:table entity-name :referred-by source-table])]
+                                  (let [existing (get-in r [:table entity-name direction source-table])]
                                     (if existing
-                                      (update-in r [:table entity-name :referred-by varname] merge existing)
+                                      (update-in r [:table entity-name direction varname] merge existing)
                                       r)))
                                 r
                                 (keys (get r :table {}))))
@@ -141,6 +133,21 @@
                       source-tables)))
           refs
           variables))
+
+(defn- patch-variable-relations
+  "Bidirectional pass: for each variable V wrapping source S, find every
+  entity T where T already knows about S via :referred-by or :refers-to,
+  and register V there too.
+
+  This enables:
+  - 'T | V'  and  'V | T'  (real table ↔ variable)
+  - 'V | W'  and  'W | V'  (variable ↔ variable)
+
+  Must run after all variables have been seeded."
+  [refs variables]
+  (-> refs
+      (patch-direction variables :referred-by)
+      (patch-direction variables :refers-to)))
 
 (defn pre-handle [state connection-id ops-count expression cursor variables]
   (let [refs       (db/init-references connection-id)
