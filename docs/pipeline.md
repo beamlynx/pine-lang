@@ -4,7 +4,8 @@ How a Pine expression goes from text to SQL results.
 
 ## Why
 
-Pine is a pipe-based DSL that compiles to SQL. Understanding the pipeline helps when debugging unexpected query output, tracing where hints come from, or extending the language with new operations.
+Pine is a pipe-based DSL that compiles to SQL. Understanding the pipeline helps when debugging unexpected
+query output, tracing where hints come from, or extending the language with new operations.
 
 ## Overview
 
@@ -22,7 +23,8 @@ text  →  parse  →  generate  →  eval
 
 ### 1. Parse
 
-The expression is tokenised against the Pine grammar and turned into a flat list of typed operations — one per pipe segment.
+The expression is tokenised against the Pine grammar and turned into a flat list of typed operations —
+one per pipe segment.
 
 Input:
 ```
@@ -34,11 +36,13 @@ Output:
 [ table(user as u),  table(document name="passport"),  select(u.email, id),  limit(10) ]
 ```
 
-Each operation has a type and a value. If the expression ends with `|= name`, that name is extracted separately and carried alongside the list.
+Each operation has a type and a value. If the expression ends with `|= name`, that name is extracted
+separately and carried alongside the list.
 
 ### 2. Generate
 
-Each operation is applied left to right to a state map, using the appropriate handler. Before the first operation runs, the DB schema is loaded so that join paths and column lists are available.
+Each operation is applied left to right to a state map, using the appropriate handler. Before the first
+operation runs, the DB schema is loaded so that join paths and column lists are available.
 
 | Pipe segment | What it adds to state |
 |---|---|
@@ -52,7 +56,8 @@ Each operation is applied left to right to a state map, using the appropriate ha
 | `update!` / `u!` | Records column assignments for UPDATE |
 | `delete!` | Marks the operation as DELETE |
 
-After all operations are applied, a **post-processing** step runs: autocomplete hints are computed, hidden auto-id columns are appended for row tracking, and a prettified form of the expression is attached.
+After all operations are applied, a **post-processing** step runs: autocomplete hints are computed,
+hidden auto-id columns are appended for row tracking, and a prettified form of the expression is attached.
 
 The result is a single **state map** that fully describes the query.
 
@@ -60,20 +65,26 @@ The result is a single **state map** that fully describes the query.
 
 The state map is handed to the eval layer, which has two paths:
 
-**Build** — translates the state into a SQL string and parameter list. No database call. Used to show the query in the UI as the user types.
+**Build** — translates the state into a SQL string and parameter list. No database call. Used to show
+the query in the UI as the user types.
 
 **Run** — builds the SQL then executes it against the database, returning rows.
 
 ## How it works
 
-- The pipeline is stateless per request — each call to the API runs the full parse → generate → eval cycle from scratch.
-- Hints are computed inside `generate`, using a second pass over the expression truncated at the cursor position. This gives hints that reflect what the user has typed so far, not the full completed expression.
-- When multiple expressions are present (separated by blank lines), they are evaluated left to right. Each assigned expression (`|= name`) stores its state as a variable, threaded into subsequent calls. See [variables.md](variables.md).
+- The pipeline is stateless per request — each call to the API runs the full parse → generate → eval
+  cycle from scratch.
+- Hints are computed inside `generate`, using a second pass over the expression truncated at the cursor
+  position. This gives hints that reflect what the user has typed so far, not the full completed expression.
+- When multiple expressions are present (separated by blank lines), they are evaluated left to right.
+  Each assigned expression (`|= name`) stores its state as a variable, threaded into subsequent calls.
+  See [variables.md](variables.md).
 
 ## Constraints
 
 - The pipeline is synchronous and single-pass — there is no incremental or lazy evaluation.
-- All schema information is resolved at generate time. A table or column that doesn't exist in the DB schema will fail at that stage, not at SQL execution time.
+- All schema information is resolved at generate time. A table or column that doesn't exist in the DB
+  schema will fail at that stage, not at SQL execution time.
 
 ---
 
@@ -81,19 +92,27 @@ The state map is handed to the eval layer, which has two paths:
 
 ### Parse (`parser/parse`, `pine.bnf`)
 
-Instaparse runs the BNF grammar over the input string. The raw parse tree is normalised into a vector of `{:type <keyword> :value <data>}` maps. `|= name` is extracted as `:assign` and stripped from the operation list so the rest of the pipeline is unaware of it.
+Instaparse runs the BNF grammar over the input string. The raw parse tree is normalised into a vector of
+`{:type <keyword> :value <data>}` maps. `|= name` is extracted as `:assign` and stripped from the
+operation list so the rest of the pipeline is unaware of it.
 
 ### Generate (`ast/generate`, `ast/main.clj`)
 
 `generate` orchestrates three sub-steps:
 
-**`pre-handle`** — seeds the initial state with the DB schema via `db/init-references` (cached per connection). If variables are in scope, `seed-variable-references` merges their underlying FK references so join resolution works through CTEs.
+**`pre-handle`** — seeds the initial state with the DB schema via `db/init-references` (cached per
+connection). If variables are in scope, `seed-variable-references` merges their underlying FK references
+so join resolution works through CTEs.
 
-**`handle-ops`** — calls `reduce` over the operation list, dispatching each operation to its handler module (`ast/table`, `ast/select`, `ast/where`, `ast/group`, `ast/order`, `ast/limit`, `ast/count`, `ast/delete-action`, `ast/update-action`). The operation index (`i`) is threaded through so later stages know the order columns were introduced.
+**`handle-ops`** — calls `reduce` over the operation list, dispatching each operation to its handler
+module (`ast/table`, `ast/select`, `ast/where`, `ast/group`, `ast/order`, `ast/limit`, `ast/count`,
+`ast/delete-action`, `ast/update-action`). The operation index (`i`) is threaded through so later
+stages know the order columns were introduced.
 
 **`post-handle`** — runs after all operations:
 - `ast/hints/handle` computes autocomplete hints using the truncated-at-cursor state.
-- `ast/select/add-auto-id-columns` appends hidden `id` columns for each real table. See [result-updates.md](result-updates.md).
+- `ast/select/add-auto-id-columns` appends hidden `id` columns for each real table.
+  See [result-updates.md](result-updates.md).
 - `add-prettify` attaches a formatted expression and per-operation character ranges for cursor highlighting.
 
 The final state map:
@@ -124,8 +143,10 @@ The final state map:
 | `:update-action` / `:update-partial` | `build-update-queries` |
 | `:delete-action` | `build-delete-query` |
 
-`build-select-query` checks for variables in scope and, if present, prepends CTE clauses via `collect-ctes`. `run-query` calls `build-query` then executes against the connection pool via `db/run-query`.
+`build-select-query` checks for variables in scope and, if present, prepends CTE clauses via `collect-ctes`.
+`run-query` calls `build-query` then executes against the connection pool via `db/run-query`.
 
 ### Empty-expression guard
 
-`build-query` checks whether the current table name (looked up via the aliases map) is an empty string. This handles blank input — returns `{:query "" :params nil}` rather than generating a malformed SELECT.
+`build-query` checks whether the current table name (looked up via the aliases map) is an empty string.
+This handles blank input — returns `{:query "" :params nil}` rather than generating a malformed SELECT.
