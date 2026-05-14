@@ -44,10 +44,11 @@
 ;; ["z"  "document"      "created_by"  :refers-to   "y"  "employee" "id"]
 (defn- create-hint-from-relation-array [table via-details]
   (map (fn [vd]
-         (let [direction (nth vd 3)
-               parent? (= direction :refers-to)
-               schema (nth vd 4)
-               column (nth vd (if parent? 2 6))
+         (let [direction  (nth vd 3)
+               parent?    (= direction :refers-to)
+               schema     (nth vd 4)
+               variable?  (= (last vd) :variable-join)
+               column     (when-not variable? (nth vd (if parent? 2 6)))
                heuristic? (= (last vd) :heuristic)]
            {:schema schema
             :table table
