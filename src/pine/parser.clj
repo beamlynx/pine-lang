@@ -443,6 +443,14 @@
 
     :else (throw (ex-info "Unknown UPDATE-PARTIAL operation" {:_ operation}))))
 
+
+;; -----
+;; ASSIGN
+;; -----
+
+(defmethod -normalize-op :ASSIGN [[_ [_ varname]]]
+  {:type :assign :value varname})
+
 ;; -----
 ;; NO-OP
 ;; -----
@@ -457,9 +465,6 @@
         file (format "%s/src/pine/pine.bnf" dir)
         grammar (slurp file)]
     (insta/parser grammar)))
-
-(defmethod -normalize-op :ASSIGN [[_ [_ varname]]]
-  {:type :assign :value varname})
 
 (defn- normalize-ops [[_ & nodes]]
   (mapv (fn [[_ op]] (-normalize-op op))

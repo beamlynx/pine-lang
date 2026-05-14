@@ -191,8 +191,10 @@
            (-> (gen-with-variables ["company |= mytest" "employee | my"])
                :table)))
 
-    ;; same-source variables: c1 and c2 both wrap company; c1 | c2 should suggest c2
-    (is (= [{:schema nil :table "c2" :column nil :parent false :heuristic false
-             :pine "c2"}]
-           (-> (gen-with-variables ["company |= c1" "company |= c2" "c1 | c2"])
+    ;; same-source variables: var_x and var_y both wrap company;
+    ;; when typing "var_x | var", var_y should appear (partial match, unambiguous token)
+    (is (= [{:schema nil :table "var_y" :column nil :parent false :heuristic false
+             :pine "var_y"}]
+           (-> (gen-with-variables ["company |= var_x" "company |= var_y" "var_x | var"])
                :table)))))
+
