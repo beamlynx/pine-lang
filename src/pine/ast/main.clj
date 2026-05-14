@@ -149,13 +149,38 @@
       (patch-direction variables :referred-by)
       (patch-direction variables :refers-to)))
 
+(defn- patch-same-source-variable-joins
+  "For each ordered pair of distinct variables (v1, v2) that share a source table
+  with an 'id' column, register a synthetic id=id join at refs[:table v1 :referred-by v2].
+  Only adds entries where no join path already exists, so self-referential FK propagation
+  (e.g. employee/reports_to) is preserved."
+  [refs variables]
+  (let [var-sources (->> variables
+                         (map (fn [[vname var-ast]]
+                                [vname (set (get-source-tables var-ast))]))
+                         (into {}))
+        vnames (vec (keys var-sources))]
+    (reduce (fn [r [v1 v2]]
+              (let [shared-sources (filter (var-sources v1) (var-sources v2))
+                    has-id? (fn [tbl] (some #(= "id" (:column %)) (get-in r [:table tbl :columns])))]
+                (if (and (some has-id? shared-sources)
+                         (not (get-in r [:table v1 :referred-by v2])))
+                  (update-in r [:table v1 :referred-by v2 :via "id"]
+                             (fnil conj [])
+                             [nil v1 "id" :referred-by nil v2 "id" :variable-join])
+                  r)))
+            refs
+            (for [v1 vnames v2 vnames :when (not= v1 v2)] [v1 v2]))))
+
 (defn pre-handle [state connection-id ops-count expression cursor variables]
   (let [refs       (db/init-references connection-id)
         seeded-refs (reduce (fn [r [varname var-ast]]
                               (seed-variable-references r var-ast varname))
                             refs
                             variables)
-        aug-refs   (patch-variable-relations seeded-refs variables)]
+        aug-refs   (-> seeded-refs
+                       (patch-variable-relations variables)
+                       (patch-same-source-variable-joins variables))]
     (-> state
         (assoc :references aug-refs)
         (assoc :connection-id connection-id)

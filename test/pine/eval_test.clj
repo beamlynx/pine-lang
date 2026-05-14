@@ -440,4 +440,16 @@
     (is (= {:query "WITH \"mytest\" AS ( SELECT \"e_0\".* FROM \"employee\" AS \"e_0\" ) SELECT \"c_0\".id AS \"__c_0__id\", \"m_1\".* FROM \"company\" AS \"c_0\" JOIN \"mytest\" AS \"m_1\" ON \"c_0\".\"id\" = \"m_1\".\"company_id\" LIMIT 250"
             :params nil}
            (generate-expressions ["employee |= mytest"
-                                  "company | mytest"])))))
+                                  "company | mytest"]))))
+
+  (testing "Same-source variables: two variables wrapping the same table join on id"
+    (is (= {:query "WITH \"c1\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ), \"c2\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"c_1\".* FROM \"c1\" AS \"c_0\" JOIN \"c2\" AS \"c_1\" ON \"c_0\".\"id\" = \"c_1\".\"id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= c1"
+                                  "company |= c2"
+                                  "c1 | c2"])))
+    (is (= {:query "WITH \"c2\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ), \"c1\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"c_1\".* FROM \"c2\" AS \"c_0\" JOIN \"c1\" AS \"c_1\" ON \"c_0\".\"id\" = \"c_1\".\"id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= c1"
+                                  "company |= c2"
+                                  "c2 | c1"])))))
