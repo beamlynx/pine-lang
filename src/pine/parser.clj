@@ -443,7 +443,6 @@
 
     :else (throw (ex-info "Unknown UPDATE-PARTIAL operation" {:_ operation}))))
 
-
 ;; -----
 ;; ASSIGN
 ;; -----
