@@ -98,6 +98,28 @@ operation list so the rest of the pipeline is unaware of it.
 
 ### Generate (`ast/generate`, `ast/main.clj`)
 
+Full signature:
+
+```clojure
+(generate parse-tree connection-id expression cursor variables assign)
+```
+
+Each parameter fills a distinct role that cannot be inferred from the others:
+
+| Parameter | Source | Used for |
+|---|---|---|
+| `parse-tree` | `(parser/parse expression)` | `handle-ops` — the typed operation list |
+| `connection-id` | caller / DB config | `db/init-references` — loading the schema |
+| `expression` | raw input string | `add-prettify` (ranges), `truncate-at-cursor` (cursor hints) |
+| `cursor` | UI (user's caret position) | Building `truncated-state` for cursor-aware hints |
+| `variables` | caller, accumulated across expressions | `pre-handle` — seeding FK references for CTEs |
+| `assign` | `(parser/parse expression)` | Stored on the returned state; not processed as an op |
+
+`parse-tree` and `assign` both come from `parser/parse`, but `expression` is still required separately
+because `add-prettify` and `truncate-at-cursor` operate on raw text. `cursor` and `variables` are
+external context that is not derivable from the expression itself — `cursor` comes from the UI, and
+`variables` accumulates as the caller evaluates earlier expressions in a multi-expression session.
+
 `generate` orchestrates three sub-steps:
 
 **`pre-handle`** — seeds the initial state with the DB schema via `db/init-references` (cached per

@@ -97,10 +97,16 @@ keeps the assign out of the normal operation pipeline so it doesn't interfere wi
 
 ### State threading
 
-The API receives an array of expressions. Each expression is parsed and evaluated in order. The resulting
-AST state for each assigned expression is stored in a `variables` map keyed by name and threaded into every
-subsequent `ast/generate` call. This is done purely in memory within the request — there is no persistence
-layer.
+The API receives an array of expressions. Each expression is parsed and evaluated in order:
+
+1. `parser/parse(expr)` returns `{:result [ops...] :assign "name"}`. The `assign` field is the variable
+   name from `|= name` — stripped from the op list so it doesn't enter the pipeline.
+2. `ast/generate(ops, ..., variables, assign)` runs the full pipeline and stores `assign` on the returned
+   state as metadata.
+3. If `assign` is set, the caller stores the returned state in the `variables` map under that name.
+4. The updated `variables` map is passed to `ast/generate` for every subsequent expression.
+
+This is done purely in memory within the request — there is no persistence layer.
 
 ### CTE generation (`eval.clj`)
 
@@ -125,8 +131,14 @@ with the same relation data. This propagates the relationship bidirectionally:
 - `T | V` and `V | T` (real table ↔ variable)
 - `V | W` and `W | V` (variable ↔ variable)
 
-The shared helper `get-source-tables` extracts which real tables a variable wraps — used by both passes to
-avoid duplicating that logic.
+**Pass 3 — `patch-same-source-variable-joins`**: For each ordered pair of distinct variables (V1, V2)
+that share a common source table with an `id` column, registers a synthetic `id = id` join at
+`refs[:table V1 :referred-by V2]`. This makes `V1 | V2` resolve even when the source table has no
+self-referential FK. Only adds entries where no join path already exists — existing FK-based propagation
+(e.g. two employee-wrapping variables joined via `reports_to`) is not overridden.
+
+The shared helper `get-source-tables` extracts which real tables a variable wraps — used by all three
+passes to avoid duplicating that logic.
 
 ### Column hints for variables
 
