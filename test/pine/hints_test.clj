@@ -108,6 +108,10 @@
     (is (= ["id" "company_id" "reports_to"]                                 (->> "company | s: id | employee | s: "     gen :select (map :column))))
     (is (= ["company_id" "reports_to"]                                      (->> "company | s: id | employee | s: id, " gen :select (map :column))))
 
+    ;; Cross-table: after selecting from company, next slot defaults to current context (employee)
+    (is (= ["id" "company_id" "reports_to"]
+           (->> "x.company as c | y.employee as e | s: c.id,"  gen :select (map :column))))
+
     ;; The following doesn't get parsed at the moment
     ;; We need to update the pine.bnf to support the syntax
     ;;
@@ -131,6 +135,12 @@
     (is (= []                                (->  "company | w: xyz"       gen :where)))
     (is (= ["id" "company_id"]               (->> "y.employee | w: id"     gen :where (map :column))))
 
+    ;; Explicit alias: w: e.col should use alias "e" for column lookup, not the current context
+    (is (= [{:column "company_id" :alias "e"}]
+           (-> "y.employee as e | x.company as c | w: e.company_id" gen :where)))
+    (is (= [{:column "id" :alias "c"}]
+           (-> "y.employee as e | x.company as c | w: c.id"         gen :where)))
+
     ;; How to auto-complete the right hand side? Values or other columns?
     ;; Right now it shows the same hints as the left hand side
     ;; (is (= [{:column "id" :alias "c_0"}]     (->  "company | w: id ="      gen :where)))
@@ -140,6 +150,9 @@
   (testing "Generate `update-partial` hints"
     (is (= [{:column "id" :alias "c_0"} {:column "created_at" :alias "c_0"}]
            (-> "company | u!" gen :update)))
+    ;; Explicit alias in update: u! e.col should use alias "e" for column lookup, not current context
+    (is (= [{:column "company_id" :alias "e"}]
+           (-> "y.employee as e | x.company as c | u! e.company_id" gen :update)))
     (is (= [{:column "created_at" :alias "c_0"}]
            (-> "company | u! id = '1'," gen :update)))
     (is (= [{:column "id" :alias "c_0"}]

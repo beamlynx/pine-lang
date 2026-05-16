@@ -133,20 +133,22 @@
   ;; - Order partial: simple exclude-already-selected logic works with generic generate-column-hints
   ;; - Where partial: complex state-dependent filtering based on partial completion:
   ;;   * `where:` → show all columns
-  ;;   * `w: i` → filter to columns matching "i" 
+  ;;   * `w: i` → filter to columns matching "i"
+  ;;   * `w: e.i` → filter to columns matching "i" from alias "e"
   ;;   * `w: id =` → show all columns (ready for next condition)
   (let [operation (state :operation)
         where-data (get operation :value {})
         partial-condition (:partial-condition where-data)
-        current-alias (state :current)]
+        current-alias (state :current)
+        lookup-alias (or (and partial-condition (:alias partial-condition)) current-alias)]
     (if (nil? partial-condition)
       ;; No partial condition yet, show all columns
       (generate-all-column-hints state current-alias)
       ;; Has partial condition, filter based on it
       (if (and (:column partial-condition) (not (contains? partial-condition :operator)))
-        ;; Just a column specified, filter hints for that column
+        ;; Just a column specified — use the condition's alias if present, else current
         (find-relevant-columns
-         (generate-all-column-hints state current-alias)
+         (generate-all-column-hints state lookup-alias)
          partial-condition)
         ;; Column + operator, show all columns for next condition
         (generate-all-column-hints state current-alias)))))
@@ -155,7 +157,8 @@
   (let [assignments (get-in state [:update :assignments] [])
         partial-column (get-in state [:update :partial-column])
         assigned-columns (map (fn [a] {:column (get-in a [:column :column])}) assignments)
-        hints (-> (generate-all-column-hints state (state :current))
+        lookup-alias (or (and partial-column (:alias partial-column)) (state :current))
+        hints (-> (generate-all-column-hints state lookup-alias)
                   (exclude-columns assigned-columns))]
     (if partial-column
       (find-relevant-columns hints partial-column)
@@ -163,18 +166,22 @@
 
 (defn generate-column-hints [state columns]
   ;; Generic column hints logic that works for most operations:
-  ;; - Complete operations (select, order, where): filter hints to match current column being typed
-  ;; - Partial operations (select-partial, order-partial): exclude already-selected columns
-  ;; - Note: where-partial needs custom logic (see generate-where-hints) due to complex state-dependent filtering
+  ;; - Complete operations (select, order): filter hints to match the column being typed, using its alias
+  ;; - Partial operations (select-partial, order-partial): exclude already-selected columns,
+  ;;   defaulting to the current context table so the next slot shows relevant columns
+  ;; - Note: where-partial needs custom logic (see generate-where-hints)
   (let [column (some-> columns reverse first)
-        ;; Use operation-index to determine table context for hints
-        ;; If column was added in a later operation than current context, use that column's alias
-        a (if (and (seq column)
-                   (> (column :operation-index) (state :current-index)))
-            (column :alias)
-            (state :current))
-        hints (generate-all-column-hints state a)
-        type (-> state :operation :type)]
+        type (-> state :operation :type)
+        ;; For partial ops, always use the current context table — the user hasn't started typing
+        ;; the next column yet, so the last completed column's alias is irrelevant.
+        ;; For complete ops, use the typed column's alias when it was added in the current scope.
+        a (if (or (= type :select-partial) (= type :order-partial))
+            (state :current)
+            (if (and (seq column)
+                     (> (column :operation-index) (state :current-index)))
+              (column :alias)
+              (state :current)))
+        hints (generate-all-column-hints state a)]
     (cond
       ;; If the type is :select, :order, or :where and columns exist, filter hints using the columns
       (and (or (= type :select) (= type :order) (= type :where)) column)
