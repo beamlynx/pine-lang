@@ -12,11 +12,12 @@ name, treat it as a table, and compose them incrementally.
 ## Syntax
 
 ```
-<expression> |= <name>
+<expression> |= <name> [| more-ops...]
 ```
 
-Append `|= name` at the end of any pipe chain to assign the result to a variable. Use the name as a
-table in any later expression.
+Place `|= name` anywhere in a pipe chain to snapshot the query state at that point under `name`.
+The pipeline continues after the assignment — operations after `|=` refine the current expression's
+output while the snapshot remains frozen. Use `name` as a table in any later expression.
 
 ## Examples
 
@@ -28,7 +29,8 @@ company | where: active = true |= active_companies
 active_companies | employee
 ```
 
-`active_companies` becomes a CTE. The second expression joins through it:
+`active_companies` becomes a CTE. The second expression joins through it.
+`|=` can appear at the end (as here) or mid-pipeline:
 
 ```sql
 WITH "active_companies" AS (
@@ -39,6 +41,17 @@ FROM "active_companies" AS "ac_0"
 JOIN "employee" AS "e_1" ON "ac_0"."id" = "e_1"."company_id"
 LIMIT 250
 ```
+
+### Mid-pipeline assign
+
+```
+company |= all_companies | where: active = true
+
+all_companies
+```
+
+`all_companies` is the full unfiltered company snapshot — the snapshot was taken before `where:`.
+The current expression still returns only active companies.
 
 ### Chained
 
@@ -67,11 +80,14 @@ x
 
 ## How it works
 
-- **Assignment** (`|= name`): the expression is stored as a variable. Its SQL becomes the body of a CTE.
+- **Assignment** (`|= name`): snapshots the pipeline state at that point. The snapshot becomes the CTE body
+  when `name` is used in a later expression. Operations after `|=` continue refining the current expression's
+  output — they do not affect the snapshot.
 - **Usage**: when `name` appears as a table in a later expression, Pine substitutes the CTE. Joins resolve
   in both directions — `variable | table`, `table | variable`, and `variable | variable` — using the FK
   schema of the underlying real tables.
 - **Scoping**: variables accumulate left-to-right. Each expression sees all variables defined before it.
+  Mid-pipeline assignments within the current expression are NOT visible to that same expression.
 - **Column hints**: when a variable has explicit output columns (from `s:`, `g:`, etc.), hints reflect
   those columns, not the full schema of the source table. Variables using `*` (no explicit selection)
   inherit the source table's columns.
@@ -91,19 +107,19 @@ x
 
 ### Grammar and parsing
 
-`|= name` is parsed as an `assign` operation in `pine.bnf`. The parser (`parser.clj`) extracts the assigned
-name separately from the main operation list and returns it as `{:assign "name" :result [...ops...]}`. This
-keeps the assign out of the normal operation pipeline so it doesn't interfere with SQL generation.
+`|= name` is parsed as a regular pipe operation of type `:assign` in `pine.bnf`. The ASSIGN rule sits
+inside OPERATION alongside TABLE, SELECT, WHERE, etc., so it participates in the normal pipeline.
+`parser/parse` returns `{:result [ops...]}` with the assign op included in the list.
 
 ### State threading
 
 The API receives an array of expressions. Each expression is parsed and evaluated in order:
 
-1. `parser/parse(expr)` returns `{:result [ops...] :assign "name"}`. The `assign` field is the variable
-   name from `|= name` — stripped from the op list so it doesn't enter the pipeline.
-2. `ast/generate(ops, ..., variables, assign)` runs the full pipeline and stores `assign` on the returned
-   state as metadata.
-3. If `assign` is set, the caller stores the returned state in the `variables` map under that name.
+1. `parser/parse(expr)` returns `{:result [ops...]}`. The operation list may include `:assign` ops.
+2. `ast/generate(ops, ..., variables)` runs the full pipeline. When a `:assign` op is encountered,
+   `assign/handle` snapshots the current state into `:pending-assignments` under the variable name.
+3. After `ast/generate` returns, the caller merges `:pending-assignments` from the returned state into
+   the running `variables` map.
 4. The updated `variables` map is passed to `ast/generate` for every subsequent expression.
 
 This is done purely in memory within the request — there is no persistence layer.

@@ -20,9 +20,9 @@
   [expressions]
   (let [{:keys [last-state]}
         (reduce (fn [{:keys [variables]} expr]
-                  (let [{:keys [result assign]} (parser/parse expr)
-                        state (ast/generate result :test nil nil variables assign)]
-                    {:variables (if assign (assoc variables assign state) variables)
+                  (let [{:keys [result]} (parser/parse expr)
+                        state (ast/generate result :test nil nil variables)]
+                    {:variables (merge variables (:pending-assignments state))
                      :last-state state}))
                 {:variables {} :last-state nil}
                 expressions)]
@@ -441,6 +441,28 @@
             :params nil}
            (generate-expressions ["employee |= mytest"
                                   "company | mytest"]))))
+
+  (testing "Mid-pipeline assign: expression continues after |="
+    ;; The assign snapshots the state at that point; subsequent ops still apply
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" LIMIT 10"
+            :params nil}
+           (generate-expressions ["company |= x | l: 10"])))
+    ;; x is the unfiltered snapshot (no limit) — CTE body has no LIMIT
+    (is (= {:query "WITH \"x\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"x_0\".* FROM \"x\" AS \"x_0\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= x | l: 10"
+                                  "x"]))))
+
+  (testing "Column reference via variable name resolves to the real SQL alias"
+    (is (= {:query "SELECT \"e_1\".\"id\", \"c_0\".\"id\", \"c_0\".id AS \"__c_0__id\", \"e_1\".id AS \"__e_1__id\" FROM \"company\" AS \"c_0\" JOIN \"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= c | employee | s: id, c.id"])))
+    (is (true? (clojure.string/includes?
+                (:query (generate-expressions ["company |= c | employee | w: c.id = 1"]))
+                "WHERE \"c_0\".\"id\" = ?")))
+    (is (true? (clojure.string/includes?
+                (:query (generate-expressions ["company |= c | employee | o: c.id"]))
+                "ORDER BY \"c_0\".\"id\""))))
 
   (testing "Same-source variables: two variables wrapping the same table join on id"
     (is (= {:query "WITH \"c1\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ), \"c2\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"c_1\".* FROM \"c1\" AS \"c_0\" JOIN \"c2\" AS \"c_1\" ON \"c_0\".\"id\" = \"c_1\".\"id\" LIMIT 250"

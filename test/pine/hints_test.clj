@@ -20,9 +20,9 @@
   [expressions]
   (let [{:keys [last-hints]}
         (reduce (fn [{:keys [variables]} expr]
-                  (let [{:keys [result assign]} (parser/parse expr)
-                        state (ast/generate result :test expr nil variables assign)]
-                    {:variables (if assign (assoc variables assign state) variables)
+                  (let [{:keys [result]} (parser/parse expr)
+                        state (ast/generate result :test expr nil variables)]
+                    {:variables (merge variables (:pending-assignments state))
                      :last-hints (:hints state)}))
                 {:variables {} :last-hints nil}
                 expressions)]

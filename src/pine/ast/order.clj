@@ -1,10 +1,11 @@
 (ns pine.ast.order)
 
 (defn handle [state value]
-  (let [i       (state :index)
-        current (state :current)
+  (let [i             (state :index)
+        current       (state :current)
+        resolve-alias #(or (get-in state [:pending-assignments % :current]) %)
         columns (map #(-> %1
-                          (assoc :alias (or (:alias %1) current))
+                          (assoc :alias (resolve-alias (or (:alias %1) current)))
                           (assoc :operation-index i))
                      value)]
     (-> state

@@ -1,4 +1,11 @@
 (ns pine.api
+  "HTTP API layer: routes, request parsing, and multi-expression evaluation.
+
+  Why multi-expression evaluation exists: Pine expressions are designed to be
+  composed across blank-line-separated blocks. Each block can assign its result
+  to a variable (|= name) which subsequent blocks use as a CTE. This file
+  threads variables between expressions so each one sees what earlier ones
+  produced. The last expression's SQL is the one actually returned or executed."
   (:require
    [cheshire.generate :refer [add-encoder encode-str]]
    [clojure.string :as str]
@@ -34,26 +41,28 @@
   ([expression cursor connection-id]
    (generate-state expression cursor connection-id {}))
   ([expression cursor connection-id variables]
-   (let [{:keys [result error assign]} (->> expression parser/parse)
+   (let [{:keys [result error]} (->> expression parser/parse)
          conn-id (or connection-id @db/connection-id)]
      (if result
-       {:result (ast/generate result conn-id expression cursor variables assign)}
+       {:result (ast/generate result conn-id expression cursor variables)}
        {:error-type "parse"
         :error error}))))
 
 (defn- evaluate-expressions
   "Evaluate a sequence of pine expressions, threading variables from |= assignments
-  into subsequent expressions. Returns {:last-state <state> :error <msg>}."
+  into subsequent expressions. Returns {:last-state <state> :error <msg>}.
+
+  Why pending-assignments: |= is now a mid-pipeline op that snapshots state at the
+  point of assignment. An expression can assign multiple variables before its last op
+  determines the final SQL. All assignments from one expression become available as
+  CTE variables to the next."
   [expressions connection-id]
   (reduce (fn [{:keys [variables]} expression]
             (let [{:keys [result error]} (generate-state expression nil connection-id variables)]
               (if error
                 (reduced {:error error})
-                (let [assign (:assign result)]
-                  {:variables (if assign
-                                (assoc variables assign result)
-                                variables)
-                   :last-state result}))))
+                {:variables (merge variables (:pending-assignments result))
+                 :last-state result})))
           {:variables {} :last-state nil}
           expressions))
 

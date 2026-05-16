@@ -1,6 +1,14 @@
 (ns pine.parser
-  "The parser is responsible for generating a parse tree from the bnf and
-  normalize the output which is used for the input for generating the ast"
+  "Turns raw Pine text into a normalized operation list.
+
+  Why this layer exists: the BNF grammar produces a raw Instaparse tree
+  that's verbose and shape-inconsistent across operation types. Normalizing
+  here gives the rest of the system a single, predictable contract:
+  a vector of {:type <keyword> :value <data>} maps, one per pipe segment.
+
+  Assignment (|= name) is now a regular pipe operation of type :assign.
+  It appears in the operation list like any other op, so the pipeline
+  can continue after it: 'company |= x | w: active = true' is valid."
   (:require
    [clojure.core.match :refer [match]]
    [clojure.string :as s]
@@ -469,10 +477,6 @@
   (mapv (fn [[_ op]] (-normalize-op op))
         (filter #(= (first %) :OPERATION) nodes)))
 
-(defn- extract-assign [[_ & nodes]]
-  (when-let [node (first (filter #(= (first %) :ASSIGN) nodes))]
-    (let [[_ [_ varname]] node] varname)))
-
 (defn parse
   "Parse an expression and return the normalized operations or failure as a string"
   [expression]
@@ -482,8 +486,7 @@
       (let [failure (insta/get-failure result)
             error (with-out-str (println (insta/get-failure result)))]
         {:error error :failure failure})
-      {:result (normalize-ops result)
-       :assign (extract-assign result)})))
+      {:result (normalize-ops result)})))
 
 (defn parse-or-fail [expression]
   (-> expression parser normalize-ops))
@@ -502,13 +505,7 @@
       (let [operations (rest result)
             op-infos (mapv (fn [op]
                              (let [[start end] (insta/span op)
-                                   raw  (s/trim (subs expression start end))
-                                   ;; ASSIGN spans include the leading "|" from the
-                                   ;; grammar rule. Strip it so the join doesn't
-                                   ;; produce a double pipe ("| | =name").
-                                   expr (if (= (first op) :ASSIGN)
-                                          (s/trim (s/replace-first raw #"^\|" ""))
-                                          raw)]
+                                   expr (s/trim (subs expression start end))]
                                {:expression expr
                                 :start start
                                 :end end}))

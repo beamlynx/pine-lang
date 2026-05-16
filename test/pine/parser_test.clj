@@ -361,12 +361,12 @@
   (testing "Trailing pipe is preserved"
     (is (= {:result "company\n | "
             :operations [{:expression "company" :start 0 :end 7}
-                         {:expression "" :start 10 :end 10}]}
+                         {:expression "" :start 9 :end 9}]}
            (prettify "company | ")))
     (is (= {:result "company\n | where: id = 1\n | "
             :operations [{:expression "company" :start 0 :end 7}
                          {:expression "where: id = 1" :start 10 :end 23}
-                         {:expression "" :start 26 :end 26}]}
+                         {:expression "" :start 25 :end 25}]}
            (prettify "company | where: id = 1 | "))))
 
   (testing "Incomplete expressions return an error"
@@ -375,32 +375,45 @@
   (testing "Assignment is formatted without double pipe"
     (is (= {:result "company\n | = active_companies"
             :operations [{:expression "company" :start 0 :end 7}
-                         {:expression "= active_companies" :start 8 :end 27}]}
+                         {:expression "= active_companies" :start 9 :end 27}]}
            (prettify "company |= active_companies")))
     (is (= {:result "company\n | = x"
             :operations [{:expression "company" :start 0 :end 7}
-                         {:expression "= x" :start 8 :end 13}]}
+                         {:expression "= x" :start 10 :end 13}]}
            (prettify "company | = x")))
     (is (= {:result "company\n | where: active = true\n | = active_companies"
             :operations [{:expression "company" :start 0 :end 7}
                          {:expression "where: active = true" :start 10 :end 30}
-                         {:expression "= active_companies" :start 31 :end 50}]}
+                         {:expression "= active_companies" :start 32 :end 50}]}
            (prettify "company | where: active = true |= active_companies")))
-    ;; trailing pipe after assignment is a parse error — assignment must be last
-    (is (contains? (prettify "company |= x | ") :error))))
+    ;; |= is mid-pipeline — operations after it are valid
+    (is (= {:result "company\n | = x\n | "
+            :operations [{:expression "company" :start 0 :end 7}
+                         {:expression "= x" :start 9 :end 12}
+                         {:expression "" :start 14 :end 14}]}
+           (prettify "company |= x | ")))))
 
 (deftest test-assign
-  (testing "|= sets :assign in parse result"
-    (is (= "active_companies" (:assign (parse "company |= active_companies"))))
-    (is (= "active_companies" (:assign (parse "company | = active_companies"))))
-    (is (nil?                 (:assign (parse "company")))))
-
-  (testing ":result ops do not include the assign node"
-    (is (= 1 (count (:result (parse "company |= active_companies")))))
+  (testing "|= appears in :result as an assign op"
+    (is (= [{:type :table :value {:table "company"}}
+            {:type :assign :value "active_companies"}]
+           (:result (parse "company |= active_companies"))))
+    (is (= [{:type :table :value {:table "company"}}
+            {:type :assign :value "active_companies"}]
+           (:result (parse "company | = active_companies"))))
     (is (= [{:type :table :value {:table "company"}}]
-           (:result (parse "company |= active_companies")))))
+           (:result (parse "company")))))
 
-  (testing "|= works after a full expression"
-    (is (= "my_var" (:assign (parse "company | where: id = 1 | s: name |= my_var"))))
-    (is (= 3 (count (:result (parse "company | where: id = 1 | s: name |= my_var")))))))
+  (testing ":assign is no longer a top-level field in parse result"
+    (is (nil? (:assign (parse "company |= active_companies"))))
+    (is (nil? (:assign (parse "company")))))
+
+  (testing "|= is mid-pipeline: operations continue after it"
+    (is (= [{:type :table :value {:table "company"}}
+            {:type :assign :value "x"}
+            {:type :table :value {:table "employee"}}]
+           (:result (parse "company |= x | employee"))))
+    (is (= 4 (count (:result (parse "company | where: id = 1 | s: name |= my_var")))))
+    (is (= {:type :assign :value "my_var"}
+           (last (:result (parse "company | where: id = 1 | s: name |= my_var")))))))
 

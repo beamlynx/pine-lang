@@ -4,9 +4,10 @@
   (let [i       (state :index)
         current (state :current)
         ;; Process each column and handle date functions
+        resolve-alias #(or (get-in state [:pending-assignments % :current]) %)
         columns (mapcat (fn [col]
                           (let [col-with-defaults (-> col
-                                                      (assoc :alias (or (:alias col) current))
+                                                      (assoc :alias (resolve-alias (or (:alias col) current)))
                                                       (assoc :operation-index i))]
                             (if-let [col-fn (:column-function col)]
                               ;; Column function: apply function to column

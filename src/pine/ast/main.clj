@@ -1,6 +1,19 @@
 (ns pine.ast.main
+  "Folds a parsed operation list into a state map that fully describes the query.
+
+  Why a state map: rather than building SQL strings incrementally, each operation
+  updates a data structure (tables, columns, joins, where clauses, etc.). This
+  separates intent (what the query means) from rendering (how to express it in SQL),
+  which makes hints, prettification, and multiple output formats possible without
+  re-parsing.
+
+  Why variables are seeded before handle-ops: joins are resolved using a references
+  map built from the DB schema. Variables (CTEs from earlier expressions) need to
+  appear in that map — with the same FK relationships as their source tables — so
+  join resolution treats them like real tables."
   (:require
    [clojure.string :as str]
+   [pine.ast.assign :as assign]
    [pine.ast.count :as pine-count]
    [pine.ast.delete-action :as delete-action]
    [pine.ast.from :as from]
@@ -21,8 +34,9 @@
             ;; - connection
             :connection-id nil
             :references {}
-            :variables {}               ;; {"varname" <nested-AST>}, populated from |= assignments
-            :assign    nil              ;; variable name from |=, set after handle-ops
+            :variables {}               ;; {"varname" <nested-AST>}, populated from |= assignments in prior expressions
+            :assign    nil              ;; variable name from the last |= op in this expression
+            :pending-assignments {}     ;; {"varname" <state-snapshot>} accumulated by |= ops in this expression
             :expression      nil          ;; Expression string for cursor-aware hints
             :cursor          nil          ;; Cursor position {:line N :character M} (zero-indexed)
 
@@ -205,19 +219,23 @@
     :delete-action (delete-action/handle state value)
     :update-action (update-action/handle state value)
     :update-partial (update-action/handle state value)
+    :assign (assign/handle state value)
     ;; No operations
     :no-op state
     (update state :errors conj [type "Unknown operation type in parse tree"])))
 
 (defn handle-ops [state ops]
   (reduce (fn [s [i o]]
-            (-> s
-                (assoc :index i)
-                (handle-op o)  ; Pass the index and operation
-                (update :pending-count dec)
-                (assoc :operation o)))
+            (cond-> (-> s
+                        (assoc :index i)
+                        (handle-op o)
+                        (update :pending-count dec))
+              ;; :assign does not change the query being built — skip :operation
+              ;; so build-query dispatch and post-handle selected-tables logic
+              ;; see the last real SQL-producing operation, not the assign op.
+              (not= (:type o) :assign) (assoc :operation o)))
           state
-          (map-indexed vector ops)))  ; Pair each operation with its index
+          (map-indexed vector ops)))
 
 (declare generate)
 
@@ -307,16 +325,15 @@
 
 (defn generate
   ([parse-tree]
-   (generate parse-tree @db/connection-id nil nil {} nil))
+   (generate parse-tree @db/connection-id nil nil {}))
   ([parse-tree connection-id]
-   (generate parse-tree connection-id nil nil {} nil))
+   (generate parse-tree connection-id nil nil {}))
   ([parse-tree connection-id expression cursor]
-   (generate parse-tree connection-id expression cursor {} nil))
-  ([parse-tree connection-id expression cursor variables assign]
+   (generate parse-tree connection-id expression cursor {}))
+  ([parse-tree connection-id expression cursor variables]
    (let [full-state (-> state
                         (pre-handle connection-id (count parse-tree) expression cursor variables)
-                        (handle-ops parse-tree)
-                        (assoc :assign assign))
+                        (handle-ops parse-tree))
          truncated-state (when (and cursor expression)
                            (generate-truncated-state expression cursor connection-id variables))]
      (post-handle full-state truncated-state))))

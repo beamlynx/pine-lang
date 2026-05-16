@@ -36,25 +36,14 @@ Output:
 [ table(user as u),  table(document name="passport"),  select(u.email, id),  limit(10) ]
 ```
 
-Each operation has a type and a value. If the expression ends with `|= name`, that name is extracted
-separately and carried alongside the list.
+Each operation has a type and a value. `|= name` produces an `:assign` operation in the list like any
+other op, so the pipeline can continue after it.
 
 ### 2. Generate
 
 Each operation is applied left to right to a state map, using the appropriate handler. Before the first
-operation runs, the DB schema is loaded so that join paths and column lists are available.
-
-| Pipe segment | What it adds to state |
-|---|---|
-| `table` | Registers the table, resolves FK joins, tracks current context |
-| `select` / `s:` | Records which columns to include |
-| `where` / `w:` | Records filter conditions and parameters |
-| `group` / `g:` | Records group-by columns and aggregate functions |
-| `order` / `o:` | Records sort columns and direction |
-| `limit` / `l:` | Records the row limit |
-| `count:` | Switches operation mode to COUNT |
-| `update!` / `u!` | Records column assignments for UPDATE |
-| `delete!` | Marks the operation as DELETE |
+operation runs, the DB schema is loaded so that join paths and column lists are available. For the full
+list of operations and what each one does, see [expressions.md](expressions.md).
 
 After all operations are applied, a **post-processing** step runs: autocomplete hints are computed,
 hidden auto-id columns are appended for row tracking, and a prettified form of the expression is attached.
@@ -76,9 +65,8 @@ the query in the UI as the user types.
   cycle from scratch.
 - Hints are computed inside `generate`, using a second pass over the expression truncated at the cursor
   position. This gives hints that reflect what the user has typed so far, not the full completed expression.
-- When multiple expressions are present (separated by blank lines), they are evaluated left to right.
-  Each assigned expression (`|= name`) stores its state as a variable, threaded into subsequent calls.
-  See [variables.md](variables.md).
+- When multiple expressions are present, they are evaluated left to right, each seeing variables defined
+  by earlier ones. See [expressions.md](expressions.md).
 
 ## Constraints
 
@@ -93,32 +81,31 @@ the query in the UI as the user types.
 ### Parse (`parser/parse`, `pine.bnf`)
 
 Instaparse runs the BNF grammar over the input string. The raw parse tree is normalised into a vector of
-`{:type <keyword> :value <data>}` maps. `|= name` is extracted as `:assign` and stripped from the
-operation list so the rest of the pipeline is unaware of it.
+`{:type <keyword> :value <data>}` maps. `|= name` produces `{:type :assign :value "name"}` in the list
+like any other operation.
 
 ### Generate (`ast/generate`, `ast/main.clj`)
 
 Full signature:
 
 ```clojure
-(generate parse-tree connection-id expression cursor variables assign)
+(generate parse-tree connection-id expression cursor variables)
 ```
 
 Each parameter fills a distinct role that cannot be inferred from the others:
 
-| Parameter | Source | Used for |
-|---|---|---|
-| `parse-tree` | `(parser/parse expression)` | `handle-ops` — the typed operation list |
-| `connection-id` | caller / DB config | `db/init-references` — loading the schema |
-| `expression` | raw input string | `add-prettify` (ranges), `truncate-at-cursor` (cursor hints) |
-| `cursor` | UI (user's caret position) | Building `truncated-state` for cursor-aware hints |
-| `variables` | caller, accumulated across expressions | `pre-handle` — seeding FK references for CTEs |
-| `assign` | `(parser/parse expression)` | Stored on the returned state; not processed as an op |
+| Parameter       | Source                                 | Used for                                                     |
+|-----------------|----------------------------------------|--------------------------------------------------------------|
+| `parse-tree`    | `(parser/parse expression)`            | `handle-ops` — the typed operation list                      |
+| `connection-id` | caller / DB config                     | `db/init-references` — loading the schema                    |
+| `expression`    | raw input string                       | `add-prettify` (ranges), `truncate-at-cursor` (cursor hints) |
+| `cursor`        | UI (user's caret position)             | Building `truncated-state` for cursor-aware hints            |
+| `variables`     | caller, accumulated across expressions | `pre-handle` — seeding FK references for CTEs                |
 
-`parse-tree` and `assign` both come from `parser/parse`, but `expression` is still required separately
-because `add-prettify` and `truncate-at-cursor` operate on raw text. `cursor` and `variables` are
-external context that is not derivable from the expression itself — `cursor` comes from the UI, and
-`variables` accumulates as the caller evaluates earlier expressions in a multi-expression session.
+`parse-tree` comes from `parser/parse`, but `expression` is still required separately because
+`add-prettify` and `truncate-at-cursor` operate on raw text. `cursor` and `variables` are external
+context that is not derivable from the expression itself — `cursor` comes from the UI, and `variables`
+accumulates as the caller evaluates earlier expressions in a multi-expression session.
 
 `generate` orchestrates three sub-steps:
 
@@ -128,8 +115,9 @@ so join resolution works through CTEs.
 
 **`handle-ops`** — calls `reduce` over the operation list, dispatching each operation to its handler
 module (`ast/table`, `ast/select`, `ast/where`, `ast/group`, `ast/order`, `ast/limit`, `ast/count`,
-`ast/delete-action`, `ast/update-action`). The operation index (`i`) is threaded through so later
-stages know the order columns were introduced.
+`ast/delete-action`, `ast/update-action`, `ast/assign`). The operation index (`i`) is threaded through
+so later stages know the order columns were introduced. `:assign` ops do not update `:operation` so
+`build-query` dispatch always sees the last SQL-producing operation.
 
 **`post-handle`** — runs after all operations:
 - `ast/hints/handle` computes autocomplete hints using the truncated-at-cursor state.
@@ -157,13 +145,13 @@ The final state map:
 
 `build-query` dispatches on operation type:
 
-| Type | Builder |
-|---|---|
-| `:select` (default) | `build-select-query` |
-| `:count` | `build-count-query` |
-| `:group` | `build-group-query` |
+| Type                                 | Builder                |
+|--------------------------------------|------------------------|
+| `:select` (default)                  | `build-select-query`   |
+| `:count`                             | `build-count-query`    |
+| `:group`                             | `build-group-query`    |
 | `:update-action` / `:update-partial` | `build-update-queries` |
-| `:delete-action` | `build-delete-query` |
+| `:delete-action`                     | `build-delete-query`   |
 
 `build-select-query` checks for variables in scope and, if present, prepends CTE clauses via `collect-ctes`.
 `run-query` calls `build-query` then executes against the connection pool via `db/run-query`.
