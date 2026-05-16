@@ -150,7 +150,11 @@
            (generate "company | employee :right")))
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"e_1\".id AS \"__e_1__id\", \"d_2\".id AS \"__d_2__id\", \"d_2\".* FROM \"x\".\"company\" AS \"c_0\" LEFT JOIN \"y\".\"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" RIGHT JOIN \"z\".\"document\" AS \"d_2\" ON \"e_1\".\"id\" = \"d_2\".\"employee_id\" LIMIT 250",
             :params nil}
-           (generate "x.company | y.employee :left | z.document :right"))))
+           (generate "x.company | y.employee :left | z.document :right")))
+    ;; Self-join: :parent flips join direction (e_0 has the FK, not e_1)
+    (is (true? (clojure.string/includes?
+                (:query (generate "employee | employee :parent"))
+                "ON \"e_0\".\"reports_to\" = \"e_1\".\"id\""))))
 
   (testing "Joins with explicit columns"
     ;; Basic explicit join (tables a, b, c don't exist in schema so no auto-id columns)
@@ -316,6 +320,10 @@
                        :query "UPDATE \"company\" SET \"active\" = true WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
                        :params (list (dt/number "1"))}]}
            (generate "company | where: id = 1 | update! active = true")))
+    (is (= {:queries [{:table "company"
+                       :query "UPDATE \"company\" SET \"deleted_at\" = NULL WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
+                       :params (list (dt/number "1"))}]}
+           (generate "company | where: id = 1 | update! deleted_at = null")))
 
     ;; Test JSONB type conversion
     (is (= {:queries [{:table "customer"
@@ -402,25 +410,25 @@
            (generate-expressions ["company |= active_companies"]))))
 
   (testing "Variable used as table generates CTE"
-    (is (= {:query "WITH \"active_companies\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"ac_0\".* FROM \"active_companies\" AS \"ac_0\" LIMIT 250"
+    (is (= {:query "WITH \"active_companies\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"active_companies\".* FROM \"active_companies\" AS \"active_companies\" LIMIT 250"
             :params nil}
            (generate-expressions ["company |= active_companies"
                                   "active_companies"]))))
 
   (testing "Variable with WHERE filter generates filtered CTE"
-    (is (= {:query "WITH \"active_companies\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" = ? ) SELECT \"ac_0\".* FROM \"active_companies\" AS \"ac_0\" LIMIT 250"
+    (is (= {:query "WITH \"active_companies\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" = ? ) SELECT \"active_companies\".* FROM \"active_companies\" AS \"active_companies\" LIMIT 250"
             :params (map dt/string ["Acme"])}
            (generate-expressions ["company | where: name = 'Acme' |= active_companies"
                                   "active_companies"]))))
 
   (testing "Join through a variable resolves correctly"
-    (is (= {:query "WITH \"active_companies\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"active_companies\" AS \"ac_0\" JOIN \"employee\" AS \"e_1\" ON \"ac_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
+    (is (= {:query "WITH \"active_companies\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"active_companies\" AS \"active_companies\" JOIN \"employee\" AS \"e_1\" ON \"active_companies\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
             :params nil}
            (generate-expressions ["company |= active_companies"
                                   "active_companies | employee"]))))
 
   (testing "Composed variables (variable of variable) generates flat CTEs"
-    (is (= {:query "WITH \"active_companies\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ), \"small_active\" AS ( SELECT \"ac_0\".* FROM \"active_companies\" AS \"ac_0\" LIMIT 10 ) SELECT \"sa_0\".* FROM \"small_active\" AS \"sa_0\" LIMIT 250"
+    (is (= {:query "WITH \"active_companies\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ), \"small_active\" AS ( SELECT \"active_companies\".* FROM \"active_companies\" AS \"active_companies\" LIMIT 10 ) SELECT \"small_active\".* FROM \"small_active\" AS \"small_active\" LIMIT 250"
             :params nil}
            (generate-expressions ["company |= active_companies"
                                   "active_companies | l: 10 |= small_active"
@@ -429,7 +437,7 @@
   (testing "Reverse join: child table navigates to variable wrapping its parent"
     ;; employee.company_id -> company.id
     ;; mytest = company (parent); employee | mytest should join employee to the CTE
-    (is (= {:query "WITH \"mytest\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"e_0\".id AS \"__e_0__id\", \"m_1\".* FROM \"employee\" AS \"e_0\" JOIN \"mytest\" AS \"m_1\" ON \"e_0\".\"company_id\" = \"m_1\".\"id\" LIMIT 250"
+    (is (= {:query "WITH \"mytest\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"e_0\".id AS \"__e_0__id\", \"mytest\".* FROM \"employee\" AS \"e_0\" JOIN \"mytest\" AS \"mytest\" ON \"e_0\".\"company_id\" = \"mytest\".\"id\" LIMIT 250"
             :params nil}
            (generate-expressions ["company |= mytest"
                                   "employee | mytest"]))))
@@ -437,7 +445,7 @@
   (testing "Reverse join: parent table navigates to variable wrapping its child"
     ;; employee.company_id -> company.id
     ;; mytest = employee (child); company | mytest should join company to the CTE
-    (is (= {:query "WITH \"mytest\" AS ( SELECT \"e_0\".* FROM \"employee\" AS \"e_0\" ) SELECT \"c_0\".id AS \"__c_0__id\", \"m_1\".* FROM \"company\" AS \"c_0\" JOIN \"mytest\" AS \"m_1\" ON \"c_0\".\"id\" = \"m_1\".\"company_id\" LIMIT 250"
+    (is (= {:query "WITH \"mytest\" AS ( SELECT \"e_0\".* FROM \"employee\" AS \"e_0\" ) SELECT \"c_0\".id AS \"__c_0__id\", \"mytest\".* FROM \"company\" AS \"c_0\" JOIN \"mytest\" AS \"mytest\" ON \"c_0\".\"id\" = \"mytest\".\"company_id\" LIMIT 250"
             :params nil}
            (generate-expressions ["employee |= mytest"
                                   "company | mytest"]))))
@@ -448,12 +456,13 @@
             :params nil}
            (generate-expressions ["company |= x | l: 10"])))
     ;; x is the unfiltered snapshot (no limit) — CTE body has no LIMIT
-    (is (= {:query "WITH \"x\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"x_0\".* FROM \"x\" AS \"x_0\" LIMIT 250"
+    (is (= {:query "WITH \"x\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"x\".* FROM \"x\" AS \"x\" LIMIT 250"
             :params nil}
            (generate-expressions ["company |= x | l: 10"
                                   "x"]))))
 
   (testing "Column reference via variable name resolves to the real SQL alias"
+    ;; Within-expression: |= c still routes through pending-assignments → real table alias c_0
     (is (= {:query "SELECT \"e_1\".\"id\", \"c_0\".\"id\", \"c_0\".id AS \"__c_0__id\", \"e_1\".id AS \"__e_1__id\" FROM \"company\" AS \"c_0\" JOIN \"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
             :params nil}
            (generate-expressions ["company |= c | employee | s: id, c.id"])))
@@ -462,15 +471,25 @@
                 "WHERE \"c_0\".\"id\" = ?")))
     (is (true? (clojure.string/includes?
                 (:query (generate-expressions ["company |= c | employee | o: c.id"]))
-                "ORDER BY \"c_0\".\"id\""))))
+                "ORDER BY \"c_0\".\"id\"")))
+
+    ;; Cross-expression: CTE alias = variable name, so x.id resolves to "x"."id"
+    (is (true? (clojure.string/includes?
+                (:query (generate-expressions ["company |= x"
+                                               "x | w: x.id = 1"]))
+                "WHERE \"x\".\"id\" = ?")))
+    (is (true? (clojure.string/includes?
+                (:query (generate-expressions ["company |= x"
+                                               "x | o: x.id"]))
+                "ORDER BY \"x\".\"id\""))))
 
   (testing "Same-source variables: two variables wrapping the same table join on id"
-    (is (= {:query "WITH \"c1\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ), \"c2\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"c_1\".* FROM \"c1\" AS \"c_0\" JOIN \"c2\" AS \"c_1\" ON \"c_0\".\"id\" = \"c_1\".\"id\" LIMIT 250"
+    (is (= {:query "WITH \"c1\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ), \"c2\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"c2\".* FROM \"c1\" AS \"c1\" JOIN \"c2\" AS \"c2\" ON \"c1\".\"id\" = \"c2\".\"id\" LIMIT 250"
             :params nil}
            (generate-expressions ["company |= c1"
                                   "company |= c2"
                                   "c1 | c2"])))
-    (is (= {:query "WITH \"c2\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ), \"c1\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"c_1\".* FROM \"c2\" AS \"c_0\" JOIN \"c1\" AS \"c_1\" ON \"c_0\".\"id\" = \"c_1\".\"id\" LIMIT 250"
+    (is (= {:query "WITH \"c2\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ), \"c1\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"c1\".* FROM \"c2\" AS \"c2\" JOIN \"c1\" AS \"c1\" ON \"c2\".\"id\" = \"c1\".\"id\" LIMIT 250"
             :params nil}
            (generate-expressions ["company |= c1"
                                   "company |= c2"

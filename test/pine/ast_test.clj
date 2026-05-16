@@ -296,6 +296,16 @@
     ;;        (generate :update "customer | update! name = 'John'")))
     )
 
+  (testing "Generate ast for `assign`"
+    ;; The snapshot captures the current table alias at the point of |=
+    (is (= "c_0"
+           (get-in (generate :pending-assignments "company |= x")
+                   ["x" :current])))
+    ;; Mid-pipeline: snapshot is taken at |=, not at the end of the expression
+    (is (= "c_0"
+           (get-in (generate :pending-assignments "company |= x | employee")
+                   ["x" :current]))))
+
   (testing "Schema-based type conversion in WHERE operations"
     ;; Test that JSONB column gets proper type conversion in WHERE clause
     (let [where-result (generate :where "customer | w: data = '{\"key\": \"value\"}'")]

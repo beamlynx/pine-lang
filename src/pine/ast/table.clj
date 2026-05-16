@@ -76,7 +76,7 @@
 (defn- handle-as-variable [state value var-ast]
   (let [index (state :index)
         {:keys [table alias join-column join-left-column join-right-column join]} value
-        a (or alias (str (make-alias table) "_" (state :table-count)))
+        a (or alias table)
         current {:schema nil :table table :ast var-ast :alias a
                  :join-column join-column :join-left-column join-left-column
                  :join-right-column join-right-column :join join
