@@ -118,7 +118,11 @@
 
     ;; Alias-dot after completed column: s: id, e. should show all columns for alias e
     (is (= ["id" "company_id" "reports_to"]
-           (->> "employee as e | company | s: id, e." gen :select (map :column)))))
+           (->> "employee as e | company | s: id, e." gen :select (map :column))))
+
+    ;; Alias-dot excludes already-selected columns for that alias: s: e.id, e. omits id
+    (is (= ["company_id" "reports_to"]
+           (->> "x.company as c | y.employee as e | s: e.id, e." gen :select (map :column)))))
 
   (testing "Generate `order-partial` hints"
     (is (= [{:column "id" :alias "c_0"} {:column "created_at" :alias "c_0"}] (->  "company | o:"         gen :order)))
@@ -149,6 +153,10 @@
     (is (= ["id" "company_id" "reports_to"]
            (->> "x.company as c | y.employee as e | w: e." gen :where (map :column))))
 
+    ;; Complete condition then alias-dot: w: id = 1, e. shows all columns for alias e
+    (is (= ["id" "company_id" "reports_to"]
+           (->> "x.company as c | y.employee as e | w: id = 1, e." gen :where (map :column))))
+
     ;; How to auto-complete the right hand side? Values or other columns?
     ;; Right now it shows the same hints as the left hand side
     ;; (is (= [{:column "id" :alias "c_0"}]     (->  "company | w: id ="      gen :where)))
@@ -167,7 +175,11 @@
            (-> "company | u! i" gen :update)))
     ;; Alias-dot partial: u! e. should show all columns for alias e
     (is (= ["id" "company_id" "reports_to"]
-           (->> "x.company as c | y.employee as e | u! e." gen :update (map :column)))))
+           (->> "x.company as c | y.employee as e | u! e." gen :update (map :column))))
+
+    ;; Prior assignment then alias-dot: u! id = '1', e. excludes already-assigned id
+    (is (= ["company_id" "reports_to"]
+           (->> "x.company as c | y.employee as e | u! id = '1', e." gen :update (map :column)))))
 
   (testing "Generate hints with cursor position"
     ;; Basic cursor truncation test - cursor at "company | s: " should show select hints for company
