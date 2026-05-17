@@ -494,3 +494,31 @@
            (generate-expressions ["company |= c1"
                                   "company |= c2"
                                   "c2 | c1"])))))
+
+(deftest test-checkpoints
+  (testing "LIMIT checkpoint: auto-CTE when a table op follows limit"
+    (is (= {:query "WITH \"__pine_0__\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ) SELECT \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"__pine_0__\" AS \"__pine_0__\" JOIN \"employee\" AS \"e_1\" ON \"__pine_0__\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
+            :params nil}
+           (generate "x.company | l: 10 | employee"))))
+
+  (testing "LIMIT checkpoint with explicit user-named CTE via |="
+    (is (= {:query "WITH \"pg\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ) SELECT \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"pg\" AS \"pg\" JOIN \"employee\" AS \"e_1\" ON \"pg\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
+            :params nil}
+           (generate "x.company | l: 10 |= pg | employee"))))
+
+  (testing "GROUP checkpoint: auto-CTE when a table op follows group"
+    (is (= {:query "WITH \"__pine_0__\" AS ( SELECT \"c_0\".\"id\", COUNT(1) AS \"count\" FROM \"x\".\"company\" AS \"c_0\" GROUP BY \"c_0\".\"id\" ) SELECT \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"__pine_0__\" AS \"__pine_0__\" JOIN \"employee\" AS \"e_1\" ON \"__pine_0__\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
+            :params nil}
+           (generate "x.company | group: id => count | employee"))))
+
+  (testing "Checkpoint does not fire for non-table ops after limit"
+    ;; LIMIT followed by COUNT: checkpoint holds, COUNT builds its own wrapper CTE
+    (is (= {:query "WITH x AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" LIMIT 100 ) SELECT COUNT(*) FROM x"
+            :params nil}
+           (generate "company | limit: 100 | count:"))))
+
+  (testing "Standalone GROUP without following table still uses build-group-query"
+    ;; Existing behaviour must not regress: the GROUP dispatch path is unaffected
+    (is (clojure.string/includes?
+         (:query (generate "x.company | group: id => count"))
+         "GROUP BY"))))

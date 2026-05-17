@@ -101,6 +101,8 @@ x
 - A variable used but not defined in a preceding expression causes a table-not-found error.
 - Circular references are not supported.
 
+See also: [checkpoints.md](checkpoints.md) for same-expression anonymous CTEs after GROUP/LIMIT.
+
 ---
 
 ## Implementation

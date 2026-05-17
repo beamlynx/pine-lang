@@ -80,7 +80,17 @@
             ;; POST
             ;; ---
             ;; - hints
-            :hints          {:table [] :select [] :order [] :where [] :update []}})
+            :hints          {:table [] :select [] :order [] :where [] :update []}
+
+            ;; ---
+            ;; Checkpoint
+            ;; ---
+            ;; Tracks auto-generated CTE names (__pine_0__, __pine_1__, ...)
+            :auto-cte-count   0
+            ;; Set after a checkpoint op (group/limit) to signal the next table op
+            ;; should become a CTE instead of a direct join.
+            ;; nil | {:needs-assign true} | {:name "n" :needs-table true}
+            :pending-checkpoint nil})
 
 (defn- variable-output-columns
   "Return the column list a variable's CTE actually exposes, for hint generation.
@@ -203,6 +213,72 @@
         (assoc :cursor cursor)
         (assoc :variables variables))))
 
+;; ---------------------------------------------------------------------------
+;; Checkpoint helpers
+;; ---------------------------------------------------------------------------
+
+(declare handle-op)
+
+(def ^:private checkpoint-op-types #{:group :limit})
+
+(defn- reset-for-cte [state]
+  (assoc state
+         :tables    [] :columns [] :limit nil :joins  []
+         :where     [] :order   [] :group [] :update nil
+         :current nil :context nil :current-index 0
+         :table-count 0 :operation {:type nil :value nil}))
+
+(defn- seal-as-cte
+  "Store snapshot under cname, seed its join references, reset the query-building
+  state, then inject cname as the first table so subsequent ops compose on top of it."
+  [state cname snapshot]
+  (let [new-refs (-> (:references state)
+                     (seed-variable-references snapshot cname)
+                     (patch-variable-relations {cname snapshot})
+                     (patch-same-source-variable-joins {cname snapshot}))]
+    (-> state
+        (assoc :references new-refs)
+        (assoc-in [:pending-assignments cname] snapshot)
+        reset-for-cte
+        (handle-op {:type :table :value {:table cname}}))))
+
+(defn- flush-checkpoint
+  "State-machine step: called at the start of each handle-ops iteration.
+  Converts a pending checkpoint into a CTE when the right op type is seen."
+  [state op]
+  (let [checkpoint (:pending-checkpoint state)]
+    (cond
+      (nil? checkpoint)
+      state
+
+      ;; Explicit assign after a checkpoint op: record the user name, wait for table
+      (and (:needs-assign checkpoint) (= (:type op) :assign))
+      (assoc state :pending-checkpoint {:name (:value op) :needs-table true})
+
+      ;; Table without explicit assign: auto-generate a CTE name
+      (and (:needs-assign checkpoint) (= (:type op) :table))
+      (let [n     (:auto-cte-count state)
+            cname (str "__pine_" n "__")
+            snapshot (dissoc state :pending-assignments)]
+        (-> state
+            (update :auto-cte-count inc)
+            (assoc :pending-checkpoint nil)
+            (seal-as-cte cname snapshot)))
+
+      ;; Waiting for assign but got some other op (e.g. where, limit) — hold
+      (:needs-assign checkpoint)
+      state
+
+      ;; User explicitly named the CTE; snapshot already stored by assign/handle
+      (and (:needs-table checkpoint) (= (:type op) :table))
+      (let [cname    (:name checkpoint)
+            snapshot (get-in state [:pending-assignments cname])]
+        (-> state
+            (assoc :pending-checkpoint nil)
+            (seal-as-cte cname snapshot)))
+
+      :else state)))
+
 (defn handle-op [state {:keys [type value]}]
   (case type
     :select (select/handle state value)
@@ -226,14 +302,15 @@
 
 (defn handle-ops [state ops]
   (reduce (fn [s [i o]]
-            (cond-> (-> s
-                        (assoc :index i)
-                        (handle-op o)
-                        (update :pending-count dec))
-              ;; :assign does not change the query being built — skip :operation
-              ;; so build-query dispatch and post-handle selected-tables logic
-              ;; see the last real SQL-producing operation, not the assign op.
-              (not= (:type o) :assign) (assoc :operation o)))
+            ;; flush-checkpoint runs before handle-op; it may reset state and inject
+            ;; a synthetic CTE table — the :index must be set first so the injected
+            ;; table gets the correct operation index.
+            (let [s (-> s (assoc :index i) (flush-checkpoint o))]
+              (cond-> (-> s
+                          (handle-op o)
+                          (update :pending-count dec))
+                (not= (:type o) :assign) (assoc :operation o)
+                (checkpoint-op-types (:type o)) (assoc :pending-checkpoint {:needs-assign true}))))
           state
           (map-indexed vector ops)))
 
