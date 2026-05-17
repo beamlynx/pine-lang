@@ -112,16 +112,21 @@
     (is (= ["id" "company_id" "reports_to"]
            (->> "x.company as c | y.employee as e | s: c.id,"  gen :select (map :column))))
 
-    ;; The following doesn't get parsed at the moment
-    ;; We need to update the pine.bnf to support the syntax
-    ;;
-    ;; (is (= ["reports_to"  "company_id" "id"] (->> "employee as e | company | s: id, e."          gen :select (map :column))))
-    )
+    ;; Alias-dot partial: s: e. should show all columns for alias e
+    (is (= ["id" "company_id" "reports_to"]
+           (->> "x.company as c | y.employee as e | s: e."  gen :select (map :column))))
+
+    ;; Alias-dot after completed column: s: id, e. should show all columns for alias e
+    (is (= ["id" "company_id" "reports_to"]
+           (->> "employee as e | company | s: id, e." gen :select (map :column)))))
 
   (testing "Generate `order-partial` hints"
     (is (= [{:column "id" :alias "c_0"} {:column "created_at" :alias "c_0"}] (->  "company | o:"         gen :order)))
     (is (= [{:column "created_at" :alias "c_0"}]                             (->  "company | o: id,"     gen :order)))
-    (is (= [{:column "id" :alias "c_0"} {:column "created_at" :alias "c_0"}] (->  "company | s: id | o:" gen :order))))
+    (is (= [{:column "id" :alias "c_0"} {:column "created_at" :alias "c_0"}] (->  "company | s: id | o:" gen :order)))
+    ;; Alias-dot partial: o: e. should show all columns for alias e
+    (is (= ["id" "company_id" "reports_to"]
+           (->> "x.company as c | y.employee as e | o: e." gen :order (map :column)))))
 
   (testing "Generate `where-partial` hints"
     (is (= [{:column "id" :alias "c_0"} {:column "created_at" :alias "c_0"}] (->  "company | where:"       gen :where)))
@@ -140,6 +145,9 @@
            (-> "y.employee as e | x.company as c | w: e.company_id" gen :where)))
     (is (= [{:column "id" :alias "c"}]
            (-> "y.employee as e | x.company as c | w: c.id"         gen :where)))
+    ;; Alias-dot partial: w: e. should show all columns for alias e
+    (is (= ["id" "company_id" "reports_to"]
+           (->> "x.company as c | y.employee as e | w: e." gen :where (map :column))))
 
     ;; How to auto-complete the right hand side? Values or other columns?
     ;; Right now it shows the same hints as the left hand side
@@ -156,7 +164,10 @@
     (is (= [{:column "created_at" :alias "c_0"}]
            (-> "company | u! id = '1'," gen :update)))
     (is (= [{:column "id" :alias "c_0"}]
-           (-> "company | u! i" gen :update))))
+           (-> "company | u! i" gen :update)))
+    ;; Alias-dot partial: u! e. should show all columns for alias e
+    (is (= ["id" "company_id" "reports_to"]
+           (->> "x.company as c | y.employee as e | u! e." gen :update (map :column)))))
 
   (testing "Generate hints with cursor position"
     ;; Basic cursor truncation test - cursor at "company | s: " should show select hints for company

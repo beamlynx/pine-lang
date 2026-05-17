@@ -99,10 +99,11 @@
     (is (= [{:type :select-partial, :value []}]                        (p "s: ")))
     (is (= [{:type :select-partial, :value [{:column "id"}]}]          (p "s: id,")))
     (is (= [{:type :select-partial, :value [{:column "id"}]}]          (-> "company | s: id," p rest)))
-    ;; Not supported yet
-    ;; (is (= [{:type :select-partial, :value [{:alias "c" :column ""}]}] (-> "company as c | s: c." p rest)))
-    ;; (is (= [{:type :select-partial, :value [{:alias "c" :column ""}]}] (-> "company as c | s: id, c." p rest)))
-    )
+    ;; Alias-dot partial
+    (is (= [{:type :select-partial :value [] :partial-alias {:alias "e" :column ""}}]
+           (-> "company | s: e." p rest)))
+    (is (= [{:type :select-partial :value [{:column "id"}] :partial-alias {:alias "e" :column ""}}]
+           (-> "company | s: id, e." p rest))))
 
   (testing "Parse `select` expressions"
     (is (= [{:type :select, :value [{:column  "name"}]}]                              (p "select: name")))
@@ -162,12 +163,20 @@
     (is (= [{:type :where-partial, :value {:complete-conditions [] :partial-condition {:column "id"}}}] (p "w: id")))
     (is (= [{:type :where-partial, :value {:complete-conditions [] :partial-condition {:alias "u", :column "id"}}}] (p "w: u.id")))
     (is (= [{:type :where-partial, :value {:complete-conditions [] :partial-condition {:column "id", :operator :equals}}}] (p "w: id =")))
-    (is (= [{:type :where-partial, :value {:complete-conditions [] :partial-condition {:column "id", :operator :like}}}] (p "w: id like"))))
+    (is (= [{:type :where-partial, :value {:complete-conditions [] :partial-condition {:column "id", :operator :like}}}] (p "w: id like")))
+    ;; Alias-dot partial
+    (is (= [{:type :where-partial :value {:complete-conditions [] :partial-condition {:alias "e" :column ""}}}]
+           (-> "company | w: e." p rest))))
 
   (testing "Parse `order-partial` expressions"
     (is (= [{:type :order-partial, :value []}]                                  (p "order:")))
     (is (= [{:type :order-partial, :value []}]                                  (p "o: ")))
-    (is (= [{:type :order-partial, :value [{:column "id", :direction "DESC"}]}] (p "o: id,"))))
+    (is (= [{:type :order-partial, :value [{:column "id", :direction "DESC"}]}] (p "o: id,")))
+    ;; Alias-dot partial
+    (is (= [{:type :order-partial :value [] :partial-alias {:alias "e" :column ""}}]
+           (-> "company | o: e." p rest)))
+    (is (= [{:type :order-partial :value [{:column "id" :direction "DESC"}] :partial-alias {:alias "e" :column ""}}]
+           (-> "company | o: id, e." p rest))))
 
   (testing "Parse `order` expressions"
     (is (= [{:type :order, :value [{:column  "name" :direction "DESC"}]}]            (p "order: name")))
@@ -224,7 +233,15 @@
     (is (= [{:type :update-partial :value {:assignments [{:column {:alias nil :column "id"}
                                                           :value (dt/string "1")}]
                                            :partial-column {:alias nil :column "n"}}}]
-           (p "u! id = '1', n"))))
+           (p "u! id = '1', n")))
+    ;; Alias-dot partial
+    (is (= {:type :update-partial :value {:assignments []
+                                          :partial-column {:alias "e" :column ""}}}
+           (-> "employee as e | company | u! e." p last)))
+    (is (= {:type :update-partial :value {:assignments [{:column {:alias nil :column "id"}
+                                                         :value (dt/string "1")}]
+                                          :partial-column {:alias "e" :column ""}}}
+           (-> "employee as e | company | u! id = '1', e." p last))))
 
   (testing "Parse No Operation expressions"
     (is (= [{:value {:table "company"}, :type :table} {:type :delete, :value nil}] (p "company | d:"))))

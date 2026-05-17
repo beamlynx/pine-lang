@@ -176,7 +176,7 @@
         ;; the next column yet, so the last completed column's alias is irrelevant.
         ;; For complete ops, use the typed column's alias when it was added in the current scope.
         a (if (or (= type :select-partial) (= type :order-partial))
-            (state :current)
+            (or (get-in state [:operation :partial-alias :alias]) (state :current))
             (if (and (seq column)
                      (> (column :operation-index) (state :current-index)))
               (column :alias)

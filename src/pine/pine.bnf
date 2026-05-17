@@ -6,7 +6,7 @@ OPERATION    := SELECT-PARTIAL | SELECT | WHERE-PARTIAL | WHERE | LIMIT | FROM |
 
 TABLE             := table table-mods
 
-SELECT-PARTIAL    := <select-op> aliased-columns? <",">?
+SELECT-PARTIAL    := <select-op> aliased-columns <","> <ws*> partial-alias | <select-op> partial-alias | <select-op> aliased-columns? <",">?
 SELECT            := <select-op> aliased-columns
 
 WHERE-PARTIAL     := <where-op>         conditions <","> <ws*> partial-condition  |  <where-op> partial-condition  |  <where-op>
@@ -14,7 +14,7 @@ WHERE             := <where-op>         conditions     |     conditions
 LIMIT             := <limit-op>         number         |     number
 FROM              := <from-op>          alias
 
-ORDER-PARTIAL     := <order-op>         order-columns? <",">?
+ORDER-PARTIAL     := <order-op> order-columns <","> <ws*> partial-alias | <order-op> partial-alias | <order-op> order-columns? <",">?
 ORDER             := <order-op>         order-columns
 
 DELETE-ACTION     := <delete-action-op> hint-column
@@ -46,12 +46,13 @@ aggregate-function  := "count" | "string_agg" | "sum" | "avg" | "min" | "max"
 
 update-assignments := update-assignment (<","> <ws*> update-assignment)*
 update-assignment  := column <ws*> <"="> <ws*> (column|string|number|boolean|null|date)
-partial-update-column := column
+partial-update-column := partial-alias | column
 
 conditions          := condition (<","> <ws*> condition)*
 condition           := column <ws*> (condition-default|condition-in) (<ws*> cast)?
 
-partial-condition   := column <ws*> operator <ws*> | column
+partial-condition   := partial-alias | column <ws*> operator <ws*> | column
+partial-alias       := alias <".">
 <condition-default> := operator <ws*> (column|string|number|boolean|null|date)
 <condition-in>      := (in  | not-in) <ws*>  <"("> strings* <")">
 cast                := <"::"> ("text"|"uuid")

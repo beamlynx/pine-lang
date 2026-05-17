@@ -87,6 +87,12 @@
     [:aliased-column [:column [:alias [:symbol a]] [:symbol c] [:column-function fn]] [:alias [:symbol ca]]] {:alias a :column c :column-function fn :column-alias ca}
     :else                 (throw (ex-info "Unknown COLUMN operation" {:_ column}))))
 
+(defn- parse-partial-alias [partial-alias]
+  (match partial-alias
+    [:partial-alias [:alias [:symbol a]]]
+    {:alias a :column ""}
+    :else (throw (ex-info "Unknown partial alias" {:_ partial-alias}))))
+
 (defn normalize-select [payload type]
   (match payload
     [:aliased-columns & columns] {:type type :value (mapv -normalize-column columns)}
@@ -95,10 +101,22 @@
 (defmethod -normalize-op :SELECT [[_ payload]]
   (normalize-select payload :select))
 
-(defmethod -normalize-op :SELECT-PARTIAL [[_ payload]]
-  (if (empty? payload)
-    {:type :select-partial, :value []}
-    (normalize-select payload :select-partial)))
+(defmethod -normalize-op :SELECT-PARTIAL [operation]
+  (let [children (vec (rest operation))
+        partial-alias-node (first (filter #(= (first %) :partial-alias) children))
+        aliased-columns-node (first (filter #(= (first %) :aliased-columns) children))]
+    (cond
+      (nil? aliased-columns-node)
+      (if partial-alias-node
+        {:type :select-partial :value [] :partial-alias (parse-partial-alias partial-alias-node)}
+        {:type :select-partial :value []})
+
+      partial-alias-node
+      (assoc (normalize-select aliased-columns-node :select-partial)
+             :partial-alias (parse-partial-alias partial-alias-node))
+
+      :else
+      (normalize-select aliased-columns-node :select-partial))))
 
 ;; ------
 ;; ORDER
@@ -125,10 +143,22 @@
 (defmethod -normalize-op :ORDER [[_ payload]]
   (-normalize-order payload :order))
 
-(defmethod -normalize-op :ORDER-PARTIAL [[_ payload]]
-  (if (empty? payload)
-    {:type :order-partial, :value []}
-    (-normalize-order payload :order-partial)))
+(defmethod -normalize-op :ORDER-PARTIAL [operation]
+  (let [children (vec (rest operation))
+        partial-alias-node (first (filter #(= (first %) :partial-alias) children))
+        order-columns-node (first (filter #(= (first %) :order-columns) children))]
+    (cond
+      (nil? order-columns-node)
+      (if partial-alias-node
+        {:type :order-partial :value [] :partial-alias (parse-partial-alias partial-alias-node)}
+        {:type :order-partial :value []})
+
+      partial-alias-node
+      (assoc (-normalize-order order-columns-node :order-partial)
+             :partial-alias (parse-partial-alias partial-alias-node))
+
+      :else
+      (-normalize-order order-columns-node :order-partial))))
 
 ;; -----
 ;; WHERE
@@ -304,6 +334,10 @@
 
 (defn- parse-partial-condition [partial-condition]
   (match partial-condition
+    ;; Alias-dot only (e.g. "e.")
+    [:partial-condition [:partial-alias [:alias [:symbol a]]]]
+    {:alias a :column ""}
+
     ;; Just a column
     [:partial-condition [:column [:symbol column]]]
     {:column column}
@@ -437,6 +471,10 @@
     []
     {:type :update-partial :value {:assignments [] :partial-column nil}}
 
+    [[:partial-update-column [:partial-alias [:alias [:symbol a]]]]]
+    {:type :update-partial :value {:assignments []
+                                   :partial-column {:alias a :column ""}}}
+
     [[:partial-update-column column-pattern]]
     {:type :update-partial :value {:assignments []
                                    :partial-column (extract-column-info column-pattern)}}
@@ -444,6 +482,10 @@
     [[:update-assignments & assignments]]
     {:type :update-partial :value {:assignments (mapv parse-update-assignment assignments)
                                    :partial-column nil}}
+
+    [[:update-assignments & assignments] [:partial-update-column [:partial-alias [:alias [:symbol a]]]]]
+    {:type :update-partial :value {:assignments (mapv parse-update-assignment assignments)
+                                   :partial-column {:alias a :column ""}}}
 
     [[:update-assignments & assignments] [:partial-update-column column-pattern]]
     {:type :update-partial :value {:assignments (mapv parse-update-assignment assignments)
