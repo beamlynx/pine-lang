@@ -244,33 +244,40 @@
 
 (defn- flush-checkpoint
   "State-machine step: called at the start of each handle-ops iteration.
-  Converts a pending checkpoint into a CTE when the right op type is seen."
+  Converts a pending checkpoint into a CTE when the right op type is seen.
+
+  Fires when the incoming op is a table (join composition) or another checkpoint
+  op (e.g. LIMIT after GROUP). Does not fire for count/delete/update since those
+  have their own query-building paths that do not need CTE separation."
   [state op]
-  (let [checkpoint (:pending-checkpoint state)]
+  (let [checkpoint (:pending-checkpoint state)
+        op-type    (:type op)
+        fire?      (or (= op-type :table)
+                       (contains? checkpoint-op-types op-type))]
     (cond
       (nil? checkpoint)
       state
 
-      ;; Explicit assign after a checkpoint op: record the user name, wait for table
-      (and (:needs-assign checkpoint) (= (:type op) :assign))
+      ;; Explicit assign after a checkpoint op: record the user name, wait
+      (and (:needs-assign checkpoint) (= op-type :assign))
       (assoc state :pending-checkpoint {:name (:value op) :needs-table true})
 
-      ;; Table without explicit assign: auto-generate a CTE name
-      (and (:needs-assign checkpoint) (= (:type op) :table))
-      (let [n     (:auto-cte-count state)
-            cname (str "__pine_" n "__")
+      ;; Auto-named: fire when a table or another checkpoint op arrives
+      (and (:needs-assign checkpoint) fire?)
+      (let [n        (:auto-cte-count state)
+            cname    (str "__pine_" n "__")
             snapshot (dissoc state :pending-assignments)]
         (-> state
             (update :auto-cte-count inc)
             (assoc :pending-checkpoint nil)
             (seal-as-cte cname snapshot)))
 
-      ;; Waiting for assign but got some other op (e.g. where, limit) — hold
+      ;; Waiting for assign, non-triggering op (count, where, etc.) — hold
       (:needs-assign checkpoint)
       state
 
-      ;; User explicitly named the CTE; snapshot already stored by assign/handle
-      (and (:needs-table checkpoint) (= (:type op) :table))
+      ;; User-named: fire when a table or another checkpoint op arrives
+      (and (:needs-table checkpoint) fire?)
       (let [cname    (:name checkpoint)
             snapshot (get-in state [:pending-assignments cname])]
         (-> state

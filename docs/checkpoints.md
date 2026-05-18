@@ -96,9 +96,9 @@ SELECT COUNT(*) FROM x
 ## How it works
 
 - **Detection**: after processing a GROUP or LIMIT op, `handle-ops` sets `:pending-checkpoint {:needs-assign true}` on the state.
-- **Fire on table**: at the start of each `handle-ops` iteration, `flush-checkpoint` checks whether a checkpoint is pending and whether the incoming op is a TABLE op. If both are true, the current state is snapshotted into `:pending-assignments` under an auto-generated name (`__pine_0__`, `__pine_1__`, ...), the references map is seeded for that name (same FK propagation used by variables), and the state is reset. The CTE name is then injected as the first table so subsequent ops join to it.
-- **User-named CTE**: if an `|= name` op appears between the checkpoint op and the table op, `flush-checkpoint` records the name and waits for the table. `assign/handle` stores the snapshot under `name` as normal. When the table op arrives, `activate-checkpoint-cte` seeds references for the named CTE and resets state.
-- **Hold for non-table ops**: if the op after GROUP/LIMIT is something other than a table or assign (e.g. `count:`, `where:`), the checkpoint stays pending and the op is processed normally without firing.
+- **Fire on table or checkpoint op**: at the start of each `handle-ops` iteration, `flush-checkpoint` checks whether a checkpoint is pending and whether the incoming op is a TABLE op or another checkpoint op (GROUP or LIMIT). If so, the current state is snapshotted into `:pending-assignments` under an auto-generated name (`__pine_0__`, `__pine_1__`, ...), the references map is seeded for that name (same FK propagation used by variables), and the state is reset. The CTE name is then injected as the first table so subsequent ops compose on top of it. A LIMIT following a GROUP therefore fires the GROUP checkpoint, then applies the limit to the outer query.
+- **User-named CTE**: if an `|= name` op appears between the checkpoint op and the following op, `flush-checkpoint` records the name and waits. `assign/handle` stores the snapshot under `name` as normal. When the next table or checkpoint op arrives, `seal-as-cte` activates it.
+- **Hold for non-triggering ops**: if the op after GROUP/LIMIT is something that has its own query-building path — `count:`, `delete:`, etc. — the checkpoint stays pending and that op is processed without firing the checkpoint.
 - **SQL generation**: because the CTE table has an `:ast` entry in `:aliases`, `collect-ctes` automatically picks it up and emits the `WITH` clause. No changes to `eval.clj` were needed.
 
 ## Constraints

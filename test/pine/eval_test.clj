@@ -521,4 +521,28 @@
     ;; Existing behaviour must not regress: the GROUP dispatch path is unaffected
     (is (clojure.string/includes?
          (:query (generate "x.company | group: id => count"))
-         "GROUP BY"))))
+         "GROUP BY")))
+
+  (testing "GROUP followed by LIMIT seals group as CTE, applies limit to outer"
+    ;; All three forms should produce equivalent SQL (modulo CTE name)
+    (let [expected-cte-body "SELECT \"c_0\".\"id\", COUNT(1) AS \"count\" FROM \"x\".\"company\" AS \"c_0\" GROUP BY \"c_0\".\"id\""
+          ;; Auto-named
+          q1 (:query (generate "x.company | group: id => count | l: 1"))
+          ;; User-named via |=
+          q2 (:query (generate "x.company | group: id => count |= grp | l: 1"))]
+      ;; Both contain the same GROUP CTE body
+      (is (clojure.string/includes? q1 expected-cte-body))
+      (is (clojure.string/includes? q2 expected-cte-body))
+      ;; Both apply LIMIT 1 on the outer query
+      (is (clojure.string/ends-with? q1 "LIMIT 1"))
+      (is (clojure.string/ends-with? q2 "LIMIT 1"))
+      ;; Auto-named CTE uses generated name; user-named uses "grp"
+      (is (clojure.string/includes? q1 "\"__pine_0__\""))
+      (is (clojure.string/includes? q2 "\"grp\""))))
+
+  (testing "GROUP + LIMIT cross-expression baseline matches same-expression form"
+    ;; x | l: 1 in a separate expression should produce the same structure
+    (let [q-cross (:query (generate-expressions ["x.company | group: id => count |= grp"
+                                                 "grp | l: 1"]))
+          q-same  (:query (generate "x.company | group: id => count |= grp | l: 1"))]
+      (is (= q-cross q-same)))))
