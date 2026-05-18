@@ -96,7 +96,10 @@
                    {:connection-id connection-name
                     :version version
                     :query (-> last-expr trim-pipes (generate-state nil conn-id variables) :result eval/build-query eval/formatted-query)
-                    :ast (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where :prettified :ranges :variables :assign])}))))))
+                    :ast (-> (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where :prettified :ranges :variables :assign])
+                             (assoc :pending-assignments
+                                    (into {} (for [[k v] (:pending-assignments state)]
+                                               [k (select-keys v [:tables :selected-tables :joins :columns])]))))}))))))
        (catch Exception e {:connection-id connection-name
                            :error (.getMessage e)})))))
 
