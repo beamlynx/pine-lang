@@ -39,8 +39,23 @@
 (defn make-connection-id [pool]
   (-> pool .getJdbcUrl (s/split #"/") (nth 2)))
 
+(defn jdbc-url->label [url]
+  (let [parts (s/split url #"/")
+        host-port (nth parts 2)
+        dbname (nth parts 3)]
+    (str host-port " · " dbname)))
+
+(defn make-connection-label [pool]
+  (jdbc-url->label (.getJdbcUrl pool)))
+
 (defn get-connection-name [id]
   (-> id get-connection-pool make-connection-id))
+
+(defn list-connections []
+  (mapv (fn [[id _]]
+          {:id id
+           :label (make-connection-label (get-connection-pool id))})
+        @pools))
 
 (defn add-connection-pool [connection]
   (let [pool (create-pool connection)

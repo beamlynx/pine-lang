@@ -119,6 +119,12 @@
        {:connection-id ""
         :version version}})))
 
+(defn get-connections []
+  {:result
+   {:version version
+    :selected-connection-id @db/connection-id
+    :connections (connections/list-connections)}})
+
 (defn test-connection [id]
   (let [result (db/run-query id {:query "SELECT NOW();"})]
     {:connection-id id :time result}))
@@ -171,7 +177,7 @@
 (defroutes app-routes
   ;; connection management
   (GET "/api/v1/connection" [] (-> (get-connection) response))
-  (GET "/api/v1/connections" [] (-> @connections/pools response))
+  (GET "/api/v1/connections" [] (-> (get-connections) response))
   (POST "/api/v1/connections" req
     (let [connection (get-in req [:params])]
       (-> {:connection-id (connections/add-connection-pool connection)} response)))
