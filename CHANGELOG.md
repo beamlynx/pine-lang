@@ -4,6 +4,10 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-05-21
+### Added
+- Structured `GET /api/v1/connections` response: returns an object with `version`, `selected-connection-id`, and a `connections` list of `{id, label}` entries (where `label` is formatted as `host:port · dbname`) (by @Koziar).
+
 ## [0.35.0] - 2026-05-05
 ### Added
 - Per-session database connections: `build`, `eval`, and `sql` endpoints now accept an optional `connection-id` parameter. Queries run against that specific connection pool; when absent, the global connection is used (backward compatible).
