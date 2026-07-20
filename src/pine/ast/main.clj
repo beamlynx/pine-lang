@@ -139,24 +139,46 @@
           (assoc-in [:table varname :column-set] (set output-cols)))
       seeded)))
 
+(defn- build-direction-index
+  "Reverse index: source-table -> {entity-name -> existing-relation}, for one
+  direction. Lets patch-direction look up 'who already relates to S' directly
+  instead of scanning every table in the schema per variable."
+  [refs direction]
+  (reduce-kv (fn [idx entity-name entity-refs]
+               (reduce-kv (fn [idx target existing]
+                            (assoc-in idx [target entity-name] existing))
+                          idx
+                          (get entity-refs direction)))
+             {}
+             (get refs :table {})))
+
 (defn- patch-direction
   "For each variable V wrapping source S, copy T[direction][S] → T[direction][V]
-  for every entity T in the references map. Used by patch-variable-relations."
+  for every entity T that already relates to S. Used by patch-variable-relations.
+
+  Uses a reverse index (source-table -> referring entities) built once instead
+  of scanning every schema table per variable, which turns this from O(v · T)
+  into O(T + v · k) where k is the actual fan-in for each source table. The
+  index is kept in sync with entries this pass adds, since a later variable's
+  source table can itself be an earlier variable processed in this same pass
+  (variable-of-variable composition)."
   [refs variables direction]
-  (reduce (fn [r [varname var-ast]]
-            (let [source-tables (get-source-tables var-ast)]
-              (reduce (fn [r source-table]
-                        (reduce (fn [r entity-name]
-                                  (let [existing (get-in r [:table entity-name direction source-table])]
-                                    (if existing
-                                      (update-in r [:table entity-name direction varname] merge existing)
-                                      r)))
-                                r
-                                (keys (get r :table {}))))
-                      r
-                      source-tables)))
-          refs
-          variables))
+  (:refs
+   (reduce
+    (fn [{:keys [refs index]} [varname var-ast]]
+      (reduce
+       (fn [{:keys [refs index]} source-table]
+         (reduce
+          (fn [{:keys [refs index]} [entity-name existing]]
+            (let [refs*  (update-in refs [:table entity-name direction varname] merge existing)
+                  merged (get-in refs* [:table entity-name direction varname])]
+              {:refs refs* :index (assoc-in index [varname entity-name] merged)}))
+          {:refs refs :index index}
+          (get index source-table)))
+       {:refs refs :index index}
+       (get-source-tables var-ast)))
+    {:refs refs :index (build-direction-index refs direction)}
+    variables)))
 
 (defn- patch-variable-relations
   "Bidirectional pass: for each variable V wrapping source S, find every
