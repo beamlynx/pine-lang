@@ -231,6 +231,6 @@
     ;; when typing "var_x | var", var_y should appear (partial match, unambiguous token)
     (is (= [{:schema nil :table "var_y" :column nil :parent false :heuristic false
              :pine "var_y"}]
-           (-> (gen-with-variables ["company |= var_x" "company |= var_y" "var_x | var"])
+           (-> (gen-with-variables ["customer |= var_x" "customer |= var_y" "var_x | var"])
                :table)))))
 
