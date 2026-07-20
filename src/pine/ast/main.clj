@@ -199,13 +199,29 @@
   "For each ordered pair of distinct variables (v1, v2) that share a source table
   with an 'id' column, register a synthetic id=id join at refs[:table v1 :referred-by v2].
   Only adds entries where no join path already exists, so self-referential FK propagation
-  (e.g. employee/reports_to) is preserved."
+  (e.g. employee/reports_to) is preserved.
+
+  Pairs are generated only within groups of variables that actually share a source
+  table (via an inverted source-table -> variables index), instead of scanning every
+  ordered pair among all variables. This turns the common case (variables spread
+  across distinct source tables) from O(v²) into roughly O(v), while the worst case
+  (all variables sharing one source) stays O(g²) for that group — unavoidable since
+  the output itself is a g² set of pairwise joins."
   [refs variables]
   (let [var-sources (->> variables
                          (map (fn [[vname var-ast]]
                                 [vname (set (get-source-tables var-ast))]))
                          (into {}))
-        vnames (vec (keys var-sources))]
+        by-source (reduce-kv (fn [idx vname sources]
+                                (reduce (fn [idx source] (update idx source (fnil conj []) vname))
+                                        idx
+                                        sources))
+                              {}
+                              var-sources)
+        pairs (distinct (for [[_ vnames] by-source
+                              v1 vnames v2 vnames
+                              :when (not= v1 v2)]
+                          [v1 v2]))]
     (reduce (fn [r [v1 v2]]
               (let [shared-sources (filter (var-sources v1) (var-sources v2))
                     has-id? (fn [tbl] (some #(= "id" (:column %)) (get-in r [:table tbl :columns])))]
@@ -216,7 +232,7 @@
                              [nil v1 "id" :referred-by nil v2 "id" :variable-join])
                   r)))
             refs
-            (for [v1 vnames v2 vnames :when (not= v1 v2)] [v1 v2]))))
+            pairs)))
 
 (defn pre-handle [state connection-id ops-count expression cursor variables]
   (let [refs       (db/init-references connection-id)
