@@ -483,6 +483,17 @@
                                                "x | o: x.id"]))
                 "ORDER BY \"x\".\"id\""))))
 
+  (testing "Re-aliasing a variable name via 'as' takes precedence over the |= snapshot"
+    ;; x is bound to company via |=, then re-aliased to employee via `as x`.
+    ;; The live alias should win: x.id must mean employee.id (the most recent,
+    ;; explicit binding), not the stale company snapshot captured at the |= point.
+    (is (true? (clojure.string/includes?
+                (:query (generate-expressions ["company |= x | employee as x | w: x.id = 1"]))
+                "WHERE \"x\".\"id\" = ?")))
+    (is (false? (clojure.string/includes?
+                 (:query (generate-expressions ["company |= x | employee as x | w: x.id = 1"]))
+                 "WHERE \"c_0\".\"id\" = ?"))))
+
   (testing "Same-source variables: two variables wrapping the same table join on id"
     (is (= {:query "WITH \"c1\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ), \"c2\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"c2\".* FROM \"c1\" AS \"c1\" JOIN \"c2\" AS \"c2\" ON \"c1\".\"id\" = \"c2\".\"id\" LIMIT 250"
             :params nil}
