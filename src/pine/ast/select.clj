@@ -4,7 +4,8 @@
   (let [i       (state :index)
         current (state :current)
         ;; Process each column and handle date functions
-        resolve-alias #(or (get-in state [:pending-assignments % :current]) %)
+        ;; A live alias (e.g. re-bound via `as`) always wins over a stale |= snapshot
+        resolve-alias #(if (contains? (:aliases state) %) % (or (get-in state [:pending-assignments % :current]) %))
         columns (mapcat (fn [col]
                           (let [col-with-defaults (-> col
                                                       (assoc :alias (resolve-alias (or (:alias col) current)))

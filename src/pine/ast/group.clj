@@ -5,7 +5,8 @@
 (defn handle [state value]
   (let [i (state :index)
         current (state :current)
-        resolve-alias #(or (get-in state [:pending-assignments % :current]) %)
+        ;; A live alias (e.g. re-bound via `as`) always wins over a stale |= snapshot
+        resolve-alias #(if (contains? (:aliases state) %) % (or (get-in state [:pending-assignments % :current]) %))
         ;; Get existing columns from state (e.g., from previous select with date extraction)
         existing-columns (state :columns)
         ;; Filter out auto-id columns from existing columns

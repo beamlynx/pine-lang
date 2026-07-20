@@ -3,7 +3,8 @@
 (defn handle [state value]
   (let [i             (state :index)
         current       (state :current)
-        resolve-alias #(or (get-in state [:pending-assignments % :current]) %)
+        ;; A live alias (e.g. re-bound via `as`) always wins over a stale |= snapshot
+        resolve-alias #(if (contains? (:aliases state) %) % (or (get-in state [:pending-assignments % :current]) %))
         columns (map #(-> %1
                           (assoc :alias (resolve-alias (or (:alias %1) current)))
                           (assoc :operation-index i))
