@@ -556,4 +556,13 @@
     (let [q-cross (:query (generate-expressions ["x.company | group: id => count |= grp"
                                                  "grp | l: 1"]))
           q-same  (:query (generate "x.company | group: id => count |= grp | l: 1"))]
-      (is (= q-cross q-same)))))
+      (is (= q-cross q-same))))
+
+  (testing "GROUP followed by a complete select: does not crash generating hints"
+    ;; select: is not a checkpoint-firing op (unlike table/group/limit), so the
+    ;; group's aggregate columns (e.g. COUNT(1), which has no :operation-index)
+    ;; are still in state when hints are generated — this used to throw an NPE
+    ;; in hints/generate-column-hints comparing a nil :operation-index with >.
+    (is (clojure.string/includes?
+         (:query (generate "x.company | group: id => count | s: id"))
+         "GROUP BY"))))
