@@ -42,9 +42,12 @@
                          (map #(assoc % :alias (resolve-alias (or (:alias %) current))) raw-group-columns))
 
         ;; SELECT clause: merged columns + aggregate functions
-        select-columns (concat merged-columns fn-columns)]
+        ;; Must be a vector: :columns is later grown with (update :columns into ...)
+        ;; elsewhere (e.g. select.clj), and `into`/`conj` prepend onto a plain seq
+        ;; (concat's return type) instead of appending, silently reversing order.
+        select-columns (vec (concat merged-columns fn-columns))]
     (-> state
         (assoc :columns select-columns)
         ;; GROUP BY uses all the merged columns
-        (assoc :group merged-columns))))
+        (assoc :group (vec merged-columns)))))
 

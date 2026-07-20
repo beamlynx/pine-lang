@@ -178,6 +178,7 @@
         a (if (or (= type :select-partial) (= type :order-partial))
             (or (get-in state [:operation :partial-alias :alias]) (state :current))
             (if (and (seq column)
+                     (column :operation-index)
                      (> (column :operation-index) (state :current-index)))
               (column :alias)
               (state :current)))
