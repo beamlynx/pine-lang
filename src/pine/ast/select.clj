@@ -23,11 +23,8 @@
     (-> state
         (update :columns into columns))))
 
-(defn has-id-column?
-  "Check if a table has an 'id' column by looking up the table info in references.
-  Public: shared with assign.clj's join-key preservation, a different concern (join
-  resolution through a sealed CTE, not update-row identification) that happens to
-  need the same schema lookup."
+(defn- has-id-column?
+  "Check if a table has an 'id' column by looking up the table info in references"
   [references aliases alias]
   (when-let [{:keys [table schema]} (get aliases alias)]
     (let [columns (if schema
