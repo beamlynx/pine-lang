@@ -141,39 +141,34 @@ query's params list.
 ### Join resolution through variables
 
 All three passes below build on one question, answered by the shared helper `get-source-tables`:
-**which real tables can this variable actually be joined to?** A table only counts as a source if its
-own `id` column is present among the CTE's *actual* output columns — including hidden, internally-added
-ones, not just what was explicitly typed.
+**which real tables can this variable actually be joined to?** A table counts as a source only if its
+own `id` column is present among the CTE's *actual* output columns — however it got there. Pine never
+adds one for this purpose; `get-source-tables` only ever looks.
 
 **Why a raw table join doesn't need this, but a sealed variable does**: `t | c` (no variable involved)
 compiles to `... JOIN "c" ON "t"."id" = "c"."tenantId"` — a `JOIN ... ON` clause can reference any column
 of a real table in `FROM`/`JOIN`, regardless of what's in `SELECT`. A CTE is different in kind, not degree:
 once state is sealed into `WITH "x" AS ( SELECT ... )`, the outer query can no longer see `x`'s underlying
 real tables at all — only whatever `x`'s own `:columns` produced. So a table stays a valid join source
-*through a variable* only if its id actually survived into that snapshot.
+*through a variable* only if its id actually survived into that snapshot — either because the user
+selected it explicitly, or because it arrived some other way (see below).
 
-This has nothing to do with `select/add-auto-id-columns` (which exists purely so the UI can identify which
-row to update — see [result-updates.md](result-updates.md) — an unrelated concern that happens to also add
-an id column, for different reasons, at a different time). It's handled by its own mechanism instead,
-`assign/preserve-join-keys`, called from `assign/snapshot` — the one shared entry point for sealing state
-into a CTE, used identically by a `|=` assignment (`assign/handle`) and a checkpoint's auto-named seal
-(`flush-checkpoint` in `ast/main.clj`, the other place this happens). Its columns are marked `:hidden`
-(excluded from column hints, same treatment as auto-id columns) but deliberately never `:auto-id`, so nothing
-downstream can conflate "has a join key" with "is tracked for row updates." `preserve-join-keys` is a no-op
-for `:group` — an unaggregated id column can't be silently added to a `GROUP BY` without changing what's
-grouped by — which is what makes `get-source-tables` behave differently depending on how the CTE's columns
-came to be:
+That "some other way" is `select/add-auto-id-columns` — the same hidden-id mechanism an ordinary query's
+final result already gets, added here to the snapshot at the point it's taken (`assign/handle`, and
+`flush-checkpoint`'s auto-named branch for a checkpoint seal) rather than left to run later. It excludes
+`:group` (`should-add-auto-ids?` in `select.clj`) for its own reason — an unaggregated id column can't be
+added to a `GROUP BY` without changing what's grouped by — and that's what makes a `GROUP`-sourced CTE
+behave differently here, without `get-source-tables` itself needing to know anything about operation types:
 
 - **No explicit columns** (`*`, e.g. a bare `where:`/`limit:` with no `s:`/`g:`): the CTE implicitly
-  selects everything, which always includes `id` regardless of operation type. The variable's `:current`
-  table is the sole, always-safe source.
-- **Non-`GROUP` explicit columns** (`s:`): `preserve-join-keys` adds a join-key column for every real table
-  in `:tables`, so every table referenced by an explicit column stays a valid source.
-- **`GROUP`'s grouped columns**: no join-key is ever added — a table is a source here *only* if the user
-  explicitly grouped by that table's `id`. `group: name` alone therefore resolves to **zero** sources
-  (nothing joinable, no join hints should appear); `group: id, name` resolves to one; `group: t.id, c.id`
-  can resolve to more than one — the same multi-table join support a plain, variable-free pipeline already
-  has when it references more than one table.
+  selects everything, which always includes `id`. The variable's `:current` table is the sole source.
+- **Non-`GROUP` explicit columns** (`s:`): every real table in `:tables` ends up with an id, so every
+  table referenced by an explicit column stays a valid source.
+- **`GROUP`'s grouped columns**: a table is a source here only if the user explicitly grouped by that
+  table's `id`. `group: name` alone therefore resolves to **zero** sources (nothing joinable, no join
+  hints should appear); `group: id, name` resolves to one; `group: t.id, c.id` can resolve to more than
+  one — the same multi-table join support a plain, variable-free pipeline already has when it references
+  more than one table.
 
 With that settled, the three passes propagate joins for whichever source tables `get-source-tables`
 returned, inside `pre-handle` (`ast/main.clj`):
