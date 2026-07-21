@@ -168,7 +168,10 @@ passes to avoid duplicating that logic.
 `seed-variable-references` also overrides the column list for the variable entry in the references map:
 
 - **Explicit columns** (`s:`, `g:`, etc.): the column list is built from the user-selected columns. The
-  name used is `column-alias` if set, otherwise `column`. Group operations append a synthetic `count` entry.
+  name used is `column-alias` if set, otherwise `column`. For a GROUP-sourced CTE this naturally includes
+  the aggregate (e.g. `count`) whenever the GROUP specified one — group.clj folds it directly into
+  `:columns`, so it's read here like any other column rather than appended separately. (`=> count` is
+  optional in the grammar; a bare `group: col` with no aggregate correctly yields no `count` entry.)
 - **No explicit columns** (`*`): the source table's full column list is inherited.
 
 ### Alias disambiguation
