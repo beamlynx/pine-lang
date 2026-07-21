@@ -96,11 +96,11 @@
   "Return the column list a variable's CTE actually exposes, for hint generation.
   Returns nil when the CTE selects *, meaning the source table's columns apply.
 
-  For a GROUP-sourced CTE, :columns already includes the aggregate entry (e.g.
-  count) whenever the GROUP actually specified one — group.clj folds it in
-  directly — so it's read here like any other column, never added separately.
-  (`=> count` is optional in the grammar; a bare `group: col` has no aggregate
-  at all, and fabricating one would be just as wrong as double-counting it.)"
+  For a GROUP-sourced CTE, :columns already includes the aggregate entry —
+  group.clj folds it in directly (parser.clj defaults :functions to [\"count\"]
+  even when `=> count` is omitted; there's no way to write a truly aggregate-
+  less GROUP) — so it's read here like any other column, never added
+  separately. Appending it again on top, as this used to do, double-counted."
   [var-ast]
   (let [user-cols (remove :auto-id (:columns var-ast))]
     (when (seq user-cols)

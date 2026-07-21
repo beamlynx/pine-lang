@@ -169,9 +169,10 @@ passes to avoid duplicating that logic.
 
 - **Explicit columns** (`s:`, `g:`, etc.): the column list is built from the user-selected columns. The
   name used is `column-alias` if set, otherwise `column`. For a GROUP-sourced CTE this naturally includes
-  the aggregate (e.g. `count`) whenever the GROUP specified one — group.clj folds it directly into
-  `:columns`, so it's read here like any other column rather than appended separately. (`=> count` is
-  optional in the grammar; a bare `group: col` with no aggregate correctly yields no `count` entry.)
+  the aggregate — group.clj folds it directly into `:columns`, so it's read here like any other column
+  rather than appended separately. (`=> count` is optional in the *grammar*, but parser.clj defaults
+  `:functions` to `["count"]` whenever it's omitted — there's no way to write a truly aggregate-less
+  GROUP, so this case always has a `count` entry in practice.)
 - **No explicit columns** (`*`): the source table's full column list is inherited.
 
 ### Alias disambiguation
