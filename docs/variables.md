@@ -142,31 +142,22 @@ query's params list.
 
 All three passes below build on one question, answered by the shared helper `get-source-tables`:
 **which real tables can this variable actually be joined to?** A table counts as a source only if its
-own `id` column is present among the CTE's *actual* output columns — however it got there. Pine never
-adds one for this purpose; `get-source-tables` only ever looks.
+own `id` column is explicitly present among the CTE's output columns. Pine never adds one on the user's
+behalf, for any operation — if `id` wasn't selected, that table isn't joinable through this variable.
 
 **Why a raw table join doesn't need this, but a sealed variable does**: `t | c` (no variable involved)
 compiles to `... JOIN "c" ON "t"."id" = "c"."tenantId"` — a `JOIN ... ON` clause can reference any column
 of a real table in `FROM`/`JOIN`, regardless of what's in `SELECT`. A CTE is different in kind, not degree:
 once state is sealed into `WITH "x" AS ( SELECT ... )`, the outer query can no longer see `x`'s underlying
 real tables at all — only whatever `x`'s own `:columns` produced. So a table stays a valid join source
-*through a variable* only if its id actually survived into that snapshot — either because the user
-selected it explicitly, or because it arrived some other way (see below).
-
-That "some other way" is `select/add-auto-id-columns` — the same hidden-id mechanism an ordinary query's
-final result already gets, added here to the snapshot at the point it's taken (`assign/handle`, and
-`flush-checkpoint`'s auto-named branch for a checkpoint seal) rather than left to run later. It excludes
-`:group` (`should-add-auto-ids?` in `select.clj`) for its own reason — an unaggregated id column can't be
-added to a `GROUP BY` without changing what's grouped by — and that's what makes a `GROUP`-sourced CTE
-behave differently here, without `get-source-tables` itself needing to know anything about operation types:
+*through a variable* only if the user explicitly selected its `id`.
 
 - **No explicit columns** (`*`, e.g. a bare `where:`/`limit:` with no `s:`/`g:`): the CTE implicitly
   selects everything, which always includes `id`. The variable's `:current` table is the sole source.
-- **Non-`GROUP` explicit columns** (`s:`): every real table in `:tables` ends up with an id, so every
-  table referenced by an explicit column stays a valid source.
-- **`GROUP`'s grouped columns**: a table is a source here only if the user explicitly grouped by that
-  table's `id`. `group: name` alone therefore resolves to **zero** sources (nothing joinable, no join
-  hints should appear); `group: id, name` resolves to one; `group: t.id, c.id` can resolve to more than
+- **Explicit columns** (`s:`, or `group:`'s grouped columns — both populate `:columns` the same way):
+  a table is a source only if `id` is literally among them. `s: name` or `group: name` alone therefore
+  resolves to **zero** sources (nothing joinable, no join hints should appear); `s: id, name` or
+  `group: id, name` resolves to one; `s: t.id, c.id` or `group: t.id, c.id` can resolve to more than
   one — the same multi-table join support a plain, variable-free pipeline already has when it references
   more than one table.
 
