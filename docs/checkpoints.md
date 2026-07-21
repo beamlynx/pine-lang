@@ -8,6 +8,15 @@ GROUP and LIMIT produce a final, bounded result set — further joins, or furthe
 
 Without checkpoints, `company | l: 10 | employee` would attempt to build a single query with LIMIT and a JOIN, which contradicts the intent (get 10 companies, then navigate to their employees). Similarly, `company | group: name | o: name desc` would resolve ORDER BY against the pre-group table instead of the grouped result.
 
+## Terminology
+
+"Checkpoint" and "seal" name two different things, not two names for one thing:
+
+- A **checkpoint** is the *pending state* — the noun. After a GROUP or LIMIT, the pipeline has a checkpoint pending (`:pending-checkpoint`) until something resolves it.
+- **Sealing** is the *action* that resolves a pending checkpoint — the verb. `seal-as-cte` is the one function that does it: snapshot the state, seed its references, and inject it as a CTE.
+
+So a checkpoint is *pending*, and gets *sealed* into a CTE — the same relationship as a transaction being pending and then committed. The doc and public feature name is "checkpoints"; "seal" only ever refers to the specific act of materializing one into a CTE.
+
 ## Syntax
 
 No syntax change is required. Checkpoints fire automatically when a TABLE operation, or a select:/where:/order: (complete or partial), follows a GROUP or LIMIT:
