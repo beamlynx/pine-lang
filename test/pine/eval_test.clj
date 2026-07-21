@@ -504,7 +504,39 @@
             :params nil}
            (generate-expressions ["company |= c1"
                                   "company |= c2"
-                                  "c2 | c1"])))))
+                                  "c2 | c1"]))))
+
+  (testing "Join-key preservation is a distinct mechanism from update-tracking auto-id"
+    ;; A sealed CTE (variable or checkpoint) needs its own id column to remain
+    ;; joinable, since the outer query can no longer see its underlying real
+    ;; tables once sealed — a raw table join never needs this (a JOIN ... ON
+    ;; clause sees the full real table regardless of what's selected). This is
+    ;; unrelated to select/create-auto-id-column, which exists so the UI can
+    ;; identify which row to update (see result-updates.md), so the column
+    ;; preserving the join key must never be marked :auto-id.
+    (let [state (-> "company as c | s: name |= x"
+                    parser/parse :result
+                    (ast/generate :test))
+          join-key (->> (get-in state [:pending-assignments "x" :columns])
+                        (filter #(= "id" (:column %)))
+                        first)]
+      (is (some? join-key))
+      (is (true? (:hidden join-key)))
+      (is (true? (:join-key join-key)))
+      (is (not (:auto-id join-key))
+          "must not be marked :auto-id — that's a different mechanism (update-row identification)"))
+
+    ;; End to end: joining through a plain (non-GROUP) explicit select still works,
+    ;; now backed by an actual id in the CTE rather than an assumption.
+    (is (clojure.string/includes?
+         (:query (generate-expressions ["company as c | s: name |= x" "x | employee"]))
+         "\"x\".\"id\" = \"e_1\".\"company_id\""))
+
+    ;; GROUP still can't get a join key patched in silently — grouping by a
+    ;; non-id column genuinely has no id to preserve.
+    (is (clojure.string/includes?
+         (:query (generate-expressions ["company as c | employee .company_id | group: c.name |= x" "x | employee"]))
+         "ON \"\" = \"\""))))
 
 (deftest test-checkpoints
   (testing "LIMIT checkpoint: auto-CTE when a table op follows limit"

@@ -96,13 +96,17 @@
   "Return the column list a variable's CTE actually exposes, for hint generation.
   Returns nil when the CTE selects *, meaning the source table's columns apply.
 
+  Excludes :hidden columns — both select/create-auto-id-column's update-tracking
+  entries and assign/preserve-join-keys' join-key entries are internal, never
+  meant to appear as a selectable column in hints.
+
   For a GROUP-sourced CTE, :columns already includes the aggregate entry —
   group.clj folds it in directly (parser.clj defaults :functions to [\"count\"]
   even when `=> count` is omitted; there's no way to write a truly aggregate-
   less GROUP) — so it's read here like any other column, never added
   separately. Appending it again on top, as this used to do, double-counted."
   [var-ast]
-  (let [user-cols (remove :auto-id (:columns var-ast))]
+  (let [user-cols (remove :hidden (:columns var-ast))]
     (when (seq user-cols)
       (->> user-cols
            (map #(or (:column-alias %) (:column %)))
@@ -112,18 +116,20 @@
 (defn- get-source-tables
   "Return the tables that are valid join sources for a variable's CTE — the
   tables whose own id column is present among the CTE's actual output columns
-  (:columns, auto-id included).
+  (:columns, join-key entries included).
 
-  assign/handle and flush-checkpoint's auto-named branch add auto-id columns
-  to a snapshot the same way an ordinary (non-variable) pipeline gets them via
-  post-handle, for every operation type except :group (should-add-auto-ids? in
-  select.clj) — GROUP can't silently add an unaggregated id column to a
-  GROUP BY without changing what the aggregation groups by. In practice:
+  assign/preserve-join-keys adds those join-key columns to a snapshot whenever
+  it's sealed into a CTE (via assign/snapshot, used by both a |= assignment and
+  a checkpoint's auto-named seal), for every case except :group — GROUP can't
+  silently add an unaggregated id column to a GROUP BY without changing what
+  the aggregation groups by. See assign.clj's namespace docstring for why this
+  is deliberately a separate mechanism from select/add-auto-id-columns (which
+  exists for update-row identification, an unrelated concern). In practice:
 
-  - Non-GROUP CTEs always end up with an auto-id for every real table in
+  - Non-GROUP CTEs always end up with a join key for every real table in
     :tables, so every table referenced by an explicit column stays a valid
-    source — same as before this existed, now backed by an id that's
-    actually present in the CTE.
+    source — same as before either mechanism existed, now backed by an id
+    that's actually present in the CTE.
   - GROUP CTEs only get an id for a table if the user explicitly grouped by
     that table's id. Grouping by anything else (e.g. `group: name`) means
     that table's id doesn't survive the aggregation, and it correctly stops
@@ -143,7 +149,7 @@
   [var-ast]
   (let [columns  (:columns var-ast)
         aliases  (:aliases var-ast)
-        explicit (remove :auto-id columns)]
+        explicit (remove :hidden columns)]
     (or (if (empty? explicit)
           (when-let [current-alias (:current var-ast)]
             [(get-in aliases [current-alias :table])])
@@ -348,14 +354,14 @@
       (and (:needs-assign checkpoint) (= op-type :assign))
       (assoc state :pending-checkpoint {:name (:value op) :needs-table true})
 
-      ;; Auto-named: fire when a table or another checkpoint op arrives
-      ;; add-auto-id-columns mirrors what assign/handle does for a |= snapshot: this
-      ;; snapshot is also taken mid-fold, before post-handle would otherwise add it.
-      ;; Excluded for :group via should-add-auto-ids? — see get-source-tables.
+      ;; Auto-named: fire when a table or another checkpoint op arrives.
+      ;; assign/snapshot mirrors what |= does for its own snapshot: this is the
+      ;; other place a piece of state gets sealed into a CTE, so it needs the
+      ;; same join-key preservation (see assign.clj's namespace docstring).
       (and (:needs-assign checkpoint) fire?)
       (let [n        (:auto-cte-count state)
             cname    (str "__pine_" n "__")
-            snapshot (-> state (dissoc :pending-assignments) select/add-auto-id-columns)]
+            snapshot (assign/snapshot state)]
         (-> state
             (update :auto-cte-count inc)
             (assoc :pending-checkpoint nil)
