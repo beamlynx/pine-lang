@@ -110,7 +110,25 @@
            (mapv #(hash-map :column %))))))
 
 (defn- get-source-tables
-  "Return the tables whose columns are exposed by a variable's CTE.
+  "Return the tables that are valid join sources for a variable's CTE.
+
+  A variable's CTE never gets an auto-id column added — post-handle (which adds
+  it) runs after handle-ops, after any |= snapshot has already been taken — so a
+  table is only actually joinable through this variable if ITS OWN id column is
+  among the CTE's explicit output columns. Otherwise, inheriting joins from that
+  table's FK relations would reference a column (e.g. \"x\".\"id\") that doesn't
+  exist in the CTE at all.
+
+  No explicit columns at all means the CTE implicitly selects '*' (see
+  variable-output-columns), which always includes id — the :current table is
+  then the sole, always-safe source.
+
+  With explicit columns, this can return zero tables (nothing joinable — e.g.
+  `s: name` or `group: name` alone, neither of which keeps any table's id),
+  one, or more than one (e.g. `s: t.id, c.id` makes both t and c valid sources,
+  the same multi-table join support a plain multi-table pipeline already has
+  without any variable involved).
+
   Used by both seeding and bidirectional patching."
   [var-ast]
   (let [columns  (:columns var-ast)
@@ -120,7 +138,9 @@
           (when-let [current-alias (:current var-ast)]
             [(get-in aliases [current-alias :table])])
           (->> explicit
-               (map #(get-in aliases [(:alias %) :table]))
+               (filter #(= "id" (:column %)))
+               (map :alias)
+               (map #(get-in aliases [% :table]))
                (remove nil?)
                distinct))
         [])))
