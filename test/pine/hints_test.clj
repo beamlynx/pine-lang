@@ -124,6 +124,17 @@
     (is (= ["company_id" "reports_to"]
            (->> "x.company as c | y.employee as e | s: e.id, e." gen :select (map :column)))))
 
+  (testing "Generate `select-partial` hints after an un-sealed GROUP checkpoint"
+    ;; group: c.name hasn't been sealed into a CTE yet (no table op follows before
+    ;; s:), but the columns available for hints should be the group's own output
+    ;; (name, count), not the underlying employee table's raw schema.
+    (is (= ["name" "count"]
+           (->> "company as c | employee .company_id | group: c.name | s: " gen :select (map :column))))
+    ;; Same, with an explicit |= assign before the un-sealed s: — still same-expression,
+    ;; still not sealed into a CTE until a table op follows.
+    (is (= ["name" "count"]
+           (->> "company as c | employee .company_id | group: c.name |= x | s: " gen :select (map :column)))))
+
   (testing "Generate `order-partial` hints"
     (is (= [{:column "id" :alias "c_0"} {:column "created_at" :alias "c_0"}] (->  "company | o:"         gen :order)))
     (is (= [{:column "created_at" :alias "c_0"}]                             (->  "company | o: id,"     gen :order)))
