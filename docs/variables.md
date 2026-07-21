@@ -78,6 +78,11 @@ x
 `x` exposes only the columns the CTE actually produces — here `title` and `count` — so hints for
 `x | s:` show just those two columns.
 
+Neither `tenant` nor `company` survives as a join source, though: grouping by `t.title` doesn't keep
+`tenant`'s `id`, so `x | company` (or any other table) shows no join hints at all — see
+[get-source-tables](#join-resolution-through-variables) below. Grouping by `t.id, t.title` instead would
+keep `tenant` joinable.
+
 ## How it works
 
 - **Assignment** (`|= name`): snapshots the pipeline state at that point. The snapshot becomes the CTE body
@@ -135,16 +140,42 @@ query's params list.
 
 ### Join resolution through variables
 
-Reference seeding happens in three passes inside `pre-handle` (`ast/main.clj`):
+All three passes below build on one question, answered by the shared helper `get-source-tables`:
+**which real tables can this variable actually be joined to?** A table only counts as a source if its
+own `id` column is present among the variable's exposed columns — not merely referenced somewhere in the
+pipeline that produced it.
 
-**Pass 1 — `seed-variable-references`**: For each variable V wrapping source table S, copies S's FK
-reference entry into the references map under V's name. This enables `V | table` and `table | V` when
+This matters because a variable's CTE never gets Pine's auto-id column added. `post-handle` (which adds
+it for ordinary tables) runs after `handle-ops` — after any `|=` snapshot has already been taken — so an
+explicit column list that doesn't happen to include a table's `id` leaves that table with no way back
+into a join. Seeding or patching a join from that table's FK relations anyway would generate SQL that
+references a column the CTE doesn't have (e.g. `"x"."id"`), silently, since the query builder isn't aware
+that particular table's identity didn't survive.
+
+`get-source-tables`' rule, concretely:
+
+- **No explicit columns** (`*`, e.g. a bare `where:`/`limit:` with no `s:`/`g:`): the CTE implicitly
+  selects everything, which always includes `id`. The variable's `:current` table is the sole,
+  always-safe source.
+- **Explicit columns** (from `s:`, or from `group:`'s grouped columns — GROUP is not special-cased; both
+  populate `:columns` the same way): only tables whose own `id` column is literally among those explicit
+  columns count as sources. This can resolve to **zero** tables (`s: name` or `group: name` alone —
+  nothing is joinable, and no join hints should appear), **one**, or **more than one** (`s: t.id, c.id`
+  makes both `t` and `c` valid sources) — the same multi-table join support a plain, variable-free
+  pipeline already has when it references more than one table.
+
+With that settled, the three passes propagate joins for whichever source tables `get-source-tables`
+returned, inside `pre-handle` (`ast/main.clj`):
+
+**Pass 1 — `seed-variable-references`**: For each variable V, for each of its source tables S, copies S's
+FK reference entry into the references map under V's name. This enables `V | table` and `table | V` when
 the join helper can find `table[:referred-by][V]` — but only if that entry already exists, which it
-doesn't yet after pass 1 alone.
+doesn't yet after pass 1 alone. A variable with zero source tables (see above) has nothing to seed and
+stays unjoinable to anything, correctly.
 
 **Pass 2 — `patch-variable-relations`** (runs `patch-direction` once per direction): Builds a reverse
 index from the references map — `source-table -> entities that already relate to it` — once per direction,
-instead of scanning every entity per variable. For each variable V wrapping source S, looks up S in that
+instead of scanning every entity per variable. For each variable V, for each source S, looks up S in that
 index to find every entity T where `T[:referred-by][S]` exists, and registers `T[:referred-by][V]` with the
 same relation data. The index is kept in sync with entries added mid-pass, so a variable-of-variable (V2
 wrapping V1, where V1 is itself a variable processed earlier in the same pass) still picks up V1's freshly
@@ -159,9 +190,6 @@ within a group, and sharing a common source table with an `id` column, registers
 join at `refs[:table V1 :referred-by V2]`. This makes `V1 | V2` resolve even when the source table has no
 self-referential FK. Only adds entries where no join path already exists — existing FK-based propagation
 (e.g. two employee-wrapping variables joined via `reports_to`) is not overridden.
-
-The shared helper `get-source-tables` extracts which real tables a variable wraps — used by all three
-passes to avoid duplicating that logic.
 
 ### Column hints for variables
 
