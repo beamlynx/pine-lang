@@ -219,11 +219,11 @@
                                 [vname (set (get-source-tables var-ast))]))
                          (into {}))
         by-source (reduce-kv (fn [idx vname sources]
-                                (reduce (fn [idx source] (update idx source (fnil conj []) vname))
-                                        idx
-                                        sources))
-                              {}
-                              var-sources)
+                               (reduce (fn [idx source] (update idx source (fnil conj []) vname))
+                                       idx
+                                       sources))
+                             {}
+                             var-sources)
         pairs (distinct (for [[_ vnames] by-source
                               v1 vnames v2 vnames
                               :when (not= v1 v2)]
