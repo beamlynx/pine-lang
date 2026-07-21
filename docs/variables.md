@@ -142,27 +142,31 @@ query's params list.
 
 All three passes below build on one question, answered by the shared helper `get-source-tables`:
 **which real tables can this variable actually be joined to?** A table only counts as a source if its
-own `id` column is present among the variable's exposed columns — not merely referenced somewhere in the
-pipeline that produced it.
+own `id` column is present among the CTE's *actual* output columns — auto-id included, not just what was
+explicitly typed.
 
-This matters because a variable's CTE never gets Pine's auto-id column added. `post-handle` (which adds
-it for ordinary tables) runs after `handle-ops` — after any `|=` snapshot has already been taken — so an
-explicit column list that doesn't happen to include a table's `id` leaves that table with no way back
-into a join. Seeding or patching a join from that table's FK relations anyway would generate SQL that
-references a column the CTE doesn't have (e.g. `"x"."id"`), silently, since the query builder isn't aware
-that particular table's identity didn't survive.
-
-`get-source-tables`' rule, concretely:
+That distinction matters because of when a variable's snapshot is taken. `post-handle` normally adds a
+hidden auto-id column for every real table in the pipeline, regardless of what was explicitly selected —
+that's the reason an ordinary, variable-free `s: name | employee` doesn't need explicit `id` to join
+correctly. But a `|=` or checkpoint snapshot is taken mid-`handle-ops`, before `post-handle` ever runs, so
+without deliberately re-adding it, no snapshot would ever carry an id column at all. `assign/handle` and
+`flush-checkpoint`'s auto-named branch both now call `select/add-auto-id-columns` on the snapshot
+themselves — guarded by the same `should-add-auto-ids?` check `post-handle` already uses, which excludes
+`:group` (along with `:count`/`:delete-action`/`:update-action`). That one guard is what makes
+`get-source-tables` behave differently depending on how the CTE's columns came to be:
 
 - **No explicit columns** (`*`, e.g. a bare `where:`/`limit:` with no `s:`/`g:`): the CTE implicitly
-  selects everything, which always includes `id`. The variable's `:current` table is the sole,
-  always-safe source.
-- **Explicit columns** (from `s:`, or from `group:`'s grouped columns — GROUP is not special-cased; both
-  populate `:columns` the same way): only tables whose own `id` column is literally among those explicit
-  columns count as sources. This can resolve to **zero** tables (`s: name` or `group: name` alone —
-  nothing is joinable, and no join hints should appear), **one**, or **more than one** (`s: t.id, c.id`
-  makes both `t` and `c` valid sources) — the same multi-table join support a plain, variable-free
-  pipeline already has when it references more than one table.
+  selects everything, which always includes `id` regardless of operation type. The variable's `:current`
+  table is the sole, always-safe source.
+- **Non-`GROUP` explicit columns** (`s:`): auto-id gets added for every real table in `:tables`, so every
+  table referenced by an explicit column stays a valid source — the same result as before auto-id was
+  reintroduced here, just backed by an id that's actually present now instead of assumed.
+- **`GROUP`'s grouped columns**: no auto-id is ever added — an unaggregated id column can't be silently
+  added to a `GROUP BY` without changing what's grouped by. A table is a source here *only* if the user
+  explicitly grouped by that table's `id`. `group: name` alone therefore resolves to **zero** sources
+  (nothing joinable, no join hints should appear); `group: id, name` resolves to one; `group: t.id, c.id`
+  can resolve to more than one — the same multi-table join support a plain, variable-free pipeline already
+  has when it references more than one table.
 
 With that settled, the three passes propagate joins for whichever source tables `get-source-tables`
 returned, inside `pre-handle` (`ast/main.clj`):
