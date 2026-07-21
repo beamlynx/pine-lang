@@ -558,11 +558,36 @@
           q-same  (:query (generate "x.company | group: id => count |= grp | l: 1"))]
       (is (= q-cross q-same))))
 
-  (testing "GROUP followed by a complete select: does not crash generating hints"
-    ;; select: is not a checkpoint-firing op (unlike table/group/limit), so the
-    ;; group's aggregate columns (e.g. COUNT(1), which has no :operation-index)
-    ;; are still in state when hints are generated — this used to throw an NPE
-    ;; in hints/generate-column-hints comparing a nil :operation-index with >.
-    (is (clojure.string/includes?
-         (:query (generate "x.company | group: id => count | s: id"))
-         "GROUP BY"))))
+  (testing "GROUP followed by a complete select: matches the sealed cross-expression form"
+    ;; select:/where:/order: after GROUP were not checkpoint-firing ops (unlike
+    ;; table/group/limit), so the group was never sealed into a CTE — build-query
+    ;; then dispatched on the trailing op's type instead of :group, silently using
+    ;; the plain-select builder against a group-shaped state (wrong SQL: raw table
+    ;; columns leaking in, stale pre-group alias in WHERE/ORDER BY). The correctly
+    ;; sealed cross-expression form is the oracle: same GROUP, split so the second
+    ;; expression references the CTE by name, should equal the inline form exactly.
+    (let [q-cross (:query (generate-expressions ["x.company | group: id => count |= grp"
+                                                 "grp | s: id"]))
+          q-same  (:query (generate "x.company | group: id => count | s: id"))]
+      (is (= q-cross q-same))))
+
+  (testing "GROUP followed by a complete where: matches the sealed cross-expression form"
+    (let [q-cross (:query (generate-expressions ["company as c | employee .company_id | group: c.name |= grp"
+                                                 "grp | w: name = 'Acme'"]))
+          q-same  (:query (generate "company as c | employee .company_id | group: c.name | w: name = 'Acme'"))]
+      (is (= q-cross q-same))))
+
+  (testing "GROUP followed by a complete order: matches the sealed cross-expression form"
+    (let [q-cross (:query (generate-expressions ["company as c | employee .company_id | group: c.name |= grp"
+                                                 "grp | o: name desc"]))
+          q-same  (:query (generate "company as c | employee .company_id | group: c.name | o: name desc"))]
+      (is (= q-cross q-same))))
+
+  (testing "GROUP followed by an order-partial (trailing comma) matches the sealed cross-expression form"
+    ;; order-partial with a non-empty value (e.g. a dangling trailing comma after a
+    ;; fully-typed column) is not meaningfully different from a complete order: here —
+    ;; the already-typed column should seal and resolve exactly the same way.
+    (let [q-cross (:query (generate-expressions ["company as c | employee .company_id | group: c.name |= grp"
+                                                 "grp | o: name desc,"]))
+          q-same  (:query (generate "company as c | employee .company_id | group: c.name | o: name desc,"))]
+      (is (= q-cross q-same)))))
