@@ -568,19 +568,19 @@
     ;; expression references the CTE by name, should equal the inline form exactly.
     (let [q-cross (:query (generate-expressions ["x.company | group: id => count |= grp"
                                                  "grp | s: id"]))
-          q-same  (:query (generate "x.company | group: id => count | s: id"))]
+          q-same  (:query (generate "x.company | group: id => count |= grp | s: id"))]
       (is (= q-cross q-same))))
 
   (testing "GROUP followed by a complete where: matches the sealed cross-expression form"
     (let [q-cross (:query (generate-expressions ["company as c | employee .company_id | group: c.name |= grp"
                                                  "grp | w: name = 'Acme'"]))
-          q-same  (:query (generate "company as c | employee .company_id | group: c.name | w: name = 'Acme'"))]
+          q-same  (:query (generate "company as c | employee .company_id | group: c.name |= grp | w: name = 'Acme'"))]
       (is (= q-cross q-same))))
 
   (testing "GROUP followed by a complete order: matches the sealed cross-expression form"
     (let [q-cross (:query (generate-expressions ["company as c | employee .company_id | group: c.name |= grp"
                                                  "grp | o: name desc"]))
-          q-same  (:query (generate "company as c | employee .company_id | group: c.name | o: name desc"))]
+          q-same  (:query (generate "company as c | employee .company_id | group: c.name |= grp | o: name desc"))]
       (is (= q-cross q-same))))
 
   (testing "GROUP followed by an order-partial (trailing comma) matches the sealed cross-expression form"
@@ -589,5 +589,11 @@
     ;; the already-typed column should seal and resolve exactly the same way.
     (let [q-cross (:query (generate-expressions ["company as c | employee .company_id | group: c.name |= grp"
                                                  "grp | o: name desc,"]))
-          q-same  (:query (generate "company as c | employee .company_id | group: c.name | o: name desc,"))]
-      (is (= q-cross q-same)))))
+          q-same  (:query (generate "company as c | employee .company_id | group: c.name |= grp | o: name desc,"))]
+      (is (= q-cross q-same))))
+
+  (testing "GROUP followed by a complete select: auto-named CTE also seals correctly (no |=)"
+    ;; Without an explicit |=, the checkpoint still seals — just with a generated
+    ;; name instead of a user-given one.
+    (is (= "WITH \"__pine_0__\" AS ( SELECT \"c_0\".\"id\", COUNT(1) AS \"count\" FROM \"x\".\"company\" AS \"c_0\" GROUP BY \"c_0\".\"id\" ) SELECT \"__pine_0__\".\"id\" FROM \"__pine_0__\" AS \"__pine_0__\" LIMIT 250"
+           (:query (generate "x.company | group: id => count | s: id"))))))

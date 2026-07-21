@@ -94,14 +94,20 @@
 
 (defn- variable-output-columns
   "Return the column list a variable's CTE actually exposes, for hint generation.
-  Returns nil when the CTE selects *, meaning the source table's columns apply."
+  Returns nil when the CTE selects *, meaning the source table's columns apply.
+
+  For a GROUP-sourced CTE, :columns already includes the aggregate entry (e.g.
+  count) whenever the GROUP actually specified one — group.clj folds it in
+  directly — so it's read here like any other column, never added separately.
+  (`=> count` is optional in the grammar; a bare `group: col` has no aggregate
+  at all, and fabricating one would be just as wrong as double-counting it.)"
   [var-ast]
-  (let [user-cols (remove :auto-id (:columns var-ast))
-        op-type   (-> var-ast :operation :type)]
+  (let [user-cols (remove :auto-id (:columns var-ast))]
     (when (seq user-cols)
-      (let [names     (distinct (map #(or (:column-alias %) (:column %)) user-cols))
-            with-count (if (= op-type :group) (concat names ["count"]) names)]
-        (mapv #(hash-map :column %) with-count)))))
+      (->> user-cols
+           (map #(or (:column-alias %) (:column %)))
+           distinct
+           (mapv #(hash-map :column %))))))
 
 (defn- get-source-tables
   "Return the tables whose columns are exposed by a variable's CTE.
@@ -259,6 +265,16 @@
 
 (def ^:private checkpoint-op-types #{:group :limit})
 
+;; Ops that consume/query the checkpoint's result rather than composing another
+;; table join onto it. Fired on regardless of partial-vs-complete: an -partial op
+;; (e.g. order-partial from a dangling trailing comma) already carries whatever was
+;; fully typed before the comma, so it needs the same sealed scope a complete op
+;; would. count/delete/update are deliberately excluded — they build their own
+;; wrapper query generically (see build-count-query) and don't need the checkpoint's
+;; group-shaped state separated into a CTE first.
+(def ^:private checkpoint-consuming-op-types
+  #{:select :select-partial :where :where-partial :order :order-partial})
+
 (defn- reset-for-cte [state]
   (assoc state
          :tables    [] :columns [] :limit nil :joins  []
@@ -284,14 +300,16 @@
   "State-machine step: called at the start of each handle-ops iteration.
   Converts a pending checkpoint into a CTE when the right op type is seen.
 
-  Fires when the incoming op is a table (join composition) or another checkpoint
-  op (e.g. LIMIT after GROUP). Does not fire for count/delete/update since those
-  have their own query-building paths that do not need CTE separation."
+  Fires when the incoming op is a table (join composition), another checkpoint
+  op (e.g. LIMIT after GROUP), or an op that queries the checkpoint's result
+  (select/where/order, complete or partial). Does not fire for count/delete/update
+  since those have their own query-building paths that do not need CTE separation."
   [state op]
   (let [checkpoint (:pending-checkpoint state)
         op-type    (:type op)
         fire?      (or (= op-type :table)
-                       (contains? checkpoint-op-types op-type))]
+                       (contains? checkpoint-op-types op-type)
+                       (contains? checkpoint-consuming-op-types op-type))]
     (cond
       (nil? checkpoint)
       state
