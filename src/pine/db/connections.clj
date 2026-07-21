@@ -26,6 +26,17 @@
 
 (def pools "Database connection pools" (atom {}))
 
+(def test-connection-id
+  "Sentinel connection id that bypasses real connection pools and live schema
+  lookups in favor of fixtures. Defined here — the db namespace nothing else
+  in pine.db depends on — so every place that needs to recognize it (schema
+  lookup in postgres.clj, connection-name lookup below) checks the one
+  predicate instead of each hardcoding :test separately."
+  :test)
+
+(defn test-connection? [id]
+  (= id test-connection-id))
+
 (defn get-connection-pool [id]
   (let [pool-or-fn (@pools id)]
     (if pool-or-fn
@@ -49,7 +60,9 @@
   (jdbc-url->label (.getJdbcUrl pool)))
 
 (defn get-connection-name [id]
-  (-> id get-connection-pool make-connection-id))
+  (if (test-connection? id)
+    "test"
+    (-> id get-connection-pool make-connection-id)))
 
 (defn list-connections []
   (mapv (fn [[id _]]
