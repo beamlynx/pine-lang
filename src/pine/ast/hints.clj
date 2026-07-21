@@ -96,18 +96,36 @@
         add-pine-expression (fn [h] (assoc h :pine (generate-expression h)))]
     (map add-pine-expression table-hints)))
 
+(defn- pending-group-columns
+  "When a GROUP checkpoint hasn't been sealed into a CTE yet (no table op has
+  followed it), :current still points at the pre-group real table alias — but the
+  columns actually available at this scope are the group's own output (grouped
+  columns + aggregate), not that table's full schema. Returns nil (deferring to the
+  normal schema lookup) unless we're exactly in that pending, unsealed scope for the
+  current alias."
+  [state alias]
+  (when (and (:pending-checkpoint state)
+             (seq (:group state))
+             (= alias (:current state)))
+    (->> (:columns state)
+         (remove :auto-id)
+         (map #(or (:column-alias %) (:column %)))
+         distinct
+         (map (fn [c] {:column c :alias alias})))))
+
 (defn generate-all-column-hints
   ([state] (generate-all-column-hints state (state :current))) ;; Overload for default `a`
   ([state a]
-   (let [aliases (state :aliases)
-         {table :table schema :schema} (->> a (get aliases))
-         columns (if schema
-                   (get-in state [:references :schema schema :table table :columns])
-                   (get-in state [:references :table table :columns]))]
-     (for [column columns]
-       (-> column
-           (select-keys [:column])
-           (assoc :alias a))))))
+   (or (pending-group-columns state a)
+       (let [aliases (state :aliases)
+             {table :table schema :schema} (->> a (get aliases))
+             columns (if schema
+                       (get-in state [:references :schema schema :table table :columns])
+                       (get-in state [:references :table table :columns]))]
+         (for [column columns]
+           (-> column
+               (select-keys [:column])
+               (assoc :alias a)))))))
 
 (defn find-relevant-columns [hints column]
   (if column
