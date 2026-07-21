@@ -246,24 +246,22 @@
                :table))))
 
   (testing "A table is only a valid join source through a variable if its own id survives"
-    ;; x explicitly selects only name, but a plain (non-GROUP) select gets an auto-id
-    ;; column added to the snapshot the same way an ordinary pipeline would (see
-    ;; assign/handle) — company's id is present in x's actual CTE output either way,
-    ;; so employee is correctly still suggested.
-    (is (= ["employee"]
-           (->> (gen-with-variables ["company as c | s: name |= x" "x | emp"])
-                :table
-                (map :table))))
+    ;; x explicitly selects only name — Pine doesn't add an id on its own, so
+    ;; company's id is nowhere in x's actual CTE output. employee must NOT be
+    ;; suggested.
+    (is (= []
+           (-> (gen-with-variables ["company as c | s: name |= x" "x | emp"])
+               :table)))
 
-    ;; Same table, id also explicitly selected — same result, redundantly safe.
+    ;; Same table, but id is explicitly selected this time — now it's present,
+    ;; and employee is correctly suggested.
     (is (= ["employee"]
            (->> (gen-with-variables ["company as c | s: id, name |= x" "x | emp"])
                 :table
                 (map :table))))
 
-    ;; GROUP is the one operation that can't get an auto-id: an unaggregated id column
-    ;; can't be silently added to a GROUP BY without changing what's grouped by. Grouping
-    ;; by a non-id column genuinely loses company's id — employee must NOT be suggested.
+    ;; Same rule applies to GROUP: grouping by a non-id column loses company's
+    ;; id just the same — employee must NOT be suggested.
     (is (= []
            (-> (gen-with-variables ["company as c | employee .company_id | group: c.name |= x" "x | doc"])
                :table)))

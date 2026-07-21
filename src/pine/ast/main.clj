@@ -114,10 +114,9 @@
   Once a table's data is sealed into a CTE, the outer query can only see what
   that CTE's own :columns actually selected — nothing else about the underlying
   table is reachable. A table is therefore only a join source if its own id
-  column is among those columns. Pine never adds one on its own: an id is
-  either already there (the user selected it, or it arrived some other way —
-  e.g. auto-id, for tables where that runs) or it isn't, in which case that
-  table simply isn't joinable through this variable.
+  column is among those columns. Pine never adds one on its own: if the user
+  didn't select it, it isn't there, and that table simply isn't joinable
+  through this variable.
 
   No explicit columns at all means the CTE selects '*', which includes every
   column of the source table, id included — the :current table is then the
@@ -336,14 +335,11 @@
       (and (:needs-assign checkpoint) (= op-type :assign))
       (assoc state :pending-checkpoint {:name (:value op) :needs-table true})
 
-      ;; Auto-named: fire when a table or another checkpoint op arrives. The
-      ;; snapshot needs auto-id added before seal-as-cte below, since that's what
-      ;; decides (via get-source-tables) which tables it can join to — see
-      ;; assign.clj's namespace docstring for why the ordering matters.
+      ;; Auto-named: fire when a table or another checkpoint op arrives
       (and (:needs-assign checkpoint) fire?)
       (let [n        (:auto-cte-count state)
             cname    (str "__pine_" n "__")
-            snapshot (-> state (dissoc :pending-assignments) select/add-auto-id-columns)]
+            snapshot (dissoc state :pending-assignments)]
         (-> state
             (update :auto-cte-count inc)
             (assoc :pending-checkpoint nil)

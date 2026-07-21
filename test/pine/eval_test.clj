@@ -507,20 +507,19 @@
                                   "c2 | c1"]))))
 
   (testing "A table is a join source through a variable only if its id is present"
-    ;; company's id is present in x's snapshot here via auto-id, even though
-    ;; the user only wrote `s: name` — so the join resolves.
+    ;; `s: name` alone has no id anywhere in x's snapshot — Pine doesn't add
+    ;; one, so company is not a valid join source.
     (is (clojure.string/includes?
          (:query (generate-expressions ["company as c | s: name |= x" "x | employee"]))
-         "\"x\".\"id\" = \"e_1\".\"company_id\""))
+         "ON \"\" = \"\""))
 
-    ;; Same result when id is explicit instead of auto-added — get-source-tables
-    ;; doesn't care which mechanism put it there, only that it's present.
+    ;; `s: id, name` includes it explicitly, so the join resolves.
     (is (clojure.string/includes?
          (:query (generate-expressions ["company as c | s: id, name |= x" "x | employee"]))
          "\"x\".\"id\" = \"e_1\".\"company_id\""))
 
-    ;; GROUP never gets an id added automatically — grouping by a non-id column
-    ;; genuinely has no id anywhere, so company is not a valid join source.
+    ;; Same for GROUP: grouping by a non-id column has no id anywhere, so
+    ;; company is not a valid join source.
     (is (clojure.string/includes?
          (:query (generate-expressions ["company as c | employee .company_id | group: c.name |= x" "x | employee"]))
          "ON \"\" = \"\""))))
