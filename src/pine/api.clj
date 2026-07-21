@@ -72,38 +72,38 @@
       (str/replace #"^\|\s*|\s*\|$" "")
       (str/trim)))
 
-(defn- select-table
-  "Trim a table entry down to what the frontend's Table type (client.ts) uses.
+(defn- prune-table
+  "Prune a table entry down to what the frontend's Table type (client.ts) uses.
   Critical: a variable-backed table entry carries a full :ast (the variable's own
-  var-ast) for the query builder's CTE generation — leaving it in would recursively
-  re-embed that variable's entire state (and, transitively, everything it wraps in
+  var-ast) for the query builder's CTE generation — left unpruned, it recursively
+  re-embeds that variable's entire state (and, transitively, everything it wraps in
   turn) inside every table list that references it."
   [table]
   (select-keys table [:schema :table :alias]))
 
-(defn- select-var-ast
-  "Trim a variable/pending-assignment snapshot down to what the frontend actually
+(defn- prune-var-ast
+  "Prune a variable/pending-assignment snapshot down to what the frontend actually
   uses (VariableAst in client.ts). Critical: a raw snapshot still carries :variables
-  and :references from pre-handle/post-handle, so leaving those in would recursively
-  re-embed every earlier variable's own full (untrimmed) snapshot inside this one —
-  each additional chained |= block would then re-embed all prior blocks again on top
-  of that, growing the response payload superlinearly instead of linearly. Its own
-  :tables/:selected-tables entries need the same per-table trim (select-table) for a
-  variable-of-variable chain, or the same recursive embedding reappears one level down."
+  and :references from pre-handle/post-handle — left unpruned, each additional
+  chained |= block would re-embed every earlier block's full snapshot inside the new
+  one, growing the response payload superlinearly instead of linearly. Its own
+  :tables/:selected-tables entries need the same per-table pruning (prune-table) for
+  a variable-of-variable chain, or the same recursive embedding reappears one level
+  down."
   [var-ast]
   (-> (select-keys var-ast [:tables :selected-tables :joins :columns])
-      (update :tables #(mapv select-table %))
-      (update :selected-tables #(mapv select-table %))))
+      (update :tables #(mapv prune-table %))
+      (update :selected-tables #(mapv prune-table %))))
 
-(defn- build-ast
-  "Build the :ast value returned to the frontend from a generated state."
+(defn- prune-ast
+  "Prune a generated state down to the :ast value returned to the frontend."
   [state]
   (-> (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where :prettified :ranges :assign])
-      (update :selected-tables #(mapv select-table %))
+      (update :selected-tables #(mapv prune-table %))
       (assoc :variables
-             (into {} (for [[k v] (:variables state)] [k (select-var-ast v)])))
+             (into {} (for [[k v] (:variables state)] [k (prune-var-ast v)])))
       (assoc :pending-assignments
-             (into {} (for [[k v] (:pending-assignments state)] [k (select-var-ast v)])))))
+             (into {} (for [[k v] (:pending-assignments state)] [k (prune-var-ast v)])))))
 
 (defn api-build
   ([expressions]
@@ -129,7 +129,7 @@
                    {:connection-id connection-name
                     :version version
                     :query (-> last-expr trim-pipes (generate-state nil conn-id variables) :result eval/build-query eval/formatted-query)
-                    :ast (build-ast state)}))))))
+                    :ast (prune-ast state)}))))))
        (catch Exception e {:connection-id connection-name
                            :error (.getMessage e)})))))
 
