@@ -135,23 +135,28 @@ query's params list.
 
 ### Join resolution through variables
 
-Reference seeding happens in two passes inside `pre-handle` (`ast/main.clj`):
+Reference seeding happens in three passes inside `pre-handle` (`ast/main.clj`):
 
 **Pass 1 — `seed-variable-references`**: For each variable V wrapping source table S, copies S's FK
 reference entry into the references map under V's name. This enables `V | table` and `table | V` when
 the join helper can find `table[:referred-by][V]` — but only if that entry already exists, which it
 doesn't yet after pass 1 alone.
 
-**Pass 2 — `patch-variable-relations`**: Iterates every entity (real table or already-seeded variable)
-in the references map. For each entity T where `T[:referred-by][S]` exists, registers `T[:referred-by][V]`
-with the same relation data. This propagates the relationship bidirectionally:
+**Pass 2 — `patch-variable-relations`** (runs `patch-direction` once per direction): Builds a reverse
+index from the references map — `source-table -> entities that already relate to it` — once per direction,
+instead of scanning every entity per variable. For each variable V wrapping source S, looks up S in that
+index to find every entity T where `T[:referred-by][S]` exists, and registers `T[:referred-by][V]` with the
+same relation data. The index is kept in sync with entries added mid-pass, so a variable-of-variable (V2
+wrapping V1, where V1 is itself a variable processed earlier in the same pass) still picks up V1's freshly
+patched relations. This propagates the relationship bidirectionally:
 
 - `T | V` and `V | T` (real table ↔ variable)
 - `V | W` and `W | V` (variable ↔ variable)
 
-**Pass 3 — `patch-same-source-variable-joins`**: For each ordered pair of distinct variables (V1, V2)
-that share a common source table with an `id` column, registers a synthetic `id = id` join at
-`refs[:table V1 :referred-by V2]`. This makes `V1 | V2` resolve even when the source table has no
+**Pass 3 — `patch-same-source-variable-joins`**: Groups variables by source table first, so only variables
+that actually share a source table are ever paired. For each ordered pair of distinct variables (V1, V2)
+within a group, and sharing a common source table with an `id` column, registers a synthetic `id = id`
+join at `refs[:table V1 :referred-by V2]`. This makes `V1 | V2` resolve even when the source table has no
 self-referential FK. Only adds entries where no join path already exists — existing FK-based propagation
 (e.g. two employee-wrapping variables joined via `reports_to`) is not overridden.
 
