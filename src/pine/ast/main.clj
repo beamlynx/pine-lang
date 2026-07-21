@@ -110,24 +110,34 @@
            (mapv #(hash-map :column %))))))
 
 (defn- get-source-tables
-  "Return the tables that are valid join sources for a variable's CTE.
+  "Return the tables that are valid join sources for a variable's CTE — the
+  tables whose own id column is present among the CTE's actual output columns
+  (:columns, auto-id included).
 
-  A variable's CTE never gets an auto-id column added — post-handle (which adds
-  it) runs after handle-ops, after any |= snapshot has already been taken — so a
-  table is only actually joinable through this variable if ITS OWN id column is
-  among the CTE's explicit output columns. Otherwise, inheriting joins from that
-  table's FK relations would reference a column (e.g. \"x\".\"id\") that doesn't
-  exist in the CTE at all.
+  assign/handle and flush-checkpoint's auto-named branch add auto-id columns
+  to a snapshot the same way an ordinary (non-variable) pipeline gets them via
+  post-handle, for every operation type except :group (should-add-auto-ids? in
+  select.clj) — GROUP can't silently add an unaggregated id column to a
+  GROUP BY without changing what the aggregation groups by. In practice:
 
-  No explicit columns at all means the CTE implicitly selects '*' (see
-  variable-output-columns), which always includes id — the :current table is
+  - Non-GROUP CTEs always end up with an auto-id for every real table in
+    :tables, so every table referenced by an explicit column stays a valid
+    source — same as before this existed, now backed by an id that's
+    actually present in the CTE.
+  - GROUP CTEs only get an id for a table if the user explicitly grouped by
+    that table's id. Grouping by anything else (e.g. `group: name`) means
+    that table's id doesn't survive the aggregation, and it correctly stops
+    being a valid source — joining to it would otherwise reference a column
+    (e.g. \"x\".\"id\") the CTE doesn't have.
+
+  No explicit columns at all means the CTE implicitly selects '*', which
+  always includes id regardless of operation type — the :current table is
   then the sole, always-safe source.
 
-  With explicit columns, this can return zero tables (nothing joinable — e.g.
-  `s: name` or `group: name` alone, neither of which keeps any table's id),
-  one, or more than one (e.g. `s: t.id, c.id` makes both t and c valid sources,
-  the same multi-table join support a plain multi-table pipeline already has
-  without any variable involved).
+  Can return zero tables (e.g. `group: name` alone), one, or more than one
+  (e.g. `s: t.id, c.id`, or any non-GROUP CTE spanning multiple tables) — the
+  same multi-table join support a plain, variable-free pipeline already has
+  when it references more than one table.
 
   Used by both seeding and bidirectional patching."
   [var-ast]
@@ -137,7 +147,7 @@
     (or (if (empty? explicit)
           (when-let [current-alias (:current var-ast)]
             [(get-in aliases [current-alias :table])])
-          (->> explicit
+          (->> columns
                (filter #(= "id" (:column %)))
                (map :alias)
                (map #(get-in aliases [% :table]))
@@ -339,10 +349,13 @@
       (assoc state :pending-checkpoint {:name (:value op) :needs-table true})
 
       ;; Auto-named: fire when a table or another checkpoint op arrives
+      ;; add-auto-id-columns mirrors what assign/handle does for a |= snapshot: this
+      ;; snapshot is also taken mid-fold, before post-handle would otherwise add it.
+      ;; Excluded for :group via should-add-auto-ids? — see get-source-tables.
       (and (:needs-assign checkpoint) fire?)
       (let [n        (:auto-cte-count state)
             cname    (str "__pine_" n "__")
-            snapshot (dissoc state :pending-assignments)]
+            snapshot (-> state (dissoc :pending-assignments) select/add-auto-id-columns)]
         (-> state
             (update :auto-cte-count inc)
             (assoc :pending-checkpoint nil)

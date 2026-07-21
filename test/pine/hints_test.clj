@@ -246,21 +246,24 @@
                :table))))
 
   (testing "A table is only a valid join source through a variable if its own id survives"
-    ;; x explicitly selects only name — company's id is not in x's own CTE output, so a
-    ;; join inherited from company's FK relations would reference a column ("x"."id")
-    ;; that doesn't exist. employee must NOT be suggested.
-    (is (= []
-           (-> (gen-with-variables ["company as c | s: name |= x" "x | emp"])
-               :table)))
+    ;; x explicitly selects only name, but a plain (non-GROUP) select gets an auto-id
+    ;; column added to the snapshot the same way an ordinary pipeline would (see
+    ;; assign/handle) — company's id is present in x's actual CTE output either way,
+    ;; so employee is correctly still suggested.
+    (is (= ["employee"]
+           (->> (gen-with-variables ["company as c | s: name |= x" "x | emp"])
+                :table
+                (map :table))))
 
-    ;; Same table, but id IS explicitly selected — company's id survives in x's output,
-    ;; so the join is valid and employee should be suggested.
+    ;; Same table, id also explicitly selected — same result, redundantly safe.
     (is (= ["employee"]
            (->> (gen-with-variables ["company as c | s: id, name |= x" "x | emp"])
                 :table
                 (map :table))))
 
-    ;; GROUP is not special-cased: grouping by a non-id column loses id the same way.
+    ;; GROUP is the one operation that can't get an auto-id: an unaggregated id column
+    ;; can't be silently added to a GROUP BY without changing what's grouped by. Grouping
+    ;; by a non-id column genuinely loses company's id — employee must NOT be suggested.
     (is (= []
            (-> (gen-with-variables ["company as c | employee .company_id | group: c.name |= x" "x | doc"])
                :table)))
