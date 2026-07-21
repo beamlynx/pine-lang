@@ -243,5 +243,31 @@
     (is (= [{:schema nil :table "var_y" :column nil :parent false :heuristic false
              :pine "var_y"}]
            (-> (gen-with-variables ["customer |= var_x" "customer |= var_y" "var_x | var"])
-               :table)))))
+               :table))))
+
+  (testing "A table is only a valid join source through a variable if its own id survives"
+    ;; x explicitly selects only name — company's id is not in x's own CTE output, so a
+    ;; join inherited from company's FK relations would reference a column ("x"."id")
+    ;; that doesn't exist. employee must NOT be suggested.
+    (is (= []
+           (-> (gen-with-variables ["company as c | s: name |= x" "x | emp"])
+               :table)))
+
+    ;; Same table, but id IS explicitly selected — company's id survives in x's output,
+    ;; so the join is valid and employee should be suggested.
+    (is (= ["employee"]
+           (->> (gen-with-variables ["company as c | s: id, name |= x" "x | emp"])
+                :table
+                (map :table))))
+
+    ;; GROUP is not special-cased: grouping by a non-id column loses id the same way.
+    (is (= []
+           (-> (gen-with-variables ["company as c | employee .company_id | group: c.name |= x" "x | doc"])
+               :table)))
+
+    ;; ...but grouping by id (alongside other columns) preserves it, same as s: id, name.
+    (is (= ["document"]
+           (->> (gen-with-variables ["company as c | employee .company_id | group: c.id, c.name |= x" "x | doc"])
+                :table
+                (map :table))))))
 
