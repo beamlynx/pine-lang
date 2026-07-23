@@ -78,7 +78,10 @@
                 (if (contains? variables (:table h))
                   (assoc h :schema nil)
                   h)))
-         distinct)))
+         distinct
+         ;; Smaller (shorter-named) tables first, e.g. `company` before
+         ;; `company_structure` — mirrors the sort already done in table-hints.
+         (sort-by (comp count :table)))))
 
 (defn generate-table-hints [state]
   (let [{token :table parent :parent} (-> state :tables reverse first)

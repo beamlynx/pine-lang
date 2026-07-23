@@ -2,7 +2,8 @@
   (:require
    [clojure.test :refer [deftest is testing]]
    [pine.parser :as parser]
-   [pine.ast.main :as ast]))
+   [pine.ast.main :as ast]
+   [pine.ast.hints :as hints]))
 
 (defn- gen
   "Helper function to generate and get the relevant part in the ast"
@@ -271,4 +272,24 @@
            (->> (gen-with-variables ["company as c | employee .company_id | group: c.id, c.name |= x" "x | doc"])
                 :table
                 (map :table))))))
+
+(deftest test-relation-hints-ordering
+  (testing "Join hints are ordered with shorter table names first"
+    ;; Synthetic state: two children of `parent` — `company_structure` (17 chars)
+    ;; is listed before `company` (7 chars) in the underlying references map, to
+    ;; prove the ordering comes from an explicit sort and not map iteration order.
+    (let [state {:context "p"
+                 :aliases {"p" {:table "parent"}}
+                 :variables {}
+                 :references
+                 {:table
+                  {"parent"
+                   {:refers-to {}
+                    :referred-by
+                    {"company_structure"
+                     {:via {"parent_id" [["s" "parent" "id" :referred-by "x" "company_structure" "parent_id" :foreign-key]]}}
+                     "company"
+                     {:via {"parent_id" [["s" "parent" "id" :referred-by "x" "company" "parent_id" :foreign-key]]}}}}}}}]
+      (is (= ["company" "company_structure"]
+             (->> (hints/relation-hints state "") (map :table)))))))
 
