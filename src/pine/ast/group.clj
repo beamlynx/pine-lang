@@ -1,6 +1,7 @@
 (ns pine.ast.group
   (:require
-   [clojure.string :as s]))
+   [clojure.string :as s]
+   [pine.ast.select :as select]))
 
 (defn handle [state value]
   (let [i (state :index)
@@ -36,10 +37,16 @@
                                        ;; Use the existing column (preserves original alias like "t")
                                        (take 1 matching)
                                        ;; No match, use the group column with default alias
-                                       [(assoc g-col :alias (resolve-alias (or (:alias g-col) current)))])))
+                                       (let [alias (resolve-alias (or (:alias g-col) current))]
+                                         [(assoc g-col :alias alias
+                                                 :source (select/column-source state alias (:column g-col)))]))))
                                  raw-group-columns)
                          ;; No existing selected columns, use group columns with default alias
-                         (map #(assoc % :alias (resolve-alias (or (:alias %) current))) raw-group-columns))
+                         (map (fn [g-col]
+                                (let [alias (resolve-alias (or (:alias g-col) current))]
+                                  (assoc g-col :alias alias
+                                         :source (select/column-source state alias (:column g-col)))))
+                              raw-group-columns))
 
         ;; SELECT clause: merged columns + aggregate functions
         ;; Must be a vector: :columns is later grown with (update :columns into ...)

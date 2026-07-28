@@ -17,6 +17,19 @@
        (mapv #(get ast %) type)
        (get ast type)))))
 
+(defn- gen-with-variables
+  "Evaluate expressions sequentially, threading variables forward. Returns the
+  final :variables map, so an individual variable's own var-ast (:columns,
+  :source, etc.) can be inspected directly."
+  [expressions]
+  (:variables
+   (reduce (fn [{:keys [variables]} expr]
+             (let [{:keys [result]} (parser/parse expr)
+                   state (ast/generate result :test expr nil variables)]
+               {:variables (merge variables (:pending-assignments state))}))
+           {:variables {}}
+           expressions)))
+
 (deftest test-ast
 
   (testing "Generate ast for `tables`"
@@ -46,27 +59,44 @@
            (generate :context "company as c | user | from: c | 1"))))
 
   (testing "Generate ast for `select`"
-    (is (= [{:alias "c_0" :column "id" :operation-index 1} {:alias "c_0" :column "id" :column-alias "__c_0__id" :operation-index 2 :auto-id true :hidden true}]
+    (is (= [{:alias "c_0" :column "id" :source {:table "company" :schema nil} :operation-index 1} {:alias "c_0" :column "id" :column-alias "__c_0__id" :operation-index 2 :auto-id true :hidden true}]
            (generate :columns "company | s: id")))
-    (is (= [{:alias "c_0" :column "id" :column-alias "c_id" :operation-index 1} {:alias "c_0" :column "id" :column-alias "__c_0__id" :operation-index 2 :auto-id true :hidden true}]
+    (is (= [{:alias "c_0" :column "id" :column-alias "c_id" :source {:table "company" :schema nil} :operation-index 1} {:alias "c_0" :column "id" :column-alias "__c_0__id" :operation-index 2 :auto-id true :hidden true}]
            (generate :columns "company | s: id as c_id")))
-    (is (= [{:alias "c_0" :column "id" :operation-index 1} {:alias "e_1" :column "id" :operation-index 3}
+    (is (= [{:alias "c_0" :column "id" :source {:table "company" :schema nil} :operation-index 1} {:alias "e_1" :column "id" :source {:table "employee" :schema nil} :operation-index 3}
             {:alias "c_0" :column "id" :column-alias "__c_0__id" :operation-index 4 :auto-id true :hidden true}
             {:alias "e_1" :column "id" :column-alias "__e_1__id" :operation-index 5 :auto-id true :hidden true}]
            (generate :columns "company | s: id | employee | s: id")))
-    (is (= [{:alias "c" :column "id" :operation-index 1} {:alias "c" :column "id" :column-alias "__c__id" :operation-index 2 :auto-id true :hidden true}]
+    (is (= [{:alias "c" :column "id" :source {:table "company" :schema nil} :operation-index 1} {:alias "c" :column "id" :column-alias "__c__id" :operation-index 2 :auto-id true :hidden true}]
            (generate :columns "company as c | s: id")))
     (is (= [{:alias "u_0" :column "id" :column-alias "__u_0__id" :operation-index 1 :auto-id true :hidden true}]
            (generate :columns "user")))
-    (is (= [{:alias "u" :column "id" :operation-index 1} {:alias "u" :column "id" :column-alias "__u__id" :operation-index 3 :auto-id true :hidden true}]
+    (is (= [{:alias "u" :column "id" :source {:table "user" :schema nil} :operation-index 1} {:alias "u" :column "id" :column-alias "__u__id" :operation-index 3 :auto-id true :hidden true}]
            (generate :columns "user as u | s: id | limit: 1")))
-    (is (= [{:alias "c" :column "id" :operation-index 1}
-            {:alias "u" :column "id" :operation-index 3}
+    (is (= [{:alias "c" :column "id" :source {:table "customer" :schema nil} :operation-index 1}
+            {:alias "u" :column "id" :source {:table "user" :schema nil} :operation-index 3}
             {:alias "c" :column "id" :column-alias "__c__id" :operation-index 5 :auto-id true :hidden true}
             {:alias "u" :column "id" :column-alias "__u__id" :operation-index 6 :auto-id true :hidden true}]
            (generate :columns "customer as c | s: id | user as u | s: id | limit: 1")))
-    (is (= [{:alias "u" :column "" :symbol "*" :operation-index 1} {:alias "u" :column "id" :column-alias "__u__id" :operation-index 2 :auto-id true :hidden true}]
+    (is (= [{:alias "u" :column "" :symbol "*" :source {:table "user" :schema nil} :operation-index 1} {:alias "u" :column "id" :column-alias "__u__id" :operation-index 2 :auto-id true :hidden true}]
            (generate :columns "user as u | s: u.*"))))
+
+  (testing "Column :source tracks the real table, including through variables"
+    ;; Multi-source select: each column keeps its own, independently-resolved
+    ;; :source rather than sharing one for the whole variable.
+    (let [vars (gen-with-variables ["company as c | employee as e | s: c.id, e.id |= m"])]
+      (is (= [{:table "company" :schema nil} {:table "employee" :schema nil}]
+             (map :source (remove :auto-id (:columns (get vars "m")))))))
+
+    ;; Variable-of-variable: b is built by selecting from a, which itself
+    ;; wraps company. b's own column must trace all the way back to company -
+    ;; not to "a", the intermediate variable's own name - with no recursion
+    ;; needed at read time, since a's :source was already fully resolved when
+    ;; a itself was built.
+    (let [vars (gen-with-variables ["company | s: id as tmp_id |= a"
+                                    "a | s: tmp_id as tmp_id2 |= b"])]
+      (is (= {:table "company" :schema nil}
+             (:source (first (:columns (get vars "b"))))))))
 
   (testing "Generate ast for `order`"
     (is (= [{:alias "c_0" :column "country" :direction "DESC" :operation-index 1}]
@@ -201,8 +231,8 @@
            (generate :update "company | update! name = 'John', age = 30"))))
 
   (testing "Generate ast for `group`"
-    (is (= [[{:alias "c" :column "status" :operation-index 1} {:symbol "COUNT(1)" :column-alias "count"}]
-            [{:alias "c" :column "status" :operation-index 1}]]
+    (is (= [[{:alias "c" :column "status" :source {:table "company" :schema nil} :operation-index 1} {:symbol "COUNT(1)" :column-alias "count"}]
+            [{:alias "c" :column "status" :source {:table "company" :schema nil} :operation-index 1}]]
            (generate [:columns :group] "company as c | group: c.status => count"))))
 
   (testing "Generate ast for date extraction functions"
@@ -210,37 +240,37 @@
     (let [non-auto #(filter (fn [c] (not (:auto-id c))) %)]
       ;; Year extraction creates 1 column with col-fn
       (is (= [{:column "created_at" :alias "e_0" :column-alias "year"
-               :col-fn "year" :operation-index 1}]
+               :col-fn "year" :source {:table "employee" :schema nil} :operation-index 1}]
              (non-auto (generate :columns "employee | select: created_at => year"))))
 
       ;; Month extraction creates 1 column with col-fn
       (is (= [{:column "created_at" :alias "e_0" :column-alias "month"
-               :col-fn "month" :operation-index 1}]
+               :col-fn "month" :source {:table "employee" :schema nil} :operation-index 1}]
              (non-auto (generate :columns "employee | select: created_at => month"))))
 
       ;; Day extraction creates 1 column with col-fn
       (is (= [{:column "created_at" :alias "e_0" :column-alias "day"
-               :col-fn "day" :operation-index 1}]
+               :col-fn "day" :source {:table "employee" :schema nil} :operation-index 1}]
              (non-auto (generate :columns "employee | select: created_at => day"))))
 
       ;; Week extraction creates 1 column with col-fn
       (is (= [{:column "created_at" :alias "e_0" :column-alias "week"
-               :col-fn "week" :operation-index 1}]
+               :col-fn "week" :source {:table "employee" :schema nil} :operation-index 1}]
              (non-auto (generate :columns "employee | select: created_at => week"))))
 
       ;; Hour extraction creates 1 column with col-fn
       (is (= [{:column "created_at" :alias "e_0" :column-alias "hour"
-               :col-fn "hour" :operation-index 1}]
+               :col-fn "hour" :source {:table "employee" :schema nil} :operation-index 1}]
              (non-auto (generate :columns "employee | select: created_at => hour"))))
 
       ;; Minute extraction creates 1 column with col-fn
       (is (= [{:column "created_at" :alias "e_0" :column-alias "minute"
-               :col-fn "minute" :operation-index 1}]
+               :col-fn "minute" :source {:table "employee" :schema nil} :operation-index 1}]
              (non-auto (generate :columns "employee | select: created_at => minute"))))
 
       ;; With alias
       (is (= [{:column "created_at" :alias "e" :column-alias "month"
-               :col-fn "month" :operation-index 1}]
+               :col-fn "month" :source {:table "employee" :schema nil} :operation-index 1}]
              (non-auto (generate :columns "employee as e | select: e.created_at => month"))))
 
       ;; Mixed with regular columns (excluding auto-id)

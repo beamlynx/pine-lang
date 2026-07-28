@@ -34,14 +34,14 @@
              :pine "x.company"}]
            (-> "co" gen :table)))
 
-    (is (= [{:schema "y", :table "employee" :column "company_id" :parent false :heuristic false
-             :pine "y.employee .company_id"}
-            {:schema "z", :table "document", :column "company_id", :parent false, :heuristic false
-             :pine "z.document .company_id"}]
+    (is (= [{:schema "y", :table "employee" :column "company_id" :related-column "id" :parent false
+             :resolution "fk" :pine "y.employee .company_id"}
+            {:schema "z", :table "document", :column "company_id" :related-column "id", :parent false
+             :resolution "fk" :pine "z.document .company_id"}]
            (-> "company | e" gen :table)))
 
-    (is (= [{:schema "x", :table "company" :column "company_id" :parent true :heuristic false
-             :pine "x.company .company_id :parent"}]
+    (is (= [{:schema "x", :table "company" :column "id" :related-column "company_id" :parent true
+             :resolution "fk" :pine "x.company .company_id :parent"}]
            (-> "employee | co" gen :table)))
 
     (is (= []
@@ -57,36 +57,41 @@
     (is (= [{:schema "z",
              :table "document"
              :column "employee_id"
+             :related-column "id"
              :parent false
-             :heuristic false
+             :resolution "fk"
              :pine "z.document .employee_id"}
             {:schema "z"
              :table "document"
              :column "created_by"
+             :related-column "id"
              :parent false
-             :heuristic false
+             :resolution "fk"
              :pine "z.document .created_by"}]
            (-> "employee | doc" gen :table))))
 
   (testing "Generate hints when direction is specified"
     (is (= [{:schema "y"
              :table "employee"
-             :column "reports_to"
+             :column "id"
+             :related-column "reports_to"
              :parent true
-             :heuristic false
+             :resolution "fk"
              :pine "y.employee .reports_to :parent"}
             {:schema "y"
              :table "employee"
              :column "reports_to"
+             :related-column "id"
              :parent false
-             :heuristic false
+             :resolution "fk"
              :pine "y.employee .reports_to"}]
            (-> "employee | employee" gen :table)))
     (is (= [{:schema "y"
              :table "employee"
-             :column "reports_to"
+             :column "id"
+             :related-column "reports_to"
              :parent true
-             :heuristic false
+             :resolution "fk"
              :pine "y.employee .reports_to :parent"}]
            (-> "employee | employee :parent" gen :table))))
 
@@ -227,22 +232,49 @@
 
   (testing "Variable relation hints"
     ;; mytest = employee (child); company | my should suggest mytest
-    (is (= [{:schema nil :table "mytest" :column "company_id" :parent false :heuristic false
-             :pine "mytest .company_id"}]
+    (is (= [{:schema nil :table "mytest" :column "company_id" :related-column "id" :parent false
+             :resolution "fk" :pine "mytest .company_id"}]
            (-> (gen-with-variables ["employee |= mytest" "company | my"])
                :table)))
 
     ;; mytest = company (parent); employee | my should suggest mytest
-    (is (= [{:schema nil :table "mytest" :column "company_id" :parent true :heuristic false
-             :pine "mytest .company_id :parent"}]
+    (is (= [{:schema nil :table "mytest" :column "id" :related-column "company_id" :parent true
+             :resolution "fk" :pine "mytest .company_id :parent"}]
            (-> (gen-with-variables ["company |= mytest" "employee | my"])
                :table)))
 
     ;; same-source variables: var_x and var_y both wrap company;
-    ;; when typing "var_x | var", var_y should appear (partial match, unambiguous token)
-    (is (= [{:schema nil :table "var_y" :column nil :parent false :heuristic false
-             :pine "var_y"}]
+    ;; when typing "var_x | var", var_y should appear (partial match, unambiguous token).
+    ;; Both sides are always "id" for a synthetic join - no ambiguity to
+    ;; disambiguate, so the pine expression stays suffix-free.
+    (is (= [{:schema nil :table "var_y" :column "id" :related-column "id" :parent false
+             :resolution "synthetic" :pine "var_y"}]
            (-> (gen-with-variables ["customer |= var_x" "customer |= var_y" "var_x | var"])
+               :table))))
+
+  (testing "Variable relation hints reflect an explicitly-aliased id column"
+    ;; x = company with id renamed to tmp_id; x | emp should suggest employee via
+    ;; tmp_id (x's own actual column), not the underlying raw "id".
+    (is (= [{:schema "y" :table "employee" :column "company_id" :related-column "tmp_id" :parent false
+             :resolution "fk" :pine "y.employee .company_id"}]
+           (-> (gen-with-variables ["company | s: id as tmp_id |= x" "x | emp"])
+               :table)))
+
+    ;; Reverse direction: employee already relates to company, so employee | x
+    ;; must resolve on x's own tmp_id too, not id.
+    (is (= [{:schema nil :table "x" :column "tmp_id" :related-column "company_id" :parent true
+             :resolution "fk" :pine "x .company_id :parent"}]
+           (->> (gen-with-variables ["company | s: id as tmp_id |= x" "employee | "])
+                :table
+                (filter #(= "x" (:table %)))))))
+
+  (testing "Same-source join hint also suggests the real table itself, not just other variables"
+    ;; x wraps company via an explicitly-renamed id (c_id) - company itself is
+    ;; just as valid a same-source candidate from x as another variable
+    ;; wrapping company would be, since it's the same underlying table.
+    (is (= [{:schema nil :table "company" :column "id" :related-column "c_id" :parent false
+             :resolution "synthetic" :pine "company"}]
+           (-> (gen-with-variables ["company | s: id as c_id |= x" "x | co"])
                :table))))
 
   (testing "A table is only a valid join source through a variable if its own id survives"

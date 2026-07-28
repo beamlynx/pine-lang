@@ -128,7 +128,29 @@ Bypasses the reference map. `company_id` is on `document` (right table); `id` is
    - Adds the same two-direction index entries as FK detection, tagged `:heuristic` instead of `:foreign-key`.
 
 The same map structure is used for both FK and heuristic entries; the only difference is the tag in position 7
-of the join vector. Callers can inspect it if they want to surface confidence level.
+of the join vector. Callers can inspect it if they want to surface confidence level — see "Hint-facing
+resolution" below for where that actually surfaces.
+
+### Hint-facing resolution (`ast/hints.clj`)
+
+Every table hint (`ast.hints.table[]`, the autocomplete suggestions for what to pipe in next) carries a
+`:resolution` field, so a client can distinguish a confirmed relationship from a guessed one:
+
+- **`"fk"`** — a real foreign key. Read straight from the join vector's position-7 tag (`:foreign-key`, see
+  above) by `resolution-of`.
+- **`"heuristic"`** — a naming-convention guess (`company_id` → `company`), no FK constraint behind it. Same
+  tag mechanism, `:heuristic` instead.
+- **`"synthetic"`** — a made-up `id = id` join with *no* reference-map entry behind it at all, fabricated on
+  the fly rather than read from a tag. Currently the only source of this is the same-source join described
+  in [variables.md](variables.md#join-resolution-through-variables) — two references to the same table (at
+  least one a variable) with no real FK connecting them. The name is deliberately not variable-specific:
+  anything Pine ever has to invent a join for, rather than discover one for, gets this tag — a future
+  self-join between two real tables (once Pine can tell two occurrences of the same table apart) would use
+  it too.
+
+A fourth value, `"manual"`, is reserved on the frontend type for the explicit `.col1 = .col2` case — but
+since that syntax bypasses the reference map entirely (see Syntax above), there's nothing for a hint to
+suggest there, so the backend never actually emits it.
 
 ### Join direction resolution (`ast/table.clj`)
 

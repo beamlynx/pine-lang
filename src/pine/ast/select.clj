@@ -1,5 +1,19 @@
 (ns pine.ast.select)
 
+(defn column-source
+  "The real table (and schema) this column ultimately traces back to - itself
+  if selecting from a real table, or copied forward from a variable's own
+  already-resolved source for the matching column if selecting from a
+  variable. Never recomputed past this one hop: a variable is always defined
+  before it's used, so whatever it's built from has already gone through this
+  same step, and its own :columns already carry a fully-real :source."
+  [state alias raw-column]
+  (let [{:keys [table schema ast]} (get (:aliases state) alias)]
+    (if ast
+      (some #(when (= raw-column (or (:column-alias %) (:column %))) (:source %))
+            (:columns ast))
+      {:table table :schema schema})))
+
 (defn handle [state value]
   (let [i       (state :index)
         current (state :current)
@@ -9,16 +23,18 @@
         columns (mapcat (fn [col]
                           (let [col-with-defaults (-> col
                                                       (assoc :alias (resolve-alias (or (:alias col) current)))
-                                                      (assoc :operation-index i))]
+                                                      (assoc :operation-index i))
+                                source (column-source state (:alias col-with-defaults) (:column col))]
                             (if-let [col-fn (:column-function col)]
                               ;; Column function: apply function to column
                               [{:column (:column col)
                                 :alias (:alias col-with-defaults)
                                 :column-alias (or (:column-alias col) col-fn)  ; Use custom alias or function name
                                 :col-fn col-fn                                 ; Mark which function to apply
+                                :source source
                                 :operation-index i}]
                               ;; Regular column - return as is
-                              [col-with-defaults])))
+                              [(assoc col-with-defaults :source source)])))
                         value)]
     (-> state
         (update :columns into columns))))

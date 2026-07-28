@@ -450,6 +450,52 @@
            (generate-expressions ["employee |= mytest"
                                   "company | mytest"]))))
 
+  (testing "Join through a variable whose id column was explicitly aliased"
+    ;; The CTE only ever exposes the aliased name (tmp_id) - joining on the raw
+    ;; "id" would reference a column that doesn't exist in the CTE at all.
+    (is (= {:query "WITH \"x\" AS ( SELECT \"c_0\".\"id\" AS \"tmp_id\" FROM \"company\" AS \"c_0\" ) SELECT \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"x\" AS \"x\" JOIN \"employee\" AS \"e_1\" ON \"x\".\"tmp_id\" = \"e_1\".\"company_id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company | s: id as tmp_id |= x"
+                                  "x | employee"])))
+
+    ;; Same fix, reverse direction: a real table already relating to company
+    ;; navigates to the variable - must still land on tmp_id, not id.
+    (is (= {:query "WITH \"x\" AS ( SELECT \"c_0\".\"id\" AS \"tmp_id\" FROM \"company\" AS \"c_0\" ) SELECT \"e_0\".id AS \"__e_0__id\", \"x\".* FROM \"employee\" AS \"e_0\" JOIN \"x\" AS \"x\" ON \"e_0\".\"company_id\" = \"x\".\"tmp_id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company | s: id as tmp_id |= x"
+                                  "employee | x"])))
+
+    ;; Same-source variable pair, only one side renamed: each side of the
+    ;; synthetic id=id join must use its own variable's actual column name.
+    (is (= {:query "WITH \"x\" AS ( SELECT \"c_0\".\"id\" AS \"tmp_id\" FROM \"company\" AS \"c_0\" ), \"y\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"y\".* FROM \"x\" AS \"x\" JOIN \"y\" AS \"y\" ON \"x\".\"tmp_id\" = \"y\".\"id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company | s: id as tmp_id |= x"
+                                  "company |= y"
+                                  "x | y"])))
+
+    ;; Renaming must be table-scoped, not a blind string substitution: x wraps
+    ;; employee, selecting both id (renamed to tmp_id) and its own unrenamed
+    ;; company_id - employee's real, unrelated "id" (via company_id -> id)
+    ;; must NOT also get rewritten to "tmp_id" just because the raw column
+    ;; names happen to collide.
+    (is (= {:query "WITH \"x\" AS ( SELECT \"e_0\".\"id\" AS \"tmp_id\", \"e_0\".\"company_id\" FROM \"employee\" AS \"e_0\" ) SELECT \"c_1\".id AS \"__c_1__id\", \"c_1\".* FROM \"x\" AS \"x\" JOIN \"company\" AS \"c_1\" ON \"x\".\"company_id\" = \"c_1\".\"id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["employee | s: id as tmp_id, company_id |= x"
+                                  "x | company"])))
+
+    ;; The bug this session actually reported: x wraps company, selecting only
+    ;; id (renamed c_id) - company's own OTHER real relationships (e.g. its
+    ;; outgoing FK to some other parent) must not be reachable through x at
+    ;; all, since that column was never selected into the CTE. Reproduced with
+    ;; employee/company here: x only exposes c_id, not company's own other
+    ;; columns, so navigating from x to anything other than via id must fail.
+    (is (clojure.string/includes?
+         (:query (generate-expressions ["company | s: id as c_id |= x" "x | employee"]))
+         "\"x\".\"c_id\" = \"e_1\".\"company_id\""))
+    (is (clojure.string/includes?
+         (:query (generate-expressions ["employee | s: id as tmp_id |= x" "x | company"]))
+         "ON \"\" = \"\"")))
+
   (testing "Mid-pipeline assign: expression continues after |="
     ;; The assign snapshots the state at that point; subsequent ops still apply
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" LIMIT 10"
@@ -506,6 +552,24 @@
                                   "company |= c2"
                                   "c2 | c1"]))))
 
+  (testing "Same-source join also works between a real table and a variable wrapping it"
+    ;; The same-source fallback isn't variable-specific - a real table joined
+    ;; to a variable that traces back to that same table is exactly the same
+    ;; situation (two references to one table, no real FK connecting them),
+    ;; just with one side not sealed into a CTE.
+    (is (= {:query "WITH \"x\" AS ( SELECT \"c_0\".\"id\" AS \"c_id\" FROM \"company\" AS \"c_0\" ) SELECT \"c_0\".id AS \"__c_0__id\", \"x\".* FROM \"company\" AS \"c_0\" JOIN \"x\" AS \"x\" ON \"c_0\".\"id\" = \"x\".\"c_id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company | s: id as c_id |= x"
+                                  "company | x"])))
+    (is (= {:query "WITH \"x\" AS ( SELECT \"c_0\".\"id\" AS \"c_id\" FROM \"company\" AS \"c_0\" ) SELECT \"c_1\".id AS \"__c_1__id\", \"c_1\".* FROM \"x\" AS \"x\" JOIN \"company\" AS \"c_1\" ON \"x\".\"c_id\" = \"c_1\".\"id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company | s: id as c_id |= x"
+                                  "x | company"])))
+    ;; But two RAW references to the same table still don't resolve - Pine has
+    ;; no way yet to distinguish which occurrence is which (no `t | t as t2`
+    ;; self-aliasing), so this stays unsupported (see docs/variables.md).
+    (is (clojure.string/includes? (:query (generate "company | company")) "ON \"\" = \"\"")))
+
   (testing "A table is a join source through a variable only if its id is present"
     ;; `s: name` alone has no id anywhere in x's snapshot — Pine doesn't add
     ;; one, so company is not a valid join source.
@@ -522,7 +586,22 @@
     ;; company is not a valid join source.
     (is (clojure.string/includes?
          (:query (generate-expressions ["company as c | employee .company_id | group: c.name |= x" "x | employee"]))
-         "ON \"\" = \"\""))))
+         "ON \"\" = \"\"")))
+
+  (testing "WHERE value coercion through a variable resolves the real column's type"
+    ;; A variable's pre-seeded column list never carried type information, so
+    ;; filtering by a UUID column exposed through a variable silently dropped
+    ;; the ::uuid cast entirely - confirmed broken before this session's
+    ;; refactor. It must now match what filtering the real table directly
+    ;; already produces.
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"uuid_col\" = ?::uuid LIMIT 250"
+            :params (list (dt/uuid "1c50ee25-4938-4b77-b831-bc41a0ee3d0c"))}
+           (generate "customer | where: uuid_col = '1c50ee25-4938-4b77-b831-bc41a0ee3d0c'")))
+
+    (is (= {:query "WITH \"x\" AS ( SELECT \"c_0\".\"id\", \"c_0\".\"uuid_col\" AS \"u\" FROM \"customer\" AS \"c_0\" ) SELECT \"x\".* FROM \"x\" AS \"x\" WHERE \"x\".\"u\" = ?::uuid LIMIT 250"
+            :params (list (dt/uuid "1c50ee25-4938-4b77-b831-bc41a0ee3d0c"))}
+           (generate-expressions ["customer | s: id, uuid_col as u |= x"
+                                  "x | where: u = '1c50ee25-4938-4b77-b831-bc41a0ee3d0c'"])))))
 
 (deftest test-checkpoints
   (testing "LIMIT checkpoint: auto-CTE when a table op follows limit"
@@ -614,4 +693,28 @@
     ;; Without an explicit |=, the checkpoint still seals — just with a generated
     ;; name instead of a user-given one.
     (is (= "WITH \"__pine_0__\" AS ( SELECT \"c_0\".\"id\", COUNT(1) AS \"count\" FROM \"x\".\"company\" AS \"c_0\" GROUP BY \"c_0\".\"id\" ) SELECT \"__pine_0__\".\"id\" FROM \"__pine_0__\" AS \"__pine_0__\" LIMIT 250"
-           (:query (generate "x.company | group: id => count | s: id"))))))
+           (:query (generate "x.company | group: id => count | s: id")))))
+
+  (testing "Auto-named checkpoints across separate expressions don't collide"
+    ;; Each expression starts from a fresh state, so without a session-wide
+    ;; count, two expressions that each auto-name exactly one checkpoint both
+    ;; land on "__pine_0__" - two genuinely different CTEs sharing one name.
+    ;; collect-ctes (eval.clj) dedupes by name, so the second one used to be
+    ;; silently dropped, leaving both variables reading from the first CTE.
+    ;; The generated names only need to be unique, not contiguous - a later
+    ;; expression may well skip a number (e.g. one an explicit |= name used
+    ;; up) - so this asserts non-collision, not any specific numbering.
+    (let [query (:query (generate-expressions
+                         ["company as c | employee .company_id | group: c.id => count | s: id, count as emp_count |= x"
+                          "company as c | employee .company_id | group: c.id => count | s: id, count as emp_count2 |= y"
+                          "x | s: emp_count, | y | s: emp_count2,"]))
+          x-name (second (re-find #"\"x\" AS \( SELECT \"(__pine_\d+__)\"" query))
+          y-name (second (re-find #"\"y\" AS \( SELECT \"(__pine_\d+__)\"" query))]
+      (is (some? x-name))
+      (is (some? y-name))
+      ;; The actual regression: x and y must not have been folded onto the
+      ;; same auto-generated checkpoint.
+      (is (not= x-name y-name))
+      ;; Each one's own checkpoint must still carry the right GROUP BY body.
+      (is (clojure.string/includes? query (str "\"" x-name "\" AS ( SELECT \"c\".\"id\", COUNT(1) AS \"count\"")))
+      (is (clojure.string/includes? query (str "\"" y-name "\" AS ( SELECT \"c\".\"id\", COUNT(1) AS \"count\""))))))

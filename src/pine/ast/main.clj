@@ -7,10 +7,12 @@
   which makes hints, prettification, and multiple output formats possible without
   re-parsing.
 
-  Why variables are seeded before handle-ops: joins are resolved using a references
-  map built from the DB schema. Variables (CTEs from earlier expressions) need to
-  appear in that map — with the same FK relationships as their source tables — so
-  join resolution treats them like real tables."
+  How variables join: a variable's own :columns (see ast/select.clj) each carry a
+  :source - the real table they trace back to, resolved one hop at a time as each
+  variable is built, so it's always a real table by the time anything reads it, no
+  matter how many variables are chained. ast/table.clj's resolve-table reads that
+  directly at join time, live - there's no separate pre-seeding step; a variable's
+  references entry is never faked into looking like a real table's."
   (:require
    [clojure.string :as str]
    [pine.ast.assign :as assign]
@@ -85,194 +87,47 @@
             ;; ---
             ;; Checkpoint
             ;; ---
-            ;; Tracks auto-generated CTE names (__pine_0__, __pine_1__, ...)
+            ;; Tracks auto-generated CTE names (__pine_0__, __pine_1__, ...).
+            ;; This default is immediately overridden by pre-handle, which
+            ;; derives the real starting count from already-known variables -
+            ;; see next-auto-cte-count.
             :auto-cte-count   0
             ;; Set after a checkpoint op (group/limit) to signal the next table op
             ;; should become a CTE instead of a direct join.
             ;; nil | {:needs-assign true} | {:name "n" :needs-table true}
             :pending-checkpoint nil})
 
-(defn- variable-output-columns
-  "Return the column list a variable's CTE actually exposes, for hint generation.
-  Returns nil when the CTE selects *, meaning the source table's columns apply.
+(defn- next-auto-cte-count
+  "Anonymous checkpoint CTEs (__pine_0__, __pine_1__, ...) are named from
+  :auto-cte-count, which used to always start at 0 for every expression - but
+  each blank-line-separated expression gets its own fresh state, so two
+  expressions that each auto-name exactly one checkpoint both produced
+  \"__pine_0__\". Since these are genuinely different CTEs that only share a
+  name, eval.clj's collect-ctes (which dedupes by name, correctly, for
+  explicit |= names that really are unique) silently dropped one of them.
 
-  For a GROUP-sourced CTE, :columns already includes the aggregate entry —
-  group.clj folds it in directly (parser.clj defaults :functions to [\"count\"]
-  even when `=> count` is omitted; there's no way to write a truly aggregate-
-  less GROUP) — so it's read here like any other column."
-  [var-ast]
-  (let [user-cols (remove :auto-id (:columns var-ast))]
-    (when (seq user-cols)
-      (->> user-cols
-           (map #(or (:column-alias %) (:column %)))
-           distinct
-           (mapv #(hash-map :column %))))))
-
-(defn- get-source-tables
-  "Return the tables that are valid join sources for a variable's CTE.
-
-  Once a table's data is sealed into a CTE, the outer query can only see what
-  that CTE's own :columns actually selected — nothing else about the underlying
-  table is reachable. A table is therefore only a join source if its own id
-  column is among those columns. Pine never adds one on its own: if the user
-  didn't select it, it isn't there, and that table simply isn't joinable
-  through this variable.
-
-  No explicit columns at all means the CTE selects '*', which includes every
-  column of the source table, id included — the :current table is then the
-  sole source. With explicit columns, each one is checked for its own id column
-  independently, so this can return zero tables (`group: name` alone has no id
-  anywhere), one, or more than one (`s: t.id, c.id` makes both t and c valid
-  sources) — the same multi-table join support a plain, variable-free pipeline
-  already has when it references more than one table.
-
-  Used by both seeding and bidirectional patching."
-  [var-ast]
-  (let [columns  (:columns var-ast)
-        aliases  (:aliases var-ast)
-        explicit (remove :auto-id columns)]
-    (or (if (empty? explicit)
-          (when-let [current-alias (:current var-ast)]
-            [(get-in aliases [current-alias :table])])
-          (->> columns
-               (filter #(= "id" (:column %)))
-               (map :alias)
-               (map #(get-in aliases [% :table]))
-               (remove nil?)
-               distinct))
-        [])))
-
-(defn- seed-variable-references
-  "Copy reference entries from the real source tables of a variable into the
-  local references map under the variable name, so join resolution treats the
-  variable identically to a real table. Column hints are overridden with the
-  CTE's actual output columns when they can be determined."
-  [refs var-ast varname]
-  (let [source-tables (get-source-tables var-ast)
-        seeded (reduce (fn [r source-table]
-                         (let [source-refs (get-in r [:table source-table])]
-                           (if source-refs
-                             (update-in r [:table varname] merge source-refs)
-                             r)))
-                       refs
-                       source-tables)]
-    (if-let [output-cols (variable-output-columns var-ast)]
-      (-> seeded
-          (assoc-in [:table varname :columns] output-cols)
-          (assoc-in [:table varname :column-set] (set output-cols)))
-      seeded)))
-
-(defn- build-direction-index
-  "Reverse index: source-table -> {entity-name -> existing-relation}, for one
-  direction. Lets patch-direction look up 'who already relates to S' directly
-  instead of scanning every table in the schema per variable."
-  [refs direction]
-  (reduce-kv (fn [idx entity-name entity-refs]
-               (reduce-kv (fn [idx target existing]
-                            (assoc-in idx [target entity-name] existing))
-                          idx
-                          (get entity-refs direction)))
-             {}
-             (get refs :table {})))
-
-(defn- patch-direction
-  "For each variable V wrapping source S, copy T[direction][S] → T[direction][V]
-  for every entity T that already relates to S. Used by patch-variable-relations.
-
-  Uses a reverse index (source-table -> referring entities) built once instead
-  of scanning every schema table per variable, which turns this from O(v · T)
-  into O(T + v · k) where k is the actual fan-in for each source table. The
-  index is kept in sync with entries this pass adds, since a later variable's
-  source table can itself be an earlier variable processed in this same pass
-  (variable-of-variable composition)."
-  [refs variables direction]
-  (:refs
-   (reduce
-    (fn [{:keys [refs index]} [varname var-ast]]
-      (reduce
-       (fn [{:keys [refs index]} source-table]
-         (reduce
-          (fn [{:keys [refs index]} [entity-name existing]]
-            (let [refs*  (update-in refs [:table entity-name direction varname] merge existing)
-                  merged (get-in refs* [:table entity-name direction varname])]
-              {:refs refs* :index (assoc-in index [varname entity-name] merged)}))
-          {:refs refs :index index}
-          (get index source-table)))
-       {:refs refs :index index}
-       (get-source-tables var-ast)))
-    {:refs refs :index (build-direction-index refs direction)}
-    variables)))
-
-(defn- patch-variable-relations
-  "Bidirectional pass: for each variable V wrapping source S, find every
-  entity T where T already knows about S via :referred-by or :refers-to,
-  and register V there too.
-
-  This enables:
-  - 'T | V'  and  'V | T'  (real table ↔ variable)
-  - 'V | W'  and  'W | V'  (variable ↔ variable)
-
-  Must run after all variables have been seeded."
-  [refs variables]
-  (-> refs
-      (patch-direction variables :referred-by)
-      (patch-direction variables :refers-to)))
-
-(defn- patch-same-source-variable-joins
-  "For each ordered pair of distinct variables (v1, v2) that share a source table
-  with an 'id' column, register a synthetic id=id join at refs[:table v1 :referred-by v2].
-  Only adds entries where no join path already exists, so self-referential FK propagation
-  (e.g. employee/reports_to) is preserved.
-
-  Pairs are generated only within groups of variables that actually share a source
-  table (via an inverted source-table -> variables index), instead of scanning every
-  ordered pair among all variables. This turns the common case (variables spread
-  across distinct source tables) from O(v²) into roughly O(v), while the worst case
-  (all variables sharing one source) stays O(g²) for that group — unavoidable since
-  the output itself is a g² set of pairwise joins."
-  [refs variables]
-  (let [var-sources (->> variables
-                         (map (fn [[vname var-ast]]
-                                [vname (set (get-source-tables var-ast))]))
-                         (into {}))
-        by-source (reduce-kv (fn [idx vname sources]
-                               (reduce (fn [idx source] (update idx source (fnil conj []) vname))
-                                       idx
-                                       sources))
-                             {}
-                             var-sources)
-        pairs (distinct (for [[_ vnames] by-source
-                              v1 vnames v2 vnames
-                              :when (not= v1 v2)]
-                          [v1 v2]))]
-    (reduce (fn [r [v1 v2]]
-              (let [shared-sources (filter (var-sources v1) (var-sources v2))
-                    has-id? (fn [tbl] (some #(= "id" (:column %)) (get-in r [:table tbl :columns])))]
-                (if (and (some has-id? shared-sources)
-                         (not (get-in r [:table v1 :referred-by v2])))
-                  (update-in r [:table v1 :referred-by v2 :via "id"]
-                             (fnil conj [])
-                             [nil v1 "id" :referred-by nil v2 "id" :variable-join])
-                  r)))
-            refs
-            pairs)))
+  The names only need to be unique, not contiguous - so instead of parsing
+  __pine_N__ back out of variables to find the highest N used, just start
+  counting from how many variables already exist. variables only ever grows
+  across expressions (see api.clj's evaluate-expressions), and each
+  expression's own auto-names always add at least that many new keys to it -
+  every one becomes its own top-level entry, exactly like an explicit |= name
+  would - so the count after an expression is always past every number it
+  used. By induction, seeding from the current count can never collide with a
+  number a prior expression already claimed, even though later expressions
+  will end up skipping some numbers (e.g. ones used by explicit |= names)."
+  [variables]
+  (count variables))
 
 (defn pre-handle [state connection-id ops-count expression cursor variables]
-  (let [refs       (db/init-references connection-id)
-        seeded-refs (reduce (fn [r [varname var-ast]]
-                              (seed-variable-references r var-ast varname))
-                            refs
-                            variables)
-        aug-refs   (-> seeded-refs
-                       (patch-variable-relations variables)
-                       (patch-same-source-variable-joins variables))]
-    (-> state
-        (assoc :references aug-refs)
-        (assoc :connection-id connection-id)
-        (assoc :pending-count ops-count)
-        (assoc :expression expression)
-        (assoc :cursor cursor)
-        (assoc :variables variables))))
+  (-> state
+      (assoc :references (db/init-references connection-id))
+      (assoc :connection-id connection-id)
+      (assoc :pending-count ops-count)
+      (assoc :expression expression)
+      (assoc :cursor cursor)
+      (assoc :variables variables)
+      (assoc :auto-cte-count (next-auto-cte-count variables))))
 
 ;; ---------------------------------------------------------------------------
 ;; Checkpoint helpers
@@ -300,18 +155,15 @@
          :table-count 0 :operation {:type nil :value nil}))
 
 (defn- seal-as-cte
-  "Store snapshot under cname, seed its join references, reset the query-building
-  state, then inject cname as the first table so subsequent ops compose on top of it."
+  "Store snapshot under cname, reset the query-building state, then inject
+  cname as the first table so subsequent ops compose on top of it. Nothing
+  needs seeding into :references - table/resolve-table reads cname's own
+  :source-tagged :columns live, the same as any other variable."
   [state cname snapshot]
-  (let [new-refs (-> (:references state)
-                     (seed-variable-references snapshot cname)
-                     (patch-variable-relations {cname snapshot})
-                     (patch-same-source-variable-joins {cname snapshot}))]
-    (-> state
-        (assoc :references new-refs)
-        (assoc-in [:pending-assignments cname] snapshot)
-        reset-for-cte
-        (handle-op {:type :table :value {:table cname}}))))
+  (-> state
+      (assoc-in [:pending-assignments cname] snapshot)
+      reset-for-cte
+      (handle-op {:type :table :value {:table cname}})))
 
 (defn- flush-checkpoint
   "State-machine step: called at the start of each handle-ops iteration.

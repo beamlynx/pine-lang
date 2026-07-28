@@ -1,4 +1,5 @@
-(ns pine.data-types)
+(ns pine.data-types
+  (:require [pine.ast.table :as table]))
 
 (defn string [x]
   {:type :string
@@ -68,12 +69,32 @@
     ;; Default: return value as-is
     value))
 
+(defn- columns-for [references table-name schema]
+  (if schema
+    (get-in references [:schema schema :table table-name :columns])
+    (get-in references [:table table-name :columns])))
+
+(defn- raw-column-name
+  "Reverse lookup: which raw column does this rename map expose as
+  exposed-name? Falls back to exposed-name unchanged when nothing maps to
+  it - i.e. it was never renamed to begin with."
+  [rename exposed-name]
+  (or (some (fn [[raw exposed]] (when (= exposed exposed-name) raw)) rename)
+      exposed-name))
+
 (defn get-column-type
-  "Get the database type for a column from schema references.
-   Returns the database type string or nil if not found."
+  "Get the database type for a column from schema references. Returns the
+   database type string or nil if not found. table-info may be a variable's
+   alias entry (carrying :ast) - resolved through its real source table(s)
+   the same one-hop way join resolution works, since a variable's own
+   pre-seeded column list never carried type information to begin with."
   [references alias column-name table-info]
-  (let [{:keys [table schema]} table-info
-        columns (if schema
-                  (get-in references [:schema schema :table table :columns])
-                  (get-in references [:table table :columns]))]
-    (some #(when (= (:column %) column-name) (:type %)) columns)))
+  (if (:ast table-info)
+    (some (fn [{:keys [table schema rename]}]
+            (let [raw (raw-column-name rename column-name)]
+              (some #(when (= (:column %) raw) (:type %))
+                    (columns-for references table schema))))
+          (table/resolve-table table-info))
+    (let [{:keys [table schema]} table-info]
+      (some #(when (= (:column %) column-name) (:type %))
+            (columns-for references table schema)))))
