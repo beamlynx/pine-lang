@@ -259,7 +259,23 @@
         expression
         (let [lines-before (take line lines)
               current-line (nth lines line)
-              truncated-current (subs current-line 0 (min character (count current-line)))]
+              cut (min character (count current-line))
+              truncated-current (subs current-line 0 cut)
+              ;; A cursor sitting in the leading whitespace before a
+              ;; continuation line's `|` (i.e. it hasn't reached the pipe
+              ;; character yet) still means the previous operation is
+              ;; complete and this line is a fresh (if empty) one - cutting
+              ;; strictly at `character` here drops the `|` entirely,
+              ;; collapsing what should be two operations into one and
+              ;; making hint generation treat the already-complete previous
+              ;; table as a still-being-typed, context-less prefix. Extend
+              ;; the cut through the `|` in that case so the truncated parse
+              ;; still sees a fresh, empty second operation.
+              truncated-current (if (str/blank? truncated-current)
+                                   (if-let [pipe-idx (str/index-of current-line "|")]
+                                     (subs current-line 0 (inc pipe-idx))
+                                     truncated-current)
+                                   truncated-current)]
           (str/join "\n" (concat lines-before [truncated-current])))))))
 
 (defn- generate-truncated-state
