@@ -3,6 +3,23 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Added
+- Variables: name and reuse an intermediate query result across expressions with `|= name` (or `| = name`, mid-pipeline or at the end). The API now accepts a list of expressions (`{"expressions": [...]}`) evaluated in order; variables assigned in earlier expressions are available in later ones:
+```
+company | where: active = true |= active_companies
+active_companies | employee | s: name
+```
+- Variable results (and auto-sealed checkpoints, see below) emit as CTEs. A variable can reference another variable; all CTEs flatten to a single top-level `WITH` clause. Joins through a variable resolve using the real table(s) it traces back to, exactly like a plain table join — a table only stays joinable through a variable if its `id` column is explicitly among the variable's output columns, since the CTE boundary hides everything else.
+- Checkpoints: a `group:` or `limit:` result auto-seals into an anonymous CTE (`__pine_0__`, ...) whenever a table op, or a select:/where:/order: (complete or partial), follows it, so `company | l: 10 | employee` and `company | group: name | o: name desc` compose correctly instead of producing malformed SQL. Optionally name the checkpoint explicitly with `|= name` between the checkpoint op and what follows.
+- Same-source joins through a variable: two variables wrapping the same source table (`t |= x`, `t |= y`, then `x | y`), or a real table joined to a variable that traces back to it, resolve via a synthesized `id = id` join — a narrow, deliberate exception to Pine's general lack of self-join support on raw tables.
+- Join hints (`ast.hints.table[]`) carry a `resolution` field distinguishing a confirmed relationship from a guessed one: `"fk"` (real foreign key), `"heuristic"` (naming-convention guess, no FK), `"synthetic"` (a made-up `id = id` join with no reference-map entry, e.g. the same-source case above), or `"manual"` (reserved for the explicit `.col1 = .col2` syntax). Hints also expose both join columns (`column` and `related-column`) instead of only one.
+- Alias-dot partial syntax (`t.na`) is supported in all partial operations (select/where/order/update), not just complete ones.
+- `pending-assignments` is included in the build API response, exposing in-progress `|=` snapshots for the current expression before it's fully evaluated.
+
+### Fixed
+- An aliased `id` column selected through a variable (`s: id as tmp_id`) now correctly carries the alias through downstream joins, and column renaming is table-scoped so it can no longer corrupt an unrelated table's same-named column.
+- Auto-generated checkpoint CTE names are unique across every expression in a session, not just within a single one.
+- A cursor positioned in the leading whitespace before a continuation line's `|` — i.e. right at the boundary between two piped operations — no longer produces malformed autocomplete hints for the preceding, already-complete table.
 
 ## [0.36.0] - 2026-05-21
 ### Added
