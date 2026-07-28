@@ -53,7 +53,7 @@
   ;; id=id entry, never ambiguous, so no disambiguator is needed - keeps
   ;; `var_x | var_y` as the canonical form instead of `var_x | var_y .id`.
   (let [hint-column (when-not (= resolution "synthetic")
-                       (if parent related-column column))]
+                      (if parent related-column column))]
     (str (if schema (str schema ".") "") table
          (if alias (str " as " alias) "")
          (if hint-column (str " ." hint-column) "")

@@ -72,8 +72,7 @@
           col                   (translate-column rename1 raw-col)
           f-col                 (translate-column rename2 raw-f-col)
           rejected?             (or (and (some? raw-col) (seq rename1) (nil? col))
-                                    (and (some? raw-f-col) (seq rename2) (nil? f-col)))
-          ]
+                                    (and (some? raw-f-col) (seq rename2) (nil? f-col)))]
       (when-not rejected?
         (if (= direction :of)
           [a2 f-col :of a1 col]
@@ -134,8 +133,8 @@
      (if (not parent) (try-direction candidates1 candidates2 a1 a2 :has) nil)
      (try-direction candidates2 candidates1 a2 a1 :of)
      (same-source-join references (boolean (:ast alias1)) (boolean (:ast alias2))
-                        (not= (:table alias1) (:table alias2))
-                        candidates1 candidates2 a1 a2))))
+                       (not= (:table alias1) (:table alias2))
+                       candidates1 candidates2 a1 a2))))
 
 (defn- update-joins
   "Use the tables in the state to create a join between the last 2 tables. The
