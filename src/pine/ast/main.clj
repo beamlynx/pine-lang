@@ -272,10 +272,10 @@
               ;; the cut through the `|` in that case so the truncated parse
               ;; still sees a fresh, empty second operation.
               truncated-current (if (str/blank? truncated-current)
-                                   (if-let [pipe-idx (str/index-of current-line "|")]
-                                     (subs current-line 0 (inc pipe-idx))
-                                     truncated-current)
-                                   truncated-current)]
+                                  (if-let [pipe-idx (str/index-of current-line "|")]
+                                    (subs current-line 0 (inc pipe-idx))
+                                    truncated-current)
+                                  truncated-current)]
           (str/join "\n" (concat lines-before [truncated-current])))))))
 
 (defn- generate-truncated-state
