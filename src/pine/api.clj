@@ -9,7 +9,7 @@
   (:require
    [cheshire.generate :refer [add-encoder encode-str]]
    [clojure.string :as str]
-   [compojure.core :refer [defroutes GET POST]]
+   [compojure.core :refer [defroutes DELETE GET POST]]
    [compojure.route :as route]
    [pine.ast.main :as ast]
    [pine.db.connections :as connections] ;; Encode arrays and json results in API responses
@@ -218,6 +218,13 @@
     (-> id test-connection :connection-id set-connection-pool)
     (catch Exception e {:error (.getMessage e)})))
 
+(defn disconnect [id]
+  (try
+    (connections/remove-connection-pool id)
+    (db/clear-connection-if id)
+    (get-connections)
+    (catch Exception e {:error (.getMessage e)})))
+
 (defn api-sql
   ([sql-query]
    (api-sql sql-query nil))
@@ -263,6 +270,8 @@
       (-> {:connection-id (connections/add-connection-pool connection)} response)))
   (POST "/api/v1/connections/:id/connect" [id]
     (-> id connect response))
+  (DELETE "/api/v1/connections/:id" [id]
+    (-> id disconnect response))
   (GET "/api/v1/connection/stats" []
     (-> {:connection-count (db/get-connection-count @db/connection-id)
          :version version
@@ -298,4 +307,4 @@
       wrap-logger
       (wrap-defaults api-defaults)
       (wrap-cors :access-control-allow-origin [#".*"]
-                 :access-control-allow-methods [:get :post :put])))
+                 :access-control-allow-methods [:get :post :put :delete])))

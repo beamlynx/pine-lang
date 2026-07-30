@@ -29,6 +29,13 @@
   (init-references id)
   id)
 
+(defn clear-connection-if
+  "Clears the selected connection and its cached references when it matches id
+  (a no-op when a different connection is selected)."
+  [id]
+  (swap! connection-id (fn [current] (if (= current id) nil current)))
+  (swap! references dissoc id))
+
 ;; Query
 ;;
 (defn run-query [id query]

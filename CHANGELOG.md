@@ -4,6 +4,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 ### Added
+- `DELETE /api/v1/connections/:id` closes and removes a database connection pool. Clears the selected connection (and its cached schema references) if the removed connection was the active one.
 - Variables: name and reuse an intermediate query result across expressions with `|= name` (or `| = name`, mid-pipeline or at the end). The API now accepts a list of expressions (`{"expressions": [...]}`) evaluated in order; variables assigned in earlier expressions are available in later ones:
 ```
 company | where: active = true |= active_companies

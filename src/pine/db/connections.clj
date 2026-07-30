@@ -75,3 +75,7 @@
         id (make-connection-id pool)]
     (swap! pools assoc id pool)
     id))
+
+(defn remove-connection-pool [id]
+  (.close (get-connection-pool id))
+  (swap! pools dissoc id))
