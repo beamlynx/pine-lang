@@ -6,6 +6,18 @@
   (is (= #{:schema :table :alias} (set (keys table)))
       "table entries must not carry :ast (a variable's own full state snapshot)"))
 
+(deftest test-api-build-empty-expression
+  (testing "an empty/blank last expression still returns table hints instead of short-circuiting"
+    ;; Regression test: api-build used to short-circuit on any blank last-expr
+    ;; (str/blank?), which also swallowed "" - even though only nil actually
+    ;; crashes the parser. That meant pressing Tab on an empty input showed
+    ;; no table hints at all.
+    (doseq [expressions [[] [""] ["   "]]]
+      (let [response (api/api-build expressions nil :test)]
+        (is (nil? (:error response)))
+        (is (seq (get-in response [:ast :hints :table]))
+            (str "expected table hints for expressions " (pr-str expressions)))))))
+
 ;; These call the real public entry point (api/api-build), not the private
 ;; prune-ast helper directly. Testing prune-ast in isolation only proves the
 ;; helper itself behaves correctly — it proves nothing about whether api-build

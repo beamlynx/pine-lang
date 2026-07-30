@@ -116,20 +116,22 @@
      (try
        (let [exprs         (if (string? expressions) [expressions] expressions)
              context-exprs (butlast exprs)
-             last-expr     (last exprs)]
-         (if (str/blank? last-expr)
-           {:connection-id connection-name}
-           (let [{:keys [variables error]} (evaluate-expressions context-exprs conn-id)]
-             (if error
-               {:connection-id connection-name :error error}
-               (let [result                    (generate-state last-expr cursor conn-id variables)
-                     {state :result build-error :error} result]
-                 (if build-error
-                   {:connection-id connection-name :error build-error}
-                   {:connection-id connection-name
-                    :version version
-                    :query (-> last-expr trim-pipes (generate-state nil conn-id variables) :result eval/build-query eval/formatted-query)
-                    :ast (prune-ast state)}))))))
+             ;; nil (missing/absent last expression) is the only value the
+             ;; parser can't handle - "" and blank strings parse fine into an
+             ;; empty :table op, which is what lets an empty input still show
+             ;; table hints on Tab instead of "nothing found".
+             last-expr     (or (last exprs) "")]
+         (let [{:keys [variables error]} (evaluate-expressions context-exprs conn-id)]
+           (if error
+             {:connection-id connection-name :error error}
+             (let [result                    (generate-state last-expr cursor conn-id variables)
+                   {state :result build-error :error} result]
+               (if build-error
+                 {:connection-id connection-name :error build-error}
+                 {:connection-id connection-name
+                  :version version
+                  :query (-> last-expr trim-pipes (generate-state nil conn-id variables) :result eval/build-query eval/formatted-query)
+                  :ast (prune-ast state)})))))
        (catch Exception e {:connection-id connection-name
                            :error (.getMessage e)})))))
 
