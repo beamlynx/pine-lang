@@ -1,22 +1,40 @@
 (ns pine.ast.select)
 
+(defn column-source
+  "The real table (and schema) this column ultimately traces back to - itself
+  if selecting from a real table, or copied forward from a variable's own
+  already-resolved source for the matching column if selecting from a
+  variable. Never recomputed past this one hop: a variable is always defined
+  before it's used, so whatever it's built from has already gone through this
+  same step, and its own :columns already carry a fully-real :source."
+  [state alias raw-column]
+  (let [{:keys [table schema ast]} (get (:aliases state) alias)]
+    (if ast
+      (some #(when (= raw-column (or (:column-alias %) (:column %))) (:source %))
+            (:columns ast))
+      {:table table :schema schema})))
+
 (defn handle [state value]
   (let [i       (state :index)
         current (state :current)
         ;; Process each column and handle date functions
+        ;; A live alias (e.g. re-bound via `as`) always wins over a stale |= snapshot
+        resolve-alias #(if (contains? (:aliases state) %) % (or (get-in state [:pending-assignments % :current]) %))
         columns (mapcat (fn [col]
                           (let [col-with-defaults (-> col
-                                                      (assoc :alias (or (:alias col) current))
-                                                      (assoc :operation-index i))]
+                                                      (assoc :alias (resolve-alias (or (:alias col) current)))
+                                                      (assoc :operation-index i))
+                                source (column-source state (:alias col-with-defaults) (:column col))]
                             (if-let [col-fn (:column-function col)]
                               ;; Column function: apply function to column
                               [{:column (:column col)
                                 :alias (:alias col-with-defaults)
                                 :column-alias (or (:column-alias col) col-fn)  ; Use custom alias or function name
                                 :col-fn col-fn                                 ; Mark which function to apply
+                                :source source
                                 :operation-index i}]
                               ;; Regular column - return as is
-                              [col-with-defaults])))
+                              [(assoc col-with-defaults :source source)])))
                         value)]
     (-> state
         (update :columns into columns))))
@@ -56,8 +74,11 @@
           next-operation-index (inc (:index state))
           references (:references state)
           aliases (:aliases state)
-          ;; Only create auto-ID columns for tables that actually have an 'id' column
-          valid-aliases (filter #(has-id-column? references aliases %) table-aliases)
+          variables (:variables state)
+          ;; Only create auto-ID columns for real tables (not variables/CTEs) that have an 'id' column
+          valid-aliases (filter #(and (not (:ast (get aliases %)))
+                                      (has-id-column? references aliases %))
+                                table-aliases)
           auto-id-columns (map-indexed #(create-auto-id-column %2 (+ next-operation-index %1)) valid-aliases)]
       (update state :columns into auto-id-columns))
     state))

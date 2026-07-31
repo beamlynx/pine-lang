@@ -1,10 +1,13 @@
 (ns pine.ast.group
   (:require
-   [clojure.string :as s]))
+   [clojure.string :as s]
+   [pine.ast.select :as select]))
 
 (defn handle [state value]
   (let [i (state :index)
         current (state :current)
+        ;; A live alias (e.g. re-bound via `as`) always wins over a stale |= snapshot
+        resolve-alias #(if (contains? (:aliases state) %) % (or (get-in state [:pending-assignments % :current]) %))
         ;; Get existing columns from state (e.g., from previous select with date extraction)
         existing-columns (state :columns)
         ;; Filter out auto-id columns from existing columns
@@ -34,15 +37,24 @@
                                        ;; Use the existing column (preserves original alias like "t")
                                        (take 1 matching)
                                        ;; No match, use the group column with default alias
-                                       [(assoc g-col :alias (or (:alias g-col) current))])))
+                                       (let [alias (resolve-alias (or (:alias g-col) current))]
+                                         [(assoc g-col :alias alias
+                                                 :source (select/column-source state alias (:column g-col)))]))))
                                  raw-group-columns)
                          ;; No existing selected columns, use group columns with default alias
-                         (map #(assoc % :alias (or (:alias %) current)) raw-group-columns))
+                         (map (fn [g-col]
+                                (let [alias (resolve-alias (or (:alias g-col) current))]
+                                  (assoc g-col :alias alias
+                                         :source (select/column-source state alias (:column g-col)))))
+                              raw-group-columns))
 
         ;; SELECT clause: merged columns + aggregate functions
-        select-columns (concat merged-columns fn-columns)]
+        ;; Must be a vector: :columns is later grown with (update :columns into ...)
+        ;; elsewhere (e.g. select.clj), and `into`/`conj` prepend onto a plain seq
+        ;; (concat's return type) instead of appending, silently reversing order.
+        select-columns (vec (concat merged-columns fn-columns))]
     (-> state
         (assoc :columns select-columns)
         ;; GROUP BY uses all the merged columns
-        (assoc :group merged-columns))))
+        (assoc :group (vec merged-columns)))))
 

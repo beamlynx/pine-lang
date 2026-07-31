@@ -1,6 +1,6 @@
 (ns pine.parser-test
   (:require [clojure.test :refer [deftest is testing]]
-            [pine.parser :refer [parse-or-fail prettify]]
+            [pine.parser :refer [parse parse-or-fail prettify]]
             [pine.data-types :as dt]))
 
 (defn- p [e]
@@ -99,10 +99,11 @@
     (is (= [{:type :select-partial, :value []}]                        (p "s: ")))
     (is (= [{:type :select-partial, :value [{:column "id"}]}]          (p "s: id,")))
     (is (= [{:type :select-partial, :value [{:column "id"}]}]          (-> "company | s: id," p rest)))
-    ;; Not supported yet
-    ;; (is (= [{:type :select-partial, :value [{:alias "c" :column ""}]}] (-> "company as c | s: c." p rest)))
-    ;; (is (= [{:type :select-partial, :value [{:alias "c" :column ""}]}] (-> "company as c | s: id, c." p rest)))
-    )
+    ;; Alias-dot partial
+    (is (= [{:type :select-partial :value [] :partial-alias {:alias "e" :column ""}}]
+           (-> "company | s: e." p rest)))
+    (is (= [{:type :select-partial :value [{:column "id"}] :partial-alias {:alias "e" :column ""}}]
+           (-> "company | s: id, e." p rest))))
 
   (testing "Parse `select` expressions"
     (is (= [{:type :select, :value [{:column  "name"}]}]                              (p "select: name")))
@@ -162,12 +163,20 @@
     (is (= [{:type :where-partial, :value {:complete-conditions [] :partial-condition {:column "id"}}}] (p "w: id")))
     (is (= [{:type :where-partial, :value {:complete-conditions [] :partial-condition {:alias "u", :column "id"}}}] (p "w: u.id")))
     (is (= [{:type :where-partial, :value {:complete-conditions [] :partial-condition {:column "id", :operator :equals}}}] (p "w: id =")))
-    (is (= [{:type :where-partial, :value {:complete-conditions [] :partial-condition {:column "id", :operator :like}}}] (p "w: id like"))))
+    (is (= [{:type :where-partial, :value {:complete-conditions [] :partial-condition {:column "id", :operator :like}}}] (p "w: id like")))
+    ;; Alias-dot partial
+    (is (= [{:type :where-partial :value {:complete-conditions [] :partial-condition {:alias "e" :column ""}}}]
+           (-> "company | w: e." p rest))))
 
   (testing "Parse `order-partial` expressions"
     (is (= [{:type :order-partial, :value []}]                                  (p "order:")))
     (is (= [{:type :order-partial, :value []}]                                  (p "o: ")))
-    (is (= [{:type :order-partial, :value [{:column "id", :direction "DESC"}]}] (p "o: id,"))))
+    (is (= [{:type :order-partial, :value [{:column "id", :direction "DESC"}]}] (p "o: id,")))
+    ;; Alias-dot partial
+    (is (= [{:type :order-partial :value [] :partial-alias {:alias "e" :column ""}}]
+           (-> "company | o: e." p rest)))
+    (is (= [{:type :order-partial :value [{:column "id" :direction "DESC"}] :partial-alias {:alias "e" :column ""}}]
+           (-> "company | o: id, e." p rest))))
 
   (testing "Parse `order` expressions"
     (is (= [{:type :order, :value [{:column  "name" :direction "DESC"}]}]            (p "order: name")))
@@ -224,7 +233,15 @@
     (is (= [{:type :update-partial :value {:assignments [{:column {:alias nil :column "id"}
                                                           :value (dt/string "1")}]
                                            :partial-column {:alias nil :column "n"}}}]
-           (p "u! id = '1', n"))))
+           (p "u! id = '1', n")))
+    ;; Alias-dot partial
+    (is (= {:type :update-partial :value {:assignments []
+                                          :partial-column {:alias "e" :column ""}}}
+           (-> "employee as e | company | u! e." p last)))
+    (is (= {:type :update-partial :value {:assignments [{:column {:alias nil :column "id"}
+                                                         :value (dt/string "1")}]
+                                          :partial-column {:alias "e" :column ""}}}
+           (-> "employee as e | company | u! id = '1', e." p last))))
 
   (testing "Parse No Operation expressions"
     (is (= [{:value {:table "company"}, :type :table} {:type :delete, :value nil}] (p "company | d:"))))
@@ -370,5 +387,50 @@
            (prettify "company | where: id = 1 | "))))
 
   (testing "Incomplete expressions return an error"
-    (is (contains? (prettify "company | w: name = 'test |") :error))))
+    (is (contains? (prettify "company | w: name = 'test |") :error)))
+
+  (testing "Assignment is formatted without double pipe"
+    (is (= {:result "company\n | = active_companies"
+            :operations [{:expression "company" :start 0 :end 7}
+                         {:expression "= active_companies" :start 9 :end 27}]}
+           (prettify "company |= active_companies")))
+    (is (= {:result "company\n | = x"
+            :operations [{:expression "company" :start 0 :end 7}
+                         {:expression "= x" :start 10 :end 13}]}
+           (prettify "company | = x")))
+    (is (= {:result "company\n | where: active = true\n | = active_companies"
+            :operations [{:expression "company" :start 0 :end 7}
+                         {:expression "where: active = true" :start 10 :end 30}
+                         {:expression "= active_companies" :start 32 :end 50}]}
+           (prettify "company | where: active = true |= active_companies")))
+    ;; |= is mid-pipeline — operations after it are valid
+    (is (= {:result "company\n | = x\n | "
+            :operations [{:expression "company" :start 0 :end 7}
+                         {:expression "= x" :start 9 :end 12}
+                         {:expression "" :start 14 :end 14}]}
+           (prettify "company |= x | ")))))
+
+(deftest test-assign
+  (testing "|= appears in :result as an assign op"
+    (is (= [{:type :table :value {:table "company"}}
+            {:type :assign :value "active_companies"}]
+           (:result (parse "company |= active_companies"))))
+    (is (= [{:type :table :value {:table "company"}}
+            {:type :assign :value "active_companies"}]
+           (:result (parse "company | = active_companies"))))
+    (is (= [{:type :table :value {:table "company"}}]
+           (:result (parse "company")))))
+
+  (testing ":assign is no longer a top-level field in parse result"
+    (is (nil? (:assign (parse "company |= active_companies"))))
+    (is (nil? (:assign (parse "company")))))
+
+  (testing "|= is mid-pipeline: operations continue after it"
+    (is (= [{:type :table :value {:table "company"}}
+            {:type :assign :value "x"}
+            {:type :table :value {:table "employee"}}]
+           (:result (parse "company |= x | employee"))))
+    (is (= 4 (count (:result (parse "company | where: id = 1 | s: name |= my_var")))))
+    (is (= {:type :assign :value "my_var"}
+           (last (:result (parse "company | where: id = 1 | s: name |= my_var")))))))
 

@@ -1,6 +1,14 @@
 (ns pine.parser
-  "The parser is responsible for generating a parse tree from the bnf and
-  normalize the output which is used for the input for generating the ast"
+  "Turns raw Pine text into a normalized operation list.
+
+  Why this layer exists: the BNF grammar produces a raw Instaparse tree
+  that's verbose and shape-inconsistent across operation types. Normalizing
+  here gives the rest of the system a single, predictable contract:
+  a vector of {:type <keyword> :value <data>} maps, one per pipe segment.
+
+  Assignment (|= name) is now a regular pipe operation of type :assign.
+  It appears in the operation list like any other op, so the pipeline
+  can continue after it: 'company |= x | w: active = true' is valid."
   (:require
    [clojure.core.match :refer [match]]
    [clojure.string :as s]
@@ -79,6 +87,12 @@
     [:aliased-column [:column [:alias [:symbol a]] [:symbol c] [:column-function fn]] [:alias [:symbol ca]]] {:alias a :column c :column-function fn :column-alias ca}
     :else                 (throw (ex-info "Unknown COLUMN operation" {:_ column}))))
 
+(defn- parse-partial-alias [partial-alias]
+  (match partial-alias
+    [:partial-alias [:alias [:symbol a]]]
+    {:alias a :column ""}
+    :else (throw (ex-info "Unknown partial alias" {:_ partial-alias}))))
+
 (defn normalize-select [payload type]
   (match payload
     [:aliased-columns & columns] {:type type :value (mapv -normalize-column columns)}
@@ -87,10 +101,22 @@
 (defmethod -normalize-op :SELECT [[_ payload]]
   (normalize-select payload :select))
 
-(defmethod -normalize-op :SELECT-PARTIAL [[_ payload]]
-  (if (empty? payload)
-    {:type :select-partial, :value []}
-    (normalize-select payload :select-partial)))
+(defmethod -normalize-op :SELECT-PARTIAL [operation]
+  (let [children (vec (rest operation))
+        partial-alias-node (first (filter #(= (first %) :partial-alias) children))
+        aliased-columns-node (first (filter #(= (first %) :aliased-columns) children))]
+    (cond
+      (nil? aliased-columns-node)
+      (if partial-alias-node
+        {:type :select-partial :value [] :partial-alias (parse-partial-alias partial-alias-node)}
+        {:type :select-partial :value []})
+
+      partial-alias-node
+      (assoc (normalize-select aliased-columns-node :select-partial)
+             :partial-alias (parse-partial-alias partial-alias-node))
+
+      :else
+      (normalize-select aliased-columns-node :select-partial))))
 
 ;; ------
 ;; ORDER
@@ -117,10 +143,22 @@
 (defmethod -normalize-op :ORDER [[_ payload]]
   (-normalize-order payload :order))
 
-(defmethod -normalize-op :ORDER-PARTIAL [[_ payload]]
-  (if (empty? payload)
-    {:type :order-partial, :value []}
-    (-normalize-order payload :order-partial)))
+(defmethod -normalize-op :ORDER-PARTIAL [operation]
+  (let [children (vec (rest operation))
+        partial-alias-node (first (filter #(= (first %) :partial-alias) children))
+        order-columns-node (first (filter #(= (first %) :order-columns) children))]
+    (cond
+      (nil? order-columns-node)
+      (if partial-alias-node
+        {:type :order-partial :value [] :partial-alias (parse-partial-alias partial-alias-node)}
+        {:type :order-partial :value []})
+
+      partial-alias-node
+      (assoc (-normalize-order order-columns-node :order-partial)
+             :partial-alias (parse-partial-alias partial-alias-node))
+
+      :else
+      (-normalize-order order-columns-node :order-partial))))
 
 ;; -----
 ;; WHERE
@@ -296,6 +334,10 @@
 
 (defn- parse-partial-condition [partial-condition]
   (match partial-condition
+    ;; Alias-dot only (e.g. "e.")
+    [:partial-condition [:partial-alias [:alias [:symbol a]]]]
+    {:alias a :column ""}
+
     ;; Just a column
     [:partial-condition [:column [:symbol column]]]
     {:column column}
@@ -429,6 +471,10 @@
     []
     {:type :update-partial :value {:assignments [] :partial-column nil}}
 
+    [[:partial-update-column [:partial-alias [:alias [:symbol a]]]]]
+    {:type :update-partial :value {:assignments []
+                                   :partial-column {:alias a :column ""}}}
+
     [[:partial-update-column column-pattern]]
     {:type :update-partial :value {:assignments []
                                    :partial-column (extract-column-info column-pattern)}}
@@ -437,11 +483,22 @@
     {:type :update-partial :value {:assignments (mapv parse-update-assignment assignments)
                                    :partial-column nil}}
 
+    [[:update-assignments & assignments] [:partial-update-column [:partial-alias [:alias [:symbol a]]]]]
+    {:type :update-partial :value {:assignments (mapv parse-update-assignment assignments)
+                                   :partial-column {:alias a :column ""}}}
+
     [[:update-assignments & assignments] [:partial-update-column column-pattern]]
     {:type :update-partial :value {:assignments (mapv parse-update-assignment assignments)
                                    :partial-column (extract-column-info column-pattern)}}
 
     :else (throw (ex-info "Unknown UPDATE-PARTIAL operation" {:_ operation}))))
+
+;; -----
+;; ASSIGN
+;; -----
+
+(defmethod -normalize-op :ASSIGN [[_ [_ varname]]]
+  {:type :assign :value varname})
 
 ;; -----
 ;; NO-OP
@@ -458,8 +515,9 @@
         grammar (slurp file)]
     (insta/parser grammar)))
 
-(defn- normalize-ops [[_ & ops]]
-  (mapv (fn [[_ op]] (-normalize-op op)) ops))
+(defn- normalize-ops [[_ & nodes]]
+  (mapv (fn [[_ op]] (-normalize-op op))
+        (filter #(= (first %) :OPERATION) nodes)))
 
 (defn parse
   "Parse an expression and return the normalized operations or failure as a string"
@@ -488,8 +546,9 @@
       {:error (with-out-str (println (insta/get-failure result)))}
       (let [operations (rest result)
             op-infos (mapv (fn [op]
-                             (let [[start end] (insta/span op)]
-                               {:expression (s/trim (subs expression start end))
+                             (let [[start end] (insta/span op)
+                                   expr (s/trim (subs expression start end))]
+                               {:expression expr
                                 :start start
                                 :end end}))
                            operations)]

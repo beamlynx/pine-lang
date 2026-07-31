@@ -14,6 +14,20 @@
       (ast/generate :test)
       eval/build-query))
 
+(defn- generate-expressions
+  "Evaluate a list of pine expressions sequentially, threading variables.
+  Returns the SQL of the last expression."
+  [expressions]
+  (let [{:keys [last-state]}
+        (reduce (fn [{:keys [variables]} expr]
+                  (let [{:keys [result]} (parser/parse expr)
+                        state (ast/generate result :test nil nil variables)]
+                    {:variables (merge variables (:pending-assignments state))
+                     :last-state state}))
+                {:variables {} :last-state nil}
+                expressions)]
+    (eval/build-query last-state)))
+
 (deftest test-build-query
 
   (testing "qualify table"
@@ -70,7 +84,7 @@
             :params (map dt/number ["1"])}
            (generate "company | where: id != 1")))
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" IS NULL LIMIT 250",
-            :params []}
+            :params nil}
            (generate "company | where: id is null"))))
 
   (testing "Condition : !="
@@ -85,24 +99,24 @@
 
   (testing "Condition : columns"
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" = \"country\" LIMIT 250",
-            :params (map dt/string [])}
+            :params nil}
            (generate "company | where: name = country")))
     (is (= {:query "SELECT \"c\".id AS \"__c__id\", \"c\".* FROM \"company\" AS \"c\" WHERE \"c\".\"name\" != \"c\".\"country\" LIMIT 250",
-            :params (map dt/string [])}
+            :params nil}
            (generate "company as c | name != c.country")))
     (is (= {:query "SELECT \"c\".id AS \"__c__id\", \"c\".* FROM \"company\" AS \"c\" WHERE \"c\".\"name\" != \"c\".\"country\" LIMIT 250",
-            :params (map dt/string [])}
+            :params nil}
            (generate "company as c | c.name != c.country"))))
 
   (testing "Condition : NULL"
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"deleted_at\" IS NULL LIMIT 250",
-            :params []}
+            :params nil}
            (generate "company | where: deleted_at is null")))
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"deleted_at\" IS NOT NULL LIMIT 250",
-            :params []}
+            :params nil}
            (generate "company | where: deleted_at is not null")))
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"deleted_at\" IS NULL LIMIT 250",
-            :params []}
+            :params nil}
            (generate "company | where: deleted_at = null"))))
 
   (testing "Condition with cast"
@@ -136,7 +150,11 @@
            (generate "company | employee :right")))
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"e_1\".id AS \"__e_1__id\", \"d_2\".id AS \"__d_2__id\", \"d_2\".* FROM \"x\".\"company\" AS \"c_0\" LEFT JOIN \"y\".\"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" RIGHT JOIN \"z\".\"document\" AS \"d_2\" ON \"e_1\".\"id\" = \"d_2\".\"employee_id\" LIMIT 250",
             :params nil}
-           (generate "x.company | y.employee :left | z.document :right"))))
+           (generate "x.company | y.employee :left | z.document :right")))
+    ;; Self-join: :parent flips join direction (e_0 has the FK, not e_1)
+    (is (true? (clojure.string/includes?
+                (:query (generate "employee | employee :parent"))
+                "ON \"e_0\".\"reports_to\" = \"e_1\".\"id\""))))
 
   (testing "Joins with explicit columns"
     ;; Basic explicit join (tables a, b, c don't exist in schema so no auto-id columns)
@@ -302,6 +320,10 @@
                        :query "UPDATE \"company\" SET \"active\" = true WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
                        :params (list (dt/number "1"))}]}
            (generate "company | where: id = 1 | update! active = true")))
+    (is (= {:queries [{:table "company"
+                       :query "UPDATE \"company\" SET \"deleted_at\" = NULL WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
+                       :params (list (dt/number "1"))}]}
+           (generate "company | where: id = 1 | update! deleted_at = null")))
 
     ;; Test JSONB type conversion
     (is (= {:queries [{:table "customer"
@@ -380,3 +402,319 @@
   (is (= {:query "SELECT \"c_0\".\"id\", \"e_1\".\"name\", \"c_0\".id AS \"__c_0__id\", \"e_1\".id AS \"__e_1__id\" FROM \"company\" AS \"c_0\" JOIN \"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250",
           :params nil}
          (generate "-- companies and employees\ncompany | s: id /* company id */ | employee | s: name -- employee name"))))
+
+(deftest test-variables
+  (testing "Single expression with |= produces normal SQL (assign is metadata)"
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= active_companies"]))))
+
+  (testing "Variable used as table generates CTE"
+    (is (= {:query "WITH \"active_companies\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"active_companies\".* FROM \"active_companies\" AS \"active_companies\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= active_companies"
+                                  "active_companies"]))))
+
+  (testing "Variable with WHERE filter generates filtered CTE"
+    (is (= {:query "WITH \"active_companies\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" = ? ) SELECT \"active_companies\".* FROM \"active_companies\" AS \"active_companies\" LIMIT 250"
+            :params (map dt/string ["Acme"])}
+           (generate-expressions ["company | where: name = 'Acme' |= active_companies"
+                                  "active_companies"]))))
+
+  (testing "Join through a variable resolves correctly"
+    (is (= {:query "WITH \"active_companies\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"active_companies\" AS \"active_companies\" JOIN \"employee\" AS \"e_1\" ON \"active_companies\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= active_companies"
+                                  "active_companies | employee"]))))
+
+  (testing "Composed variables (variable of variable) generates flat CTEs"
+    (is (= {:query "WITH \"active_companies\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ), \"small_active\" AS ( SELECT \"active_companies\".* FROM \"active_companies\" AS \"active_companies\" LIMIT 10 ) SELECT \"small_active\".* FROM \"small_active\" AS \"small_active\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= active_companies"
+                                  "active_companies | l: 10 |= small_active"
+                                  "small_active"]))))
+
+  (testing "Reverse join: child table navigates to variable wrapping its parent"
+    ;; employee.company_id -> company.id
+    ;; mytest = company (parent); employee | mytest should join employee to the CTE
+    (is (= {:query "WITH \"mytest\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"e_0\".id AS \"__e_0__id\", \"mytest\".* FROM \"employee\" AS \"e_0\" JOIN \"mytest\" AS \"mytest\" ON \"e_0\".\"company_id\" = \"mytest\".\"id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= mytest"
+                                  "employee | mytest"]))))
+
+  (testing "Reverse join: parent table navigates to variable wrapping its child"
+    ;; employee.company_id -> company.id
+    ;; mytest = employee (child); company | mytest should join company to the CTE
+    (is (= {:query "WITH \"mytest\" AS ( SELECT \"e_0\".* FROM \"employee\" AS \"e_0\" ) SELECT \"c_0\".id AS \"__c_0__id\", \"mytest\".* FROM \"company\" AS \"c_0\" JOIN \"mytest\" AS \"mytest\" ON \"c_0\".\"id\" = \"mytest\".\"company_id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["employee |= mytest"
+                                  "company | mytest"]))))
+
+  (testing "Join through a variable whose id column was explicitly aliased"
+    ;; The CTE only ever exposes the aliased name (tmp_id) - joining on the raw
+    ;; "id" would reference a column that doesn't exist in the CTE at all.
+    (is (= {:query "WITH \"x\" AS ( SELECT \"c_0\".\"id\" AS \"tmp_id\" FROM \"company\" AS \"c_0\" ) SELECT \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"x\" AS \"x\" JOIN \"employee\" AS \"e_1\" ON \"x\".\"tmp_id\" = \"e_1\".\"company_id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company | s: id as tmp_id |= x"
+                                  "x | employee"])))
+
+    ;; Same fix, reverse direction: a real table already relating to company
+    ;; navigates to the variable - must still land on tmp_id, not id.
+    (is (= {:query "WITH \"x\" AS ( SELECT \"c_0\".\"id\" AS \"tmp_id\" FROM \"company\" AS \"c_0\" ) SELECT \"e_0\".id AS \"__e_0__id\", \"x\".* FROM \"employee\" AS \"e_0\" JOIN \"x\" AS \"x\" ON \"e_0\".\"company_id\" = \"x\".\"tmp_id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company | s: id as tmp_id |= x"
+                                  "employee | x"])))
+
+    ;; Same-source variable pair, only one side renamed: each side of the
+    ;; synthetic id=id join must use its own variable's actual column name.
+    (is (= {:query "WITH \"x\" AS ( SELECT \"c_0\".\"id\" AS \"tmp_id\" FROM \"company\" AS \"c_0\" ), \"y\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"y\".* FROM \"x\" AS \"x\" JOIN \"y\" AS \"y\" ON \"x\".\"tmp_id\" = \"y\".\"id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company | s: id as tmp_id |= x"
+                                  "company |= y"
+                                  "x | y"])))
+
+    ;; Renaming must be table-scoped, not a blind string substitution: x wraps
+    ;; employee, selecting both id (renamed to tmp_id) and its own unrenamed
+    ;; company_id - employee's real, unrelated "id" (via company_id -> id)
+    ;; must NOT also get rewritten to "tmp_id" just because the raw column
+    ;; names happen to collide.
+    (is (= {:query "WITH \"x\" AS ( SELECT \"e_0\".\"id\" AS \"tmp_id\", \"e_0\".\"company_id\" FROM \"employee\" AS \"e_0\" ) SELECT \"c_1\".id AS \"__c_1__id\", \"c_1\".* FROM \"x\" AS \"x\" JOIN \"company\" AS \"c_1\" ON \"x\".\"company_id\" = \"c_1\".\"id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["employee | s: id as tmp_id, company_id |= x"
+                                  "x | company"])))
+
+    ;; The bug this session actually reported: x wraps company, selecting only
+    ;; id (renamed c_id) - company's own OTHER real relationships (e.g. its
+    ;; outgoing FK to some other parent) must not be reachable through x at
+    ;; all, since that column was never selected into the CTE. Reproduced with
+    ;; employee/company here: x only exposes c_id, not company's own other
+    ;; columns, so navigating from x to anything other than via id must fail.
+    (is (clojure.string/includes?
+         (:query (generate-expressions ["company | s: id as c_id |= x" "x | employee"]))
+         "\"x\".\"c_id\" = \"e_1\".\"company_id\""))
+    (is (clojure.string/includes?
+         (:query (generate-expressions ["employee | s: id as tmp_id |= x" "x | company"]))
+         "ON \"\" = \"\"")))
+
+  (testing "Mid-pipeline assign: expression continues after |="
+    ;; The assign snapshots the state at that point; subsequent ops still apply
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" LIMIT 10"
+            :params nil}
+           (generate-expressions ["company |= x | l: 10"])))
+    ;; x is the unfiltered snapshot (no limit) — CTE body has no LIMIT
+    (is (= {:query "WITH \"x\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"x\".* FROM \"x\" AS \"x\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= x | l: 10"
+                                  "x"]))))
+
+  (testing "Column reference via variable name resolves to the real SQL alias"
+    ;; Within-expression: |= c still routes through pending-assignments → real table alias c_0
+    (is (= {:query "SELECT \"e_1\".\"id\", \"c_0\".\"id\", \"c_0\".id AS \"__c_0__id\", \"e_1\".id AS \"__e_1__id\" FROM \"company\" AS \"c_0\" JOIN \"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= c | employee | s: id, c.id"])))
+    (is (true? (clojure.string/includes?
+                (:query (generate-expressions ["company |= c | employee | w: c.id = 1"]))
+                "WHERE \"c_0\".\"id\" = ?")))
+    (is (true? (clojure.string/includes?
+                (:query (generate-expressions ["company |= c | employee | o: c.id"]))
+                "ORDER BY \"c_0\".\"id\"")))
+
+    ;; Cross-expression: CTE alias = variable name, so x.id resolves to "x"."id"
+    (is (true? (clojure.string/includes?
+                (:query (generate-expressions ["company |= x"
+                                               "x | w: x.id = 1"]))
+                "WHERE \"x\".\"id\" = ?")))
+    (is (true? (clojure.string/includes?
+                (:query (generate-expressions ["company |= x"
+                                               "x | o: x.id"]))
+                "ORDER BY \"x\".\"id\""))))
+
+  (testing "Re-aliasing a variable name via 'as' takes precedence over the |= snapshot"
+    ;; x is bound to company via |=, then re-aliased to employee via `as x`.
+    ;; The live alias should win: x.id must mean employee.id (the most recent,
+    ;; explicit binding), not the stale company snapshot captured at the |= point.
+    (is (true? (clojure.string/includes?
+                (:query (generate-expressions ["company |= x | employee as x | w: x.id = 1"]))
+                "WHERE \"x\".\"id\" = ?")))
+    (is (false? (clojure.string/includes?
+                 (:query (generate-expressions ["company |= x | employee as x | w: x.id = 1"]))
+                 "WHERE \"c_0\".\"id\" = ?"))))
+
+  (testing "Same-source variables: two variables wrapping the same table join on id"
+    (is (= {:query "WITH \"c1\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ), \"c2\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"c2\".* FROM \"c1\" AS \"c1\" JOIN \"c2\" AS \"c2\" ON \"c1\".\"id\" = \"c2\".\"id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= c1"
+                                  "company |= c2"
+                                  "c1 | c2"])))
+    (is (= {:query "WITH \"c2\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ), \"c1\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"c1\".* FROM \"c2\" AS \"c2\" JOIN \"c1\" AS \"c1\" ON \"c2\".\"id\" = \"c1\".\"id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company |= c1"
+                                  "company |= c2"
+                                  "c2 | c1"]))))
+
+  (testing "Same-source join also works between a real table and a variable wrapping it"
+    ;; The same-source fallback isn't variable-specific - a real table joined
+    ;; to a variable that traces back to that same table is exactly the same
+    ;; situation (two references to one table, no real FK connecting them),
+    ;; just with one side not sealed into a CTE.
+    (is (= {:query "WITH \"x\" AS ( SELECT \"c_0\".\"id\" AS \"c_id\" FROM \"company\" AS \"c_0\" ) SELECT \"c_0\".id AS \"__c_0__id\", \"x\".* FROM \"company\" AS \"c_0\" JOIN \"x\" AS \"x\" ON \"c_0\".\"id\" = \"x\".\"c_id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company | s: id as c_id |= x"
+                                  "company | x"])))
+    (is (= {:query "WITH \"x\" AS ( SELECT \"c_0\".\"id\" AS \"c_id\" FROM \"company\" AS \"c_0\" ) SELECT \"c_1\".id AS \"__c_1__id\", \"c_1\".* FROM \"x\" AS \"x\" JOIN \"company\" AS \"c_1\" ON \"x\".\"c_id\" = \"c_1\".\"id\" LIMIT 250"
+            :params nil}
+           (generate-expressions ["company | s: id as c_id |= x"
+                                  "x | company"])))
+    ;; But two RAW references to the same table still don't resolve - Pine has
+    ;; no way yet to distinguish which occurrence is which (no `t | t as t2`
+    ;; self-aliasing), so this stays unsupported (see docs/variables.md).
+    (is (clojure.string/includes? (:query (generate "company | company")) "ON \"\" = \"\"")))
+
+  (testing "A table is a join source through a variable only if its id is present"
+    ;; `s: name` alone has no id anywhere in x's snapshot — Pine doesn't add
+    ;; one, so company is not a valid join source.
+    (is (clojure.string/includes?
+         (:query (generate-expressions ["company as c | s: name |= x" "x | employee"]))
+         "ON \"\" = \"\""))
+
+    ;; `s: id, name` includes it explicitly, so the join resolves.
+    (is (clojure.string/includes?
+         (:query (generate-expressions ["company as c | s: id, name |= x" "x | employee"]))
+         "\"x\".\"id\" = \"e_1\".\"company_id\""))
+
+    ;; Same for GROUP: grouping by a non-id column has no id anywhere, so
+    ;; company is not a valid join source.
+    (is (clojure.string/includes?
+         (:query (generate-expressions ["company as c | employee .company_id | group: c.name |= x" "x | employee"]))
+         "ON \"\" = \"\"")))
+
+  (testing "WHERE value coercion through a variable resolves the real column's type"
+    ;; A variable's pre-seeded column list never carried type information, so
+    ;; filtering by a UUID column exposed through a variable silently dropped
+    ;; the ::uuid cast entirely - confirmed broken before this session's
+    ;; refactor. It must now match what filtering the real table directly
+    ;; already produces.
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"uuid_col\" = ?::uuid LIMIT 250"
+            :params (list (dt/uuid "1c50ee25-4938-4b77-b831-bc41a0ee3d0c"))}
+           (generate "customer | where: uuid_col = '1c50ee25-4938-4b77-b831-bc41a0ee3d0c'")))
+
+    (is (= {:query "WITH \"x\" AS ( SELECT \"c_0\".\"id\", \"c_0\".\"uuid_col\" AS \"u\" FROM \"customer\" AS \"c_0\" ) SELECT \"x\".* FROM \"x\" AS \"x\" WHERE \"x\".\"u\" = ?::uuid LIMIT 250"
+            :params (list (dt/uuid "1c50ee25-4938-4b77-b831-bc41a0ee3d0c"))}
+           (generate-expressions ["customer | s: id, uuid_col as u |= x"
+                                  "x | where: u = '1c50ee25-4938-4b77-b831-bc41a0ee3d0c'"])))))
+
+(deftest test-checkpoints
+  (testing "LIMIT checkpoint: auto-CTE when a table op follows limit"
+    (is (= {:query "WITH \"__pine_0__\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ) SELECT \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"__pine_0__\" AS \"__pine_0__\" JOIN \"employee\" AS \"e_1\" ON \"__pine_0__\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
+            :params nil}
+           (generate "x.company | l: 10 | employee"))))
+
+  (testing "LIMIT checkpoint with explicit user-named CTE via |="
+    (is (= {:query "WITH \"pg\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ) SELECT \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"pg\" AS \"pg\" JOIN \"employee\" AS \"e_1\" ON \"pg\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
+            :params nil}
+           (generate "x.company | l: 10 |= pg | employee"))))
+
+  (testing "GROUP checkpoint: auto-CTE when a table op follows group"
+    (is (= {:query "WITH \"__pine_0__\" AS ( SELECT \"c_0\".\"id\", COUNT(1) AS \"count\" FROM \"x\".\"company\" AS \"c_0\" GROUP BY \"c_0\".\"id\" ) SELECT \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"__pine_0__\" AS \"__pine_0__\" JOIN \"employee\" AS \"e_1\" ON \"__pine_0__\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
+            :params nil}
+           (generate "x.company | group: id => count | employee"))))
+
+  (testing "Checkpoint does not fire for non-table ops after limit"
+    ;; LIMIT followed by COUNT: checkpoint holds, COUNT builds its own wrapper CTE
+    (is (= {:query "WITH x AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" LIMIT 100 ) SELECT COUNT(*) FROM x"
+            :params nil}
+           (generate "company | limit: 100 | count:"))))
+
+  (testing "Standalone GROUP without following table still uses build-group-query"
+    ;; Existing behaviour must not regress: the GROUP dispatch path is unaffected
+    (is (clojure.string/includes?
+         (:query (generate "x.company | group: id => count"))
+         "GROUP BY")))
+
+  (testing "GROUP followed by LIMIT seals group as CTE, applies limit to outer"
+    ;; All three forms should produce equivalent SQL (modulo CTE name)
+    (let [expected-cte-body "SELECT \"c_0\".\"id\", COUNT(1) AS \"count\" FROM \"x\".\"company\" AS \"c_0\" GROUP BY \"c_0\".\"id\""
+          ;; Auto-named
+          q1 (:query (generate "x.company | group: id => count | l: 1"))
+          ;; User-named via |=
+          q2 (:query (generate "x.company | group: id => count |= grp | l: 1"))]
+      ;; Both contain the same GROUP CTE body
+      (is (clojure.string/includes? q1 expected-cte-body))
+      (is (clojure.string/includes? q2 expected-cte-body))
+      ;; Both apply LIMIT 1 on the outer query
+      (is (clojure.string/ends-with? q1 "LIMIT 1"))
+      (is (clojure.string/ends-with? q2 "LIMIT 1"))
+      ;; Auto-named CTE uses generated name; user-named uses "grp"
+      (is (clojure.string/includes? q1 "\"__pine_0__\""))
+      (is (clojure.string/includes? q2 "\"grp\""))))
+
+  (testing "GROUP + LIMIT cross-expression baseline matches same-expression form"
+    ;; x | l: 1 in a separate expression should produce the same structure
+    (let [q-cross (:query (generate-expressions ["x.company | group: id => count |= grp"
+                                                 "grp | l: 1"]))
+          q-same  (:query (generate "x.company | group: id => count |= grp | l: 1"))]
+      (is (= q-cross q-same))))
+
+  (testing "GROUP followed by a complete select: matches the sealed cross-expression form"
+    ;; select:/where:/order: after GROUP were not checkpoint-firing ops (unlike
+    ;; table/group/limit), so the group was never sealed into a CTE — build-query
+    ;; then dispatched on the trailing op's type instead of :group, silently using
+    ;; the plain-select builder against a group-shaped state (wrong SQL: raw table
+    ;; columns leaking in, stale pre-group alias in WHERE/ORDER BY). The correctly
+    ;; sealed cross-expression form is the oracle: same GROUP, split so the second
+    ;; expression references the CTE by name, should equal the inline form exactly.
+    (let [q-cross (:query (generate-expressions ["x.company | group: id => count |= grp"
+                                                 "grp | s: id"]))
+          q-same  (:query (generate "x.company | group: id => count |= grp | s: id"))]
+      (is (= q-cross q-same))))
+
+  (testing "GROUP followed by a complete where: matches the sealed cross-expression form"
+    (let [q-cross (:query (generate-expressions ["company as c | employee .company_id | group: c.name |= grp"
+                                                 "grp | w: name = 'Acme'"]))
+          q-same  (:query (generate "company as c | employee .company_id | group: c.name |= grp | w: name = 'Acme'"))]
+      (is (= q-cross q-same))))
+
+  (testing "GROUP followed by a complete order: matches the sealed cross-expression form"
+    (let [q-cross (:query (generate-expressions ["company as c | employee .company_id | group: c.name |= grp"
+                                                 "grp | o: name desc"]))
+          q-same  (:query (generate "company as c | employee .company_id | group: c.name |= grp | o: name desc"))]
+      (is (= q-cross q-same))))
+
+  (testing "GROUP followed by an order-partial (trailing comma) matches the sealed cross-expression form"
+    ;; order-partial with a non-empty value (e.g. a dangling trailing comma after a
+    ;; fully-typed column) is not meaningfully different from a complete order: here —
+    ;; the already-typed column should seal and resolve exactly the same way.
+    (let [q-cross (:query (generate-expressions ["company as c | employee .company_id | group: c.name |= grp"
+                                                 "grp | o: name desc,"]))
+          q-same  (:query (generate "company as c | employee .company_id | group: c.name |= grp | o: name desc,"))]
+      (is (= q-cross q-same))))
+
+  (testing "GROUP followed by a complete select: auto-named CTE also seals correctly (no |=)"
+    ;; Without an explicit |=, the checkpoint still seals — just with a generated
+    ;; name instead of a user-given one.
+    (is (= "WITH \"__pine_0__\" AS ( SELECT \"c_0\".\"id\", COUNT(1) AS \"count\" FROM \"x\".\"company\" AS \"c_0\" GROUP BY \"c_0\".\"id\" ) SELECT \"__pine_0__\".\"id\" FROM \"__pine_0__\" AS \"__pine_0__\" LIMIT 250"
+           (:query (generate "x.company | group: id => count | s: id")))))
+
+  (testing "Auto-named checkpoints across separate expressions don't collide"
+    ;; Each expression starts from a fresh state, so without a session-wide
+    ;; count, two expressions that each auto-name exactly one checkpoint both
+    ;; land on "__pine_0__" - two genuinely different CTEs sharing one name.
+    ;; collect-ctes (eval.clj) dedupes by name, so the second one used to be
+    ;; silently dropped, leaving both variables reading from the first CTE.
+    ;; The generated names only need to be unique, not contiguous - a later
+    ;; expression may well skip a number (e.g. one an explicit |= name used
+    ;; up) - so this asserts non-collision, not any specific numbering.
+    (let [query (:query (generate-expressions
+                         ["company as c | employee .company_id | group: c.id => count | s: id, count as emp_count |= x"
+                          "company as c | employee .company_id | group: c.id => count | s: id, count as emp_count2 |= y"
+                          "x | s: emp_count, | y | s: emp_count2,"]))
+          x-name (second (re-find #"\"x\" AS \( SELECT \"(__pine_\d+__)\"" query))
+          y-name (second (re-find #"\"y\" AS \( SELECT \"(__pine_\d+__)\"" query))]
+      (is (some? x-name))
+      (is (some? y-name))
+      ;; The actual regression: x and y must not have been folded onto the
+      ;; same auto-generated checkpoint.
+      (is (not= x-name y-name))
+      ;; Each one's own checkpoint must still carry the right GROUP BY body.
+      (is (clojure.string/includes? query (str "\"" x-name "\" AS ( SELECT \"c\".\"id\", COUNT(1) AS \"count\"")))
+      (is (clojure.string/includes? query (str "\"" y-name "\" AS ( SELECT \"c\".\"id\", COUNT(1) AS \"count\""))))))

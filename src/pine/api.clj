@@ -1,8 +1,15 @@
 (ns pine.api
+  "HTTP API layer: routes, request parsing, and multi-expression evaluation.
+
+  Why multi-expression evaluation exists: Pine expressions are designed to be
+  composed across blank-line-separated blocks. Each block can assign its result
+  to a variable (|= name) which subsequent blocks use as a CTE. This file
+  threads variables between expressions so each one sees what earlier ones
+  produced. The last expression's SQL is the one actually returned or executed."
   (:require
    [cheshire.generate :refer [add-encoder encode-str]]
    [clojure.string :as str]
-   [compojure.core :refer [defroutes GET POST]]
+   [compojure.core :refer [defroutes DELETE GET POST]]
    [compojure.route :as route]
    [pine.ast.main :as ast]
    [pine.db.connections :as connections] ;; Encode arrays and json results in API responses
@@ -28,15 +35,36 @@
 
 (defn- generate-state
   ([expression]
-   (generate-state expression nil nil))
+   (generate-state expression nil nil {}))
   ([expression cursor]
-   (generate-state expression cursor nil))
+   (generate-state expression cursor nil {}))
   ([expression cursor connection-id]
+   (generate-state expression cursor connection-id {}))
+  ([expression cursor connection-id variables]
    (let [{:keys [result error]} (->> expression parser/parse)
          conn-id (or connection-id @db/connection-id)]
-     (if result {:result (ast/generate result conn-id expression cursor)}
-         {:error-type "parse"
-          :error error}))))
+     (if result
+       {:result (ast/generate result conn-id expression cursor variables)}
+       {:error-type "parse"
+        :error error}))))
+
+(defn- evaluate-expressions
+  "Evaluate a sequence of pine expressions, threading variables from |= assignments
+  into subsequent expressions. Returns {:last-state <state> :error <msg>}.
+
+  Why pending-assignments: |= is now a mid-pipeline op that snapshots state at the
+  point of assignment. An expression can assign multiple variables before its last op
+  determines the final SQL. All assignments from one expression become available as
+  CTE variables to the next."
+  [expressions connection-id]
+  (reduce (fn [{:keys [variables]} expression]
+            (let [{:keys [result error]} (generate-state expression nil connection-id variables)]
+              (if error
+                (reduced {:error error})
+                {:variables (merge variables (:pending-assignments result))
+                 :last-state result})))
+          {:variables {} :last-state nil}
+          expressions))
 
 (defn- trim-pipes [s]
   (-> s
@@ -44,22 +72,66 @@
       (str/replace #"^\|\s*|\s*\|$" "")
       (str/trim)))
 
+(defn- prune-table
+  "Prune a table entry down to what the frontend's Table type (client.ts) uses.
+  Critical: a variable-backed table entry carries a full :ast (the variable's own
+  var-ast) for the query builder's CTE generation — left unpruned, it recursively
+  re-embeds that variable's entire state (and, transitively, everything it wraps in
+  turn) inside every table list that references it."
+  [table]
+  (select-keys table [:schema :table :alias]))
+
+(defn- prune-var-ast
+  "Prune a variable/pending-assignment snapshot down to what the frontend actually
+  uses (VariableAst in client.ts). Critical: a raw snapshot still carries :variables
+  and :references from pre-handle/post-handle — left unpruned, each additional
+  chained |= block would re-embed every earlier block's full snapshot inside the new
+  one, growing the response payload superlinearly instead of linearly. Its own
+  :tables/:selected-tables entries need the same per-table pruning (prune-table) for
+  a variable-of-variable chain, or the same recursive embedding reappears one level
+  down."
+  [var-ast]
+  (-> (select-keys var-ast [:tables :selected-tables :joins :columns])
+      (update :tables #(mapv prune-table %))
+      (update :selected-tables #(mapv prune-table %))))
+
+(defn- prune-ast
+  "Prune a generated state down to the :ast value returned to the frontend."
+  [state]
+  (-> (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where :prettified :ranges :assign])
+      (update :selected-tables #(mapv prune-table %))
+      (assoc :variables
+             (into {} (for [[k v] (:variables state)] [k (prune-var-ast v)])))
+      (assoc :pending-assignments
+             (into {} (for [[k v] (:pending-assignments state)] [k (prune-var-ast v)])))))
+
 (defn api-build
-  ([expression]
-   (api-build expression nil nil))
-  ([expression cursor]
-   (api-build expression cursor nil))
-  ([expression cursor connection-id]
+  ([expressions]
+   (api-build expressions nil nil))
+  ([expressions cursor]
+   (api-build expressions cursor nil))
+  ([expressions cursor connection-id]
    (let [conn-id (or connection-id @db/connection-id)
          connection-name (connections/get-connection-name conn-id)]
      (try
-       (let [result (generate-state expression cursor conn-id)
-             {state :result error :error} result]
-         (if error result
-             {:connection-id connection-name
-              :version version
-              :query (-> expression trim-pipes (generate-state nil conn-id) :result eval/build-query eval/formatted-query)
-              :ast (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where :prettified :ranges])}))
+       (let [exprs         (if (string? expressions) [expressions] expressions)
+             context-exprs (butlast exprs)
+             ;; nil (missing/absent last expression) is the only value the
+             ;; parser can't handle - "" and blank strings parse fine into an
+             ;; empty :table op, which is what lets an empty input still show
+             ;; table hints on Tab instead of "nothing found".
+             last-expr     (or (last exprs) "")]
+         (let [{:keys [variables error]} (evaluate-expressions context-exprs conn-id)]
+           (if error
+             {:connection-id connection-name :error error}
+             (let [result                    (generate-state last-expr cursor conn-id variables)
+                   {state :result build-error :error} result]
+               (if build-error
+                 {:connection-id connection-name :error build-error}
+                 {:connection-id connection-name
+                  :version version
+                  :query (-> last-expr trim-pipes (generate-state nil conn-id variables) :result eval/build-query eval/formatted-query)
+                  :ast (prune-ast state)})))))
        (catch Exception e {:connection-id connection-name
                            :error (.getMessage e)})))))
 
@@ -82,28 +154,38 @@
                [alias])))))
 
 (defn api-eval
-  ([expression]
-   (api-eval expression nil))
-  ([expression connection-id]
+  ([expressions]
+   (api-eval expressions nil))
+  ([expressions connection-id]
    (let [conn-id (or connection-id @db/connection-id)
          connection-name (connections/get-connection-name conn-id)]
      (try
-       (let [result (generate-state expression nil conn-id)
-             {state :result error :error} result]
-         (if error result
-             (let [rows (eval/run-query state)
-                   op-type (get-in state [:operation :type])
-                   ;; For action results we control the format; columns come from header row
-                   columns (if (contains? #{:update-action :delete-action} op-type)
-                             (get-columns rows)
-                             (get-columns state rows))]
-               {:connection-id connection-name
-                :version version
-                 ;;  :time (db/run-query (state :connection-id) {:query "SELECT NOW() as now, NOW() AT TIME ZONE 'UTC' AS utc;"})
-                 ;;  :server_time (str (java.time.Instant/now))
-                :result rows
-                :columns columns})))
-
+       (let [exprs         (if (string? expressions) [expressions] expressions)
+             context-exprs (butlast exprs)
+             last-expr     (last exprs)
+             trimmed       (trim-pipes (or last-expr ""))]
+         (if (str/blank? trimmed)
+           {:connection-id connection-name}
+           (let [{:keys [variables error]} (evaluate-expressions context-exprs conn-id)]
+             (if error
+               {:connection-id connection-name :error error}
+               (let [{last-state :result build-error :error} (generate-state trimmed nil conn-id variables)]
+                 (if build-error
+                   {:connection-id connection-name :error build-error}
+                   (let [query (-> last-state eval/build-query eval/formatted-query)]
+                     (try
+                       (let [rows    (eval/run-query last-state)
+                             op-type (get-in last-state [:operation :type])
+                             columns (if (contains? #{:update-action :delete-action} op-type)
+                                       (get-columns rows)
+                                       (get-columns last-state rows))]
+                         {:connection-id connection-name
+                          :version version
+                          :result rows
+                          :columns columns})
+                       (catch Exception e {:connection-id connection-name
+                                           :error (.getMessage e)
+                                           :query query})))))))))
        (catch Exception e {:connection-id connection-name
                            :error (.getMessage e)})))))
 
@@ -136,6 +218,13 @@
 (defn connect [id]
   (try
     (-> id test-connection :connection-id set-connection-pool)
+    (catch Exception e {:error (.getMessage e)})))
+
+(defn disconnect [id]
+  (try
+    (connections/remove-connection-pool id)
+    (db/clear-connection-if id)
+    (get-connections)
     (catch Exception e {:error (.getMessage e)})))
 
 (defn api-sql
@@ -183,6 +272,8 @@
       (-> {:connection-id (connections/add-connection-pool connection)} response)))
   (POST "/api/v1/connections/:id/connect" [id]
     (-> id connect response))
+  (DELETE "/api/v1/connections/:id" [id]
+    (-> id disconnect response))
   (GET "/api/v1/connection/stats" []
     (-> {:connection-count (db/get-connection-count @db/connection-id)
          :version version
@@ -190,11 +281,13 @@
 
   ;; query building and evaluation
   (POST "/api/v1/build" {params :params}
-    (let [{:keys [expression cursor connection-id]} params]
-      (->> (api-build expression cursor connection-id) response)))
+    (let [{:keys [expressions expression cursor connection-id]} params
+          exprs (or expressions (when expression [expression]))]
+      (->> (api-build exprs cursor connection-id) response)))
   (POST "/api/v1/eval" {params :params}
-    (let [{:keys [expression connection-id]} params]
-      (->> (api-eval (trim-pipes expression) connection-id) response)))
+    (let [{:keys [expressions expression connection-id]} params
+          exprs (or expressions (when expression [expression]))]
+      (->> (api-eval exprs connection-id) response)))
 
   ;; raw SQL execution
   (POST "/api/v1/sql" {params :params}
@@ -206,7 +299,7 @@
   ;; pine-mode.el
   (POST "/api/v1/build-with-params" {params :params}
     (let [{:keys [expression connection-id]} params]
-      (->> (api-build (trim-pipes expression) nil connection-id) :query response)))
+      (->> (api-build [(trim-pipes expression)] nil connection-id) :query response)))
   ;; default case
   (route/not-found "Not Found"))
 (def app
@@ -216,4 +309,4 @@
       wrap-logger
       (wrap-defaults api-defaults)
       (wrap-cors :access-control-allow-origin [#".*"]
-                 :access-control-allow-methods [:get :post :put])))
+                 :access-control-allow-methods [:get :post :put :delete])))

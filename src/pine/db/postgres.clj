@@ -225,7 +225,7 @@ FROM information_schema.columns"]
 
 (defn get-indexed-references [id]
   (let [references (cond
-                     (= id :test) fixtures/references
+                     (connections/test-connection? id) fixtures/references
                      :else (get-references-helper id))]
     (index-references references)))
 

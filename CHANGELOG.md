@@ -3,6 +3,22 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Added
+- Variables: name and reuse an intermediate query result across expressions with `|= name`. The API now accepts a list of expressions (`{"expressions": [...]}`), with variables assigned in earlier ones available in later ones:
+```
+company | where: active = true |= active_companies
+active_companies | employee | s: name
+```
+- Variable and checkpoint (`group:`/`limit:`) results emit as CTEs, flattened into a single top-level `WITH` clause, so e.g. `company | l: 10 | employee` composes correctly instead of producing malformed SQL. Joins through a variable resolve using the real table(s) it traces back to; two variables (or a variable and its source table) sharing the same underlying table join via a synthesized `id = id` join.
+- Join hints (`ast.hints.table[]`) carry a `resolution` field (`fk`, `heuristic`, `synthetic`, `manual`) and expose both join columns, distinguishing confirmed relationships from guessed ones.
+- Alias-dot partial syntax (`t.na`) is supported in all partial operations, not just complete ones.
+- `DELETE /api/v1/connections/:id` closes and removes a database connection pool.
+
+### Fixed
+- An aliased `id` column selected through a variable now carries the alias through downstream joins; column renaming is table-scoped.
+- Auto-generated checkpoint CTE names are unique across an entire session, not just within a single expression.
+- Autocomplete no longer breaks when the cursor sits in the whitespace before a continuation line's `|`.
+- Pressing Tab on an empty expression now shows all tables instead of nothing.
 
 ## [0.36.0] - 2026-05-21
 ### Added

@@ -17,8 +17,10 @@
 
 (defn handle [state [column operator value]]
   (let [a (state :current)
+        ;; A live alias (e.g. re-bound via `as`) always wins over a stale |= snapshot
+        resolve-alias #(if (contains? (:aliases state) %) % (or (get-in state [:pending-assignments % :current]) %))
         [alias col cast] (:value column)
-        alias (or alias a)
+        alias (resolve-alias (or alias a))
         converted-value (if (and (not= (:type value) :symbol) (not= (:type value) :column))
                           (convert-condition-value value alias col state)
                           value)]
@@ -27,11 +29,12 @@
 (defn handle-partial [state {:keys [complete-conditions partial-condition]}]
   ;; For WHERE-PARTIAL, we only store the complete conditions in :where
   ;; The partial condition is used for hints, not for query generation
-  (let [a (state :current)]
+  (let [a (state :current)
+        resolve-alias #(if (contains? (:aliases state) %) % (or (get-in state [:pending-assignments % :current]) %))]
     (reduce (fn [s condition]
               (let [[column operator value] (:value condition)
                     [alias col cast] (:value column)
-                    alias (or alias a)
+                    alias (resolve-alias (or alias a))
                     converted-value (if (and (not= (:type value) :symbol) (not= (:type value) :column))
                                       (convert-condition-value value alias col s)
                                       value)]
