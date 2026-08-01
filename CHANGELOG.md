@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Fixed
+- The grammar (`pine.bnf`) now loads from the classpath instead of a `user.dir`-relative path, so the server no longer depends on being launched from the project root/a specific working directory.
 
 ## [0.37.0] - 2026-07-31
 ### Added

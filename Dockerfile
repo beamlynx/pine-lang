@@ -10,5 +10,4 @@ RUN clj -T:build uber
 FROM openjdk:11.0.16-jre-slim-buster
 WORKDIR /app
 COPY --from=build /app/target/pine-standalone.jar /app/pine.jar
-COPY src/pine/pine.bnf /app/src/pine/pine.bnf
 CMD ["java", "-jar", "pine.jar"]

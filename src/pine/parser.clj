@@ -11,6 +11,7 @@
   can continue after it: 'company |= x | w: active = true' is valid."
   (:require
    [clojure.core.match :refer [match]]
+   [clojure.java.io :as io]
    [clojure.string :as s]
    [instaparse.core :as insta]
    [pine.data-types :as dt]))
@@ -510,9 +511,7 @@
 ;; -----
 
 (def ^:private parser
-  (let [dir (System/getProperty "user.dir")
-        file (format "%s/src/pine/pine.bnf" dir)
-        grammar (slurp file)]
+  (let [grammar (-> "pine/pine.bnf" io/resource slurp)]
     (insta/parser grammar)))
 
 (defn- normalize-ops [[_ & nodes]]
