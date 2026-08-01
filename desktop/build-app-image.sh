@@ -13,7 +13,9 @@ set -e
 cd "$(dirname "$0")/.."
 
 VERSION_FILE="src/pine/version.clj"
-PINE_VERSION=$(grep -oP '\b\d+\.\d+\.\d+(-[a-zA-Z0-9]+)?\b' "$VERSION_FILE")
+# -E (POSIX ERE), not -P (PCRE) -- this runs on macOS's BSD grep too, which
+# has no -P support, unlike build-image.sh's Linux/CI-only Docker build.
+PINE_VERSION=$(grep -oE '"[0-9]+\.[0-9]+\.[0-9]+[^"]*"' "$VERSION_FILE" | tr -d '"')
 
 DESKTOP_DIR="desktop"
 MODULES_LIST="$DESKTOP_DIR/jpackage/modules.list"
