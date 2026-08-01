@@ -1,0 +1,42 @@
+# Pinned jlink module list for the pine-lang desktop runtime image.
+#
+# Generated against JDK 26 (see ../JDK_VERSION) via:
+#   jdeps --ignore-missing-deps --print-module-deps <exploded pine-standalone.jar,
+#     with META-INF/versions/* module-info.class files removed first --
+#     the uberjar carries stale multi-release module-info entries (bundled by
+#     one of the merged deps, likely HikariCP) that make jdeps treat the jar
+#     as a real JPMS module with unsatisfiable "requires", instead of the flat
+#     classpath jar it actually is>
+#
+# --ignore-missing-deps suppressed a long list of genuinely-unused optional
+# integrations bundled by dependencies (HikariCP's Dropwizard/Prometheus/
+# Micrometer metrics backends and Hibernate integration, postgres's OSGi and
+# Windows-SSPI/JNA auth support, jackson-dataformat's optional databind
+# glue) -- none of these are in deps.edn, so their absence is correct, not a
+# gap to fix.
+#
+# This file must ONLY be regenerated deliberately (JDK version bump, new
+# dependency added to deps.edn) and re-verified against the M1 live-query
+# gate -- never regenerated blindly on a routine release.
+#
+# jdeps-detected (static analysis of the actual bytecode):
+java.base
+java.desktop
+java.management
+java.naming
+java.security.jgss
+java.security.sasl
+java.sql
+jdk.unsupported
+# Manually added -- jdeps' static analysis misses these because the paths
+# are reflective/conditional, not direct bytecode references:
+jdk.crypto.ec
+# needed only if a user's Postgres requires SSL/TLS with an EC-based cipher
+# suite; works fine without it against a plain-TCP local Postgres, which is
+# exactly the kind of "worked in my first test" gap this file exists to
+# catch before it catches a user.
+java.logging
+# defensive: Jetty/JDK internals occasionally touch java.util.logging on
+# less-common paths (e.g. shutdown) even though this app's actual logging
+# goes through slf4j's NOP no-op logger (confirmed via the M1 smoke test --
+# "SLF4J: No SLF4J providers were found... Defaulting to no-operation").
