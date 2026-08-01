@@ -23,8 +23,12 @@ APP_IMAGE_DIR="$BUILD_DIR/app-image"
 
 echo "Pine version: $PINE_VERSION"
 
-echo "Building uberjar..."
-clj -T:build uber
+if [ -f target/pine-standalone.jar ]; then
+  echo "Reusing existing target/pine-standalone.jar (it's platform-independent -- CI builds it once and shares it across the OS/arch matrix)."
+else
+  echo "Building uberjar..."
+  clj -T:build uber
+fi
 
 echo "Building trimmed JVM runtime via jlink..."
 rm -rf "$RUNTIME_DIR"
