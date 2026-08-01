@@ -42,7 +42,9 @@ fi
 
 echo "Building trimmed JVM runtime via jlink..."
 rm -rf "$RUNTIME_DIR"
-MODULES=$(grep -v '^#' "$MODULES_LIST" | grep -v '^\s*$' | paste -sd,)
+# tr+sed, not `paste -sd,` -- BSD paste (macOS) rejects the combined
+# short-option form GNU paste (Linux/Windows git-bash) accepts.
+MODULES=$(grep -v '^#' "$MODULES_LIST" | grep -v '^\s*$' | tr '\n' ',' | sed 's/,$//')
 # Use $JAVA_HOME/bin explicitly, not bare jlink/jpackage off PATH -- a
 # mismatch between the jlink binary's own version and the --module-path
 # jmods it's pointed at fails opaquely ("cannot find the build signature").
