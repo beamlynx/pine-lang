@@ -56,6 +56,16 @@ MODULES=$(grep -v '^#' "$MODULES_LIST" | grep -v '^\s*$' | tr '\n' ',' | sed 's/
 
 echo "Building app-image via jpackage..."
 rm -rf "$APP_IMAGE_DIR"
+# jpackage's macOS bundler rejects any --app-version whose first component
+# is 0 ("The first number in an app-version cannot be zero or negative") --
+# pine-lang is pre-1.0. This only affects the app bundle's cosmetic
+# CFBundleVersion; the real version check is the VERSION file + runtime API
+# check in beamlynx-desktop, so it's safe to just omit it on macOS and let
+# jpackage default it.
+APP_VERSION_ARGS=(--app-version "$PINE_VERSION")
+if [ "$(uname)" = "Darwin" ]; then
+  APP_VERSION_ARGS=()
+fi
 "$JAVA_HOME/bin/jpackage" --type app-image \
   --name pine-server \
   --input target \
@@ -63,6 +73,6 @@ rm -rf "$APP_IMAGE_DIR"
   --main-class pine.core \
   --runtime-image "$RUNTIME_DIR" \
   --dest "$APP_IMAGE_DIR" \
-  --app-version "$PINE_VERSION"
+  "${APP_VERSION_ARGS[@]}"
 
 echo "App-image built at: $APP_IMAGE_DIR/pine-server"
