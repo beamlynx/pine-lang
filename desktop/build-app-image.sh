@@ -29,7 +29,10 @@ if [ -f target/pine-standalone.jar ]; then
   echo "Reusing existing target/pine-standalone.jar (it's platform-independent -- CI builds it once and shares it across the OS/arch matrix)."
 else
   echo "Building uberjar..."
-  clj -T:build uber
+  # clojure, not clj -- clj wants rlwrap (interactive REPL editing), which
+  # isn't installed on CI runners; test.yml already uses `clojure` for the
+  # same reason.
+  clojure -T:build uber
 fi
 
 if [ -z "$JAVA_HOME" ]; then
