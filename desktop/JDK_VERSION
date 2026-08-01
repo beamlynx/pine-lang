@@ -1,11 +1,10 @@
 # Pinned JDK major version for the desktop jpackage/jlink runtime image.
 #
-# NOTE: this is set to 26 because that's what was available on the machine
-# used to build the M1 local proof (no LTS build could be installed there
-# without interactive sudo). Before wiring the M4 CI matrix, switch this to
-# a real LTS (21 or 25) via actions/setup-java, regenerate modules.list
-# against that exact version, and re-verify the M1 gate (live query
-# round-trip) before trusting it. jdeps/jpackage output is JDK-version
-# sensitive, so this file and modules.list must always be regenerated
-# together, against the same JDK.
-26
+# 21 (LTS). Re-verified against a real Temurin 21 build (not just the JDK
+# 26 that happened to be on the original dev machine) -- module list came
+# out identical, and the full M1 live-query gate was re-run against a
+# jlink/jpackage build made with this exact JDK. jdeps/jpackage output is
+# JDK-version sensitive in general, so this file and modules.list must
+# always be regenerated/re-verified together, against the same JDK,
+# whenever either changes.
+21

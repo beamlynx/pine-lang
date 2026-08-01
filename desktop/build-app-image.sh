@@ -30,10 +30,18 @@ else
   clj -T:build uber
 fi
 
+if [ -z "$JAVA_HOME" ]; then
+  echo "JAVA_HOME must be set, pointing at the JDK version pinned in desktop/JDK_VERSION." >&2
+  exit 1
+fi
+
 echo "Building trimmed JVM runtime via jlink..."
 rm -rf "$RUNTIME_DIR"
 MODULES=$(grep -v '^#' "$MODULES_LIST" | grep -v '^\s*$' | paste -sd,)
-jlink \
+# Use $JAVA_HOME/bin explicitly, not bare jlink/jpackage off PATH -- a
+# mismatch between the jlink binary's own version and the --module-path
+# jmods it's pointed at fails opaquely ("cannot find the build signature").
+"$JAVA_HOME/bin/jlink" \
   --module-path "$JAVA_HOME/jmods" \
   --add-modules "$MODULES" \
   --output "$RUNTIME_DIR" \
@@ -41,7 +49,7 @@ jlink \
 
 echo "Building app-image via jpackage..."
 rm -rf "$APP_IMAGE_DIR"
-jpackage --type app-image \
+"$JAVA_HOME/bin/jpackage" --type app-image \
   --name pine-server \
   --input target \
   --main-jar pine-standalone.jar \

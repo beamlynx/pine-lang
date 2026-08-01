@@ -1,6 +1,6 @@
 # Pinned jlink module list for the pine-lang desktop runtime image.
 #
-# Generated against JDK 26 (see ../JDK_VERSION) via:
+# Generated against JDK 21 (see ../JDK_VERSION) via:
 #   jdeps --ignore-missing-deps --print-module-deps <exploded pine-standalone.jar,
 #     with META-INF/versions/* module-info.class files removed first --
 #     the uberjar carries stale multi-release module-info entries (bundled by
