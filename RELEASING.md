@@ -1,8 +1,5 @@
 # Releasing pine-lang
 
-pine-lang is versioned and released independently of `beamlynx-ui` and
-`beamlynx-desktop` — do not conflate version numbers across the three.
-
 `master` requires changes to land via pull request (branch protection)
 rather than a direct push.
 
@@ -16,9 +13,3 @@ rather than a direct push.
 6. Run `./scripts/check-version-sync.sh` to confirm `src/pine/version.clj` and `playground.docker-compose.yml` agree.
 7. Commit all changed files: `Release X.Y.Z: <short description of the unreleased changes>`.
 8. Push the branch and open a PR against `master`.
-
-## After merging
-
-If `beamlynx-ui`'s minimum required server version (`RequiredVersion` in `constants.ts`) needs to move up to this release, that's a `beamlynx-ui` release of its own — see `beamlynx-ui/RELEASING.md`.
-
-If `beamlynx-desktop` bundles a pinned commit/branch of pine-lang for desktop packaging (classpath-based grammar loading, jpackage build scripts, etc. — see `desktop/`), and this release includes fixes that pin depended on, update `beamlynx-desktop/bundled-versions.json`'s `pineLangRef` to this new tag (see `beamlynx-desktop/RELEASING.md`) rather than leaving it pointed at a raw commit SHA once a real tagged release is available.
