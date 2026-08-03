@@ -4,6 +4,11 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.37.2] - 2026-08-04
+### Fixed
+- Relation/join hints for a column like `tenant_id` were lost whenever a checkpoint (`l:`/`group:`) sealed the selection into an anonymous CTE and `id` wasn't also selected — even though that relation never needed `id` in the first place. Only the synthetic self-join hint actually needs `id` to be selected; other relations no longer require it.
+- `POST /api/v1/connections` now returns a normal `{"error": "..."}` response instead of an uncaught server error when the target database is unreachable (e.g. down, wrong host/port).
+
 ## [0.37.1] - 2026-08-02
 ### Fixed
 - The grammar (`pine.bnf`) now loads from the classpath instead of a `user.dir`-relative path, so the server no longer depends on being launched from the project root/a specific working directory.
