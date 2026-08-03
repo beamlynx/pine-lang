@@ -302,5 +302,24 @@
     (is (= ["document"]
            (->> (gen-with-variables ["company as c | employee .company_id | group: c.id, c.name |= x" "x | doc"])
                 :table
-                (map :table))))))
+                (map :table)))))
+
+  (testing "A checkpoint (l:/group:) that seals into an anonymous CTE still surfaces FK hints unrelated to id"
+    ;; Regression: `employee | s: company_id | l: 10 | ` used to lose ALL
+    ;; hints once l: sealed the selection into an anonymous CTE, even though
+    ;; the company FK hint only needs company_id (not id) to be reachable -
+    ;; only the synthetic self-join genuinely needs id.
+    (is (= [{:schema "x" :table "company" :column "id" :related-column "company_id" :parent true
+             :resolution "fk" :pine "x.company .company_id :parent"}]
+           (-> "employee | s: company_id | l: 10 | " gen :table)))
+
+    ;; Selecting id alongside company_id additionally unlocks the synthetic
+    ;; self-join (employee = employee), since id now actually survives -
+    ;; without collapsing the company FK hint that was already reachable.
+    (is (= [{:schema "x" :table "company" :column "id" :related-column "company_id" :parent true
+             :resolution "fk" :pine "x.company .company_id :parent"}
+            {:schema nil :table "employee" :column "id" :related-column "id" :parent false
+             :resolution "synthetic" :pine "employee"}]
+           (->> (-> "employee | s: id, company_id | l: 10 | " gen :table)
+                (filter #(or (= (:resolution %) "synthetic") (= (:table %) "company"))))))))
 

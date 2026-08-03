@@ -150,24 +150,32 @@
                                       (variables-resolving-to state target))))
                                  real-rel)
                  same-source-hints (when (has-id-column? state table)
-                                     (for [[vname var-rename] (variables-resolving-to state table)
-                                           :when (not= vname from-name)]
-                                       {:schema nil :table vname
-                                        :column (get var-rename "id" "id")
-                                        :related-column (get rename "id" "id")
-                                        :parent false
-                                        :resolution "synthetic"}))
+                                     (keep
+                                      (fn [[vname var-rename]]
+                                        (when (not= vname from-name)
+                                          (let [column (table/translate-column var-rename "id")
+                                                related-column (table/translate-column rename "id")]
+                                            (when (and column related-column)
+                                              {:schema nil :table vname
+                                               :column column
+                                               :related-column related-column
+                                               :parent false
+                                               :resolution "synthetic"}))))
+                                      (variables-resolving-to state table)))
                  ;; The context is itself a restricted variable (non-empty
                  ;; rename) - the source table it traces back to is just as
                  ;; valid a same-source candidate as another variable would
                  ;; be, since it's the same table both times, just reached
-                 ;; through a snapshot on one side.
+                 ;; through a snapshot on one side. Only fires if the
+                 ;; context's own rename actually exposes "id" - a restricted
+                 ;; variable that never selected id can't reach this join.
                  self-source-hint (when (and (seq rename) (has-id-column? state table) (not= table from-name))
-                                    [{:schema schema :table table
-                                      :column "id"
-                                      :related-column (get rename "id" "id")
-                                      :parent false
-                                      :resolution "synthetic"}])]
+                                    (when-let [related-column (table/translate-column rename "id")]
+                                      [{:schema schema :table table
+                                        :column "id"
+                                        :related-column related-column
+                                        :parent false
+                                        :resolution "synthetic"}]))]
              (concat real-hints variable-hints same-source-hints self-source-hint)))
          sources)]
     (->> hints

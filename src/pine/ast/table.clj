@@ -7,19 +7,25 @@
   source table(s) it resolves to for join purposes: itself, unchanged, if it's
   already real; or the variable's own already-resolved :source(s) if it's a
   variable - a multi-source variable (`s: t.id, c.id`) can resolve to more
-  than one. Once a variable's data is sealed into a CTE, the outer query can
-  only see what the CTE's own :columns actually selected, so a source table
-  only counts if its own `id` is explicitly among them - Pine never adds one
-  on its own. A variable with no explicit columns at all (`*`) implicitly
-  selects everything, id included, so it resolves through :current instead -
-  one hop, recursing only if :current is itself another variable, since that
+  than one. A variable with no explicit columns at all (`*`) implicitly
+  selects everything, so it resolves through :current instead - one hop,
+  recursing only if :current is itself another variable, since that
   variable's own :source is already fully resolved by the time it can be
   referenced here (see ast/select.clj's column-source).
 
   Each entry also carries a `:rename` map ({raw-column -> exposed-column}), so
   a column found via the real table's schema can be translated back to
   whatever name the variable actually exposes it under - empty for a real
-  table, where no translation is ever needed."
+  table, where no translation is ever needed. Once a variable's data is
+  sealed into a CTE, the outer query can only see what the CTE's own
+  :columns actually selected - Pine never adds an `id` on its own - but that
+  restriction is enforced per-column by translate-column at each actual use
+  site, not here: a source table is a valid join candidate regardless of
+  which of its columns survived, since most relations (e.g. an FK column
+  other than `id`) don't need `id` at all. Only the synthetic same-source
+  id=id join genuinely requires it, and that requirement is checked directly
+  where that join is built (see same-source-join below, and
+  same-source-hints/self-source-hint in ast/hints.clj)."
   [{:keys [table schema ast]}]
   (if ast
     (let [columns (remove :auto-id (:columns ast))]
@@ -29,7 +35,6 @@
         (->> columns
              (filter :source)
              (group-by :source)
-             (filter (fn [[_ cols]] (some #(= "id" (:column %)) cols)))
              (map (fn [[source cols]]
                     {:table (:table source)
                      :schema (:schema source)
@@ -102,14 +107,21 @@
   named snapshot - so the same-source join is only actually meaningless when
   NEITHER side has that identity. Also never fires for a variable joined to
   itself (same identity on both sides) - matching Pine's general lack of
-  self-join support (see docs/variables.md)."
+  self-join support (see docs/variables.md).
+
+  Each side's `id` must also actually survive translation - a restricted
+  variable that never selected `id` doesn't expose it, so translate-column
+  returns nil and that pairing is skipped, same as any other unreachable
+  column (see translate-column)."
   [references variable1? variable2? distinct-variables? candidates1 candidates2 a1 a2]
   (when (and (or variable1? variable2?) distinct-variables?)
     (first
      (for [{t1 :table rename1 :rename :as c1} candidates1
            {t2 :table rename2 :rename} candidates2
-           :when (and (= t1 t2) (has-id-column? references c1))]
-       [a1 (get rename1 "id" "id") :has a2 (get rename2 "id" "id")]))))
+           :let [id1 (translate-column rename1 "id")
+                 id2 (translate-column rename2 "id")]
+           :when (and (= t1 t2) (has-id-column? references c1) id1 id2)]
+       [a1 id1 :has a2 id2]))))
 
 ;; TODO: use spec for the state value i.e. first arg
 (defn- join-tables [{:keys [references aliases]} x y c parent]

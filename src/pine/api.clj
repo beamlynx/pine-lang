@@ -215,6 +215,11 @@
   {:version version
    :connection-id (db/set-connection id)})
 
+(defn create-connection [connection]
+  (try
+    {:connection-id (connections/add-connection-pool connection)}
+    (catch Exception e {:error (.getMessage e)})))
+
 (defn connect [id]
   (try
     (-> id test-connection :connection-id set-connection-pool)
@@ -269,7 +274,7 @@
   (GET "/api/v1/connections" [] (-> (get-connections) response))
   (POST "/api/v1/connections" req
     (let [connection (get-in req [:params])]
-      (-> {:connection-id (connections/add-connection-pool connection)} response)))
+      (-> connection create-connection response)))
   (POST "/api/v1/connections/:id/connect" [id]
     (-> id connect response))
   (DELETE "/api/v1/connections/:id" [id]
