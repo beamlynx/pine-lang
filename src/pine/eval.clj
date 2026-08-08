@@ -245,21 +245,33 @@
      :group-by group-by}))
 
 (defn build-group-query [state]
-  (let [{:keys [index]} state
+  (let [{:keys [index tables aliases]} state
+        ;; A checkpoint/variable feeding into a terminal GROUP (e.g. `|= x |
+        ;; g: ...`) needs its own CTE emitted too -- this path used to skip
+        ;; collect-ctes entirely (unlike build-select-query, which already
+        ;; calls it), so the user-named CTE was never defined and the group's
+        ;; wrapper CTE (below) referenced it as a dangling bare relation.
+        ctes        (collect-ctes tables aliases)
+        cte-params  (mapcat #(nth % 2 nil) ctes)
+        cte-prefix  (when (seq ctes)
+                      (str (s/join ", " (map (fn [[name body _]]
+                                               (str (q name) " AS ( " body " )"))
+                                             ctes))
+                           ", "))
         cte-alias (str "x_" index)
         ;; Build inner query (base SELECT with non-aggregate columns)
         inner-query (build-inner-select-for-group state)
         ;; Build outer query (SELECT from CTE with aggregates and GROUP BY)
         {:keys [select group-by]} (build-outer-select-for-group cte-alias state)
         ;; Combine into CTE
-        query (str "WITH " (q cte-alias) " AS ( " inner-query " ) " select " " group-by)
+        query (str "WITH " cte-prefix (q cte-alias) " AS ( " inner-query " ) " select " " group-by)
         ;; Extract params from WHERE clause
         params (when (not-empty (:where state))
                  (->> (:where state)
                       (map (fn [[_alias _col _cast _operator value]] (if (coll? value) value [value])))
                       remove-symbols
                       flatten))]
-    {:query query :params params}))
+    {:query query :params (seq (concat cte-params params))}))
 
 (defn build-delete-query [state]
   (let [{:keys [delete current aliases]} state
