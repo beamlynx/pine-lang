@@ -695,6 +695,22 @@
     (is (= "WITH \"__pine_0__\" AS ( SELECT \"c_0\".\"id\", COUNT(1) AS \"count\" FROM \"x\".\"company\" AS \"c_0\" GROUP BY \"c_0\".\"id\" ) SELECT \"__pine_0__\".\"id\" FROM \"__pine_0__\" AS \"__pine_0__\" LIMIT 250"
            (:query (generate "x.company | group: id => count | s: id")))))
 
+  (testing "Checkpoint feeding a terminal GROUP nests its own CTE (user-named via |=)"
+    ;; build-group-query is a separate rendering path from build-select-query
+    ;; and used to skip collect-ctes entirely, so a checkpoint's CTE was never
+    ;; emitted when the pipeline's *last* op was :group - the group's own
+    ;; wrapper CTE ended up referencing the checkpoint's name (e.g. "pg") as a
+    ;; bare relation that was never defined anywhere, a dangling reference
+    ;; that would fail at execution time.
+    (is (= {:query "WITH \"pg\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ), \"x_4\" AS ( SELECT \"pg\".\"name\" AS \"name\" FROM \"pg\" AS \"pg\" ) SELECT \"x_4\".\"name\", COUNT(1) AS \"count\" FROM \"x_4\" GROUP BY \"x_4\".\"name\""
+            :params nil}
+           (generate "x.company | l: 10 |= pg | s: name | g: name => count"))))
+
+  (testing "Checkpoint feeding a terminal GROUP nests its own CTE (auto-named, no |=)"
+    (is (= {:query "WITH \"__pine_0__\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ), \"x_3\" AS ( SELECT \"__pine_0__\".\"name\" AS \"name\" FROM \"__pine_0__\" AS \"__pine_0__\" ) SELECT \"x_3\".\"name\", COUNT(1) AS \"count\" FROM \"x_3\" GROUP BY \"x_3\".\"name\""
+            :params nil}
+           (generate "x.company | l: 10 | s: name | g: name => count"))))
+
   (testing "Auto-named checkpoints across separate expressions don't collide"
     ;; Each expression starts from a fresh state, so without a session-wide
     ;; count, two expressions that each auto-name exactly one checkpoint both
