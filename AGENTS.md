@@ -59,6 +59,12 @@ clj -M:fmt fix
 
 ---
 
+## Changelog
+
+Every fix/feat PR must add its own entry under `## [Unreleased]` in `CHANGELOG.md` — don't leave it empty and defer the writeup to the later release PR. The release checklist (`RELEASING.md`) only moves an already-written `Unreleased` section into a dated one; it doesn't author the content.
+
+---
+
 ## Version Synchronization
 
 **Important**: `src/pine/version.clj` must match `playground.docker-compose.yml` Docker image version.
