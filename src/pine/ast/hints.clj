@@ -67,16 +67,13 @@
 ;; regardless of :refers-to vs :referred-by direction - because relation-hints
 ;; always looks the via map up keyed by the context table. See docs/joins.md.
 ;;
-;; Only :foreign-key/:heuristic ever reach here - a real reference-map entry,
-;; tagged at schema-index time (db/postgres.clj). "synthetic" (the third
-;; :resolution value - see docs/joins.md) never comes from a via-details tag
-;; at all; it's set directly wherever a same-source join is fabricated
-;; on the fly (below), since nothing in the references map describes it.
-(defn- resolution-of [vd]
-  (case (last vd)
-    :foreign-key "fk"
-    :heuristic   "heuristic"))
-
+;; resolution-of (table/resolution-of - shared with ast/table.clj, which tags
+;; committed joins in ast.joins the same way) only ever sees :foreign-key/
+;; :heuristic here - a real reference-map entry, tagged at schema-index time
+;; (db/postgres.clj). "synthetic" (the third :resolution value - see
+;; docs/joins.md) never comes from a via-details tag at all; it's set
+;; directly wherever a same-source join is fabricated on the fly (below),
+;; since nothing in the references map describes it.
 (defn- create-hint-from-relation-array
   "context-rename/target-rename translate the context's/suggested table's own
   column back through whatever name a variable exposes it under on that side
@@ -94,7 +91,7 @@
                :column column
                :related-column related-column
                :parent (= direction :refers-to)
-               :resolution (resolution-of vd)})))
+               :resolution (table/resolution-of vd)})))
         via-details))
 
 (defn- variables-resolving-to

@@ -4,6 +4,10 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-08-11
+### Added
+- Each committed join in `ast.joins` now carries its own resolution confidence (`"fk"`, `"heuristic"`, `"synthetic"`, or `"manual"`) as a 6th element of the relation tuple, matching what join hints already exposed — so a client no longer has to guess (or re-derive from the picker) whether an already-drawn join is backed by a real foreign key.
+
 ## [0.37.3] - 2026-08-09
 ### Fixed
 - A checkpoint (named via `|=` or auto-named) feeding into a pipeline's terminal `group:` had its own CTE silently dropped from the generated SQL, leaving the group's wrapper CTE referencing a relation that was never defined.
