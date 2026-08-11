@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Added
+- Each committed join in `ast.joins` now carries its own resolution confidence (`"fk"`, `"heuristic"`, `"synthetic"`, or `"manual"`) as a 6th element of the relation tuple, matching what join hints already exposed — so a client no longer has to guess (or re-derive from the picker) whether an already-drawn join is backed by a real foreign key.
 
 ## [0.37.3] - 2026-08-09
 ### Fixed

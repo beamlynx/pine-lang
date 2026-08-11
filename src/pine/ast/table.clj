@@ -54,6 +54,18 @@
   [rename col]
   (if (empty? rename) col (get rename col)))
 
+;; via-details look like:
+;; ["z"  "document"      "created_by"  :refers-to   "y"  "employee" "id" :foreign-key]
+;;
+;; Only :foreign-key/:heuristic ever reach here as a real reference-map
+;; via-tuple tag (schema-index time, db/postgres.clj) - "synthetic"/"manual"
+;; are never derived from one, since neither corresponds to an actual FK or
+;; heuristic reference at all (see same-source-join and update-joins below).
+(defn resolution-of [vd]
+  (case (last vd)
+    :foreign-key "fk"
+    :heuristic   "heuristic"))
+
 (defn- join-helper
   "Find the references between the tables, get the columns for the first
   reference and return the pair of alias and columns that will be used for the join.
@@ -77,11 +89,16 @@
           col                   (translate-column rename1 raw-col)
           f-col                 (translate-column rename2 raw-f-col)
           rejected?             (or (and (some? raw-col) (seq rename1) (nil? col))
-                                    (and (some? raw-f-col) (seq rename2) (nil? f-col)))]
+                                    (and (some? raw-f-col) (seq rename2) (nil? f-col)))
+                                ;; `join` is nil for an invalid explicit .hint_col (no via
+                                ;; entry matched col-key) - resolution-of throws on a nil/
+                                ;; unmatched tag, so guard it the same way the columns above
+                                ;; already tolerate a nil raw-col/raw-f-col.
+          resolution            (when join (resolution-of join))]
       (when-not rejected?
         (if (= direction :of)
-          [a2 f-col :of a1 col]
-          [a1 col :has a2 f-col])))))
+          [a2 f-col :of a1 col resolution]
+          [a1 col :has a2 f-col resolution])))))
 
 (defn- has-id-column? [references {:keys [table schema]}]
   (let [columns (if schema
@@ -121,7 +138,7 @@
            :let [id1 (translate-column rename1 "id")
                  id2 (translate-column rename2 "id")]
            :when (and (= t1 t2) (has-id-column? references c1) id1 id2)]
-       [a1 id1 :has a2 id2]))))
+       [a1 id1 :has a2 id2 "synthetic"]))))
 
 ;; TODO: use spec for the state value i.e. first arg
 (defn- join-tables [{:keys [references aliases]} x y c parent]
@@ -161,7 +178,7 @@
       ;; In "a | b .a_id = .id", left-col is "id" (from a), right-col is "a_id" (from b)
       (and join-left-column join-right-column)
       (let [x (-> state :aliases (get from-alias))
-            join-result [(x :alias) join-left-column :has (current :alias) join-right-column]]
+            join-result [(x :alias) join-left-column :has (current :alias) join-right-column "manual"]]
         (update state :joins conj [(x :alias) (current :alias) join-result join]))
 
       :else (let [x (-> state :aliases (get from-alias))
