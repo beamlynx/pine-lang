@@ -4,7 +4,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 ### Fixed
-- `/build`'s response now includes `ast.group` — previously pruned away entirely (not in `prune-ast`'s field whitelist), so a client had no way to know a `group:` clause existed once committed, even though the grouped columns were otherwise fully evaluated.
+- The build response now includes the columns a `group:` clause is grouping by — previously missing entirely, so a client had no way to tell a `group:` was present once committed, even though it was being evaluated correctly.
 
 ## [0.38.0] - 2026-08-11
 ### Added
