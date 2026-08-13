@@ -68,6 +68,14 @@
               table (concat (:tables var-ast) (:selected-tables var-ast))]
         (assert-clean-table table)))
 
+    (testing ":group is exposed to the frontend, not pruned away entirely"
+      ;; Previously absent from prune-ast's select-keys whitelist, so `ast.group`
+      ;; was always undefined regardless of what the state actually computed -
+      ;; the frontend (canvas mode's group-by chips, client.ts's GroupColumn)
+      ;; had no way to know a `group:` clause even existed once committed.
+      (is (= [{:alias "t" :column "title"}]
+             (map #(select-keys % [:alias :column]) (:group single-block)))))
+
     (testing "an earlier variable's own entry is unaffected by how many blocks chain after it"
       ;; The actual bug wasn't about absolute size (which is arbitrary and brittle to
       ;; pin to a byte count) — it was that x's entry kept growing every time another
