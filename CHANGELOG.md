@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Fixed
+- `/build`'s response now includes `ast.group` — previously pruned away entirely (not in `prune-ast`'s field whitelist), so a client had no way to know a `group:` clause existed once committed, even though the grouped columns were otherwise fully evaluated.
 
 ## [0.38.0] - 2026-08-11
 ### Added

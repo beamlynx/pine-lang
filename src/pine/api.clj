@@ -98,7 +98,7 @@
 (defn- prune-ast
   "Prune a generated state down to the :ast value returned to the frontend."
   [state]
-  (-> (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where :prettified :ranges :assign])
+  (-> (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where :group :prettified :ranges :assign])
       (update :selected-tables #(mapv prune-table %))
       (assoc :variables
              (into {} (for [[k v] (:variables state)] [k (prune-var-ast v)])))
