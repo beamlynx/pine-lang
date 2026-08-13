@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [0.38.1] - 2026-08-13
 ### Fixed
 - The build response now includes the columns a `group:` clause is grouping by — previously missing entirely, so a client had no way to tell a `group:` was present once committed, even though it was being evaluated correctly.
 
