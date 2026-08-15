@@ -46,3 +46,7 @@ Run tests:
 ```
 clojure -M:test
 ```
+
+## License
+
+[PolyForm Noncommercial License 1.0.0](LICENSE) - free for noncommercial use. For commercial licensing, contact contact@grephyte.com.
