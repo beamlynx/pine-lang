@@ -4,6 +4,10 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.38.2] - 2026-08-17
+### Security
+- The server now binds to `127.0.0.1` (loopback only) by default, instead of every network interface. The server has no authentication, so the old default left it reachable from the whole LAN, not just the local machine. Set `PINE_HOST` to change it -- the dockerized playground sets it to `0.0.0.0`, since Docker's own port publish already restricts external access to loopback.
+
 ## [0.38.1] - 2026-08-13
 ### Fixed
 - The build response now includes the columns a `group:` clause is grouping by — previously missing entirely, so a client had no way to tell a `group:` was present once committed, even though it was being evaluated correctly.

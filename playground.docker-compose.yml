@@ -18,7 +18,7 @@ services:
       retries: 10
 
   pine:
-    image: ahmadnazir/pine:0.38.1
+    image: ahmadnazir/pine:0.38.2
     container_name: pine_server
     depends_on:
       sample-db-ecommerce:
@@ -28,6 +28,13 @@ services:
     mem_limit: 384m
     environment:
       JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=70.0 -XX:+UseSerialGC"
+      # pine-lang now defaults its bind host to loopback-only (see
+      # src/pine/core.clj) -- inside this container's own network namespace
+      # that would make it unreachable even from the host, since Docker's
+      # port publish above needs the process to be listening on the
+      # container's 0.0.0.0. The "127.0.0.1:33333:33333" mapping is what
+      # actually restricts this to localhost from the outside.
+      PINE_HOST: "0.0.0.0"
 
   init:
     image: curlimages/curl:8.7.1
