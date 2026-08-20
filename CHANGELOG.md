@@ -4,10 +4,11 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 ### Fixed
-- A table with no foreign key and no heuristic name match to any other table (e.g. a lookup table nothing else references) never showed up as a table hint, even though its columns were fully indexed. Table hints now fall back to the plain schema index when a table has no known relation, so every real table is suggestible as a starting point for a query — it just won't show up as a join target, since it genuinely has none. Also excluded `pg_catalog`/`information_schema` from column indexing so those internal Postgres tables don't start appearing in hints now that the relation-based filter no longer hides them.
+- A table with no foreign key and no heuristic match to another table never showed up as a table hint, even though its columns were fully indexed — for example, a lookup table nothing else references. Table hints now fall back to the plain schema index for a table like this, so it can still be a starting point for a query. It still won't show up as a join target, since it genuinely has nothing to join through.
+- Fixing the above meant Postgres's own `pg_catalog` and `information_schema` tables could start appearing in hints too. Column indexing now excludes both schemas outright.
 
 ### Added
-- `POST /api/v1/connections/:id/reindex` re-reads a connection's tables and columns from the database. Previously, a connection's schema was indexed once on first connect and cached forever — any table or column added afterward stayed invisible until the whole server restarted. The server now also logs when it indexes or reindexes a connection's schema, naming the connection, so it's easy to confirm from the logs that a reindex request actually ran.
+- A connection's schema used to be indexed once, on first connect, and cached forever. A table or column added to the database afterward stayed invisible until the whole server restarted. A new endpoint, `POST /api/v1/connections/:id/reindex`, re-reads a connection's tables and columns on demand, so a restart is no longer needed. The server also logs each time it indexes or reindexes a connection, naming the connection, so a reindex request is easy to confirm from the logs.
 
 ## [0.38.2] - 2026-08-17
 ### Security
