@@ -71,6 +71,33 @@
               [nil  "user"     "id"             nil  "integer"  nil  nil  nil]
               [nil  "customer" "id"             nil  "integer"  nil  nil  nil]
               [nil  "customer" "data"           nil  "jsonb"    nil  nil  nil]
-              [nil  "customer" "uuid_col"       nil  "uuid"     nil  nil  nil]])
+              [nil  "customer" "uuid_col"       nil  "uuid"     nil  nil  nil]
+
+              ;; `order` has no FK to `customer` or `user` - both relations are
+              ;; only ever found heuristically (by naming convention).
+              ;;
+              ;; customer_id was mistakenly typed varchar instead of matching
+              ;; customer.id's integer type - a genuine cross-family mismatch,
+              ;; used to test that a heuristic join between mismatched types
+              ;; gets a `::text` cast rather than failing at query time.
+              ;;
+              ;; user_id is bigint against user.id's integer - a different
+              ;; spelling of the same (numeric) family, so it already joins
+              ;; fine as-is. Used to test that this does NOT get a cast:
+              ;; same-family-but-differently-spelled types shouldn't be
+              ;; treated as a mismatch.
+              ["public"  "order"    "id"           nil  "integer"            nil  nil  nil]
+              ["public"  "order"    "customer_id"  nil  "character varying"  nil  nil  nil]
+              ["public"  "order"    "user_id"      nil  "bigint"             nil  nil  nil]
+              [nil  "order"    "id"                nil  "integer"            nil  nil  nil]
+              [nil  "order"    "customer_id"       nil  "character varying"  nil  nil  nil]
+              [nil  "order"    "user_id"           nil  "bigint"             nil  nil  nil]
+
+              ;; `report` has no FK and no column any heuristic could match
+              ;; (no `_id`-suffixed column) - a genuinely orphaned table, used
+              ;; to test that it still surfaces as a first-position table
+              ;; hint even though it has no entry in :refers-to/:referred-by.
+              ["public"  "report"   "id"    nil  "integer"            nil  nil  nil]
+              ["public"  "report"   "title" nil  "character varying"  nil  nil  nil]])
 
 (def references [foreign-keys columns])

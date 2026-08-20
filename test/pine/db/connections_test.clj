@@ -2,7 +2,8 @@
   (:require
    [clojure.test :refer [deftest is testing]]
    [pine.db.connections :as connections]
-   [pine.db.main :as db]))
+   [pine.db.main :as db]
+   [pine.db.postgres :as postgres]))
 
 (defn- fake-pool [closed?]
   (reify java.io.Closeable
@@ -33,3 +34,12 @@
         (is (= "conn-b" @db/connection-id)))
       (finally
         (reset! db/connection-id original)))))
+
+(deftest test-reindex-references
+  (testing "re-runs the indexer even when a value is already cached"
+    (let [calls (atom 0)]
+      (with-redefs [postgres/get-indexed-references (fn [_id] (swap! calls inc) {:call @calls})]
+        (is (= "conn-reindex" (db/reindex-references "conn-reindex")))
+        (is (= {:call 1} (@db/references "conn-reindex")))
+        (db/reindex-references "conn-reindex")
+        (is (= {:call 2} (@db/references "conn-reindex")))))))

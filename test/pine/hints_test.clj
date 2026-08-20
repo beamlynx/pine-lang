@@ -53,6 +53,11 @@
     ;;        (gen "company as c")))
     )
 
+  (testing "A table with no FK and no heuristic relation still gets a first-position hint"
+    (is (= [{:schema "public", :table "report"
+             :pine "public.report"}]
+           (-> "repo" gen :table))))
+
   (testing "Generate hints in ambiguity"
     (is (= [{:schema "z",
              :table "document"

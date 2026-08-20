@@ -80,7 +80,8 @@ WHERE con.contype = 'f'
   character_maximum_length,
   is_nullable,
   column_default
-FROM information_schema.columns"]
+FROM information_schema.columns
+WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"]
     (with-open [conn (.getConnection pool)]
       (rest (jdbc/query {:connection conn} sql opts)))))
 

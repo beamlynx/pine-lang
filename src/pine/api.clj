@@ -232,6 +232,11 @@
     (get-connections)
     (catch Exception e {:error (.getMessage e)})))
 
+(defn reindex-connection [id]
+  (try
+    {:connection-id (db/reindex-references id)}
+    (catch Exception e {:error (.getMessage e)})))
+
 (defn api-sql
   ([sql-query]
    (api-sql sql-query nil))
@@ -277,6 +282,8 @@
       (-> connection create-connection response)))
   (POST "/api/v1/connections/:id/connect" [id]
     (-> id connect response))
+  (POST "/api/v1/connections/:id/reindex" [id]
+    (-> id reindex-connection response))
   (DELETE "/api/v1/connections/:id" [id]
     (-> id disconnect response))
   (GET "/api/v1/connection/stats" []

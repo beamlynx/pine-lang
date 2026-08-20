@@ -20,12 +20,24 @@
   [state]
   (merge (:variables state) (:pending-assignments state)))
 
+(defn- schemas-containing-table
+  "Every schema (from the schema-qualified index) that has this table. Used
+  as a fallback for a table with no FK/heuristic relation of its own (so
+  :in was never set on it) but that's still a real, indexed table."
+  [state table]
+  (for [[schema-name schema-data] (-> state :references :schema)
+        :when (contains? (:table schema-data) table)]
+    schema-name))
+
 (defn create-hint-from-table [state tables]
   (let [refs      (-> state :references :table)
         variables (known-variables state)]
     (mapcat identity
             (for [table tables
-                  :let [schemas (->> table refs :in keys)]]
+                  :let [in-schemas (->> table refs :in keys)
+                        schemas (if (seq in-schemas)
+                                  in-schemas
+                                  (schemas-containing-table state table))]]
               (if (contains? variables table)
                 [{:schema nil :table table}]
                 (for [schema schemas]

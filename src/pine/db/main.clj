@@ -19,6 +19,7 @@
    (and memoize-references?
         (@references id))
    (do
+     (prn (format "Indexing schema for connection: %s" id))
      (swap! references assoc id (postgres/get-indexed-references id))
      (@references id))))
 
@@ -35,6 +36,15 @@
   [id]
   (swap! connection-id (fn [current] (if (= current id) nil current)))
   (swap! references dissoc id))
+
+(defn reindex-references
+  "Re-index the schema for a connection, bypassing the memoized cache -
+  for when the underlying database's tables/columns changed after the
+  connection was first indexed."
+  [id]
+  (prn (format "Reindexing schema for connection: %s" id))
+  (swap! references assoc id (postgres/get-indexed-references id))
+  id)
 
 ;; Query
 ;;
