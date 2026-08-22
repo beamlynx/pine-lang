@@ -20,15 +20,24 @@
     "hour"   "YYYY-MM-DD HH24"
     "minute" "YYYY-MM-DD HH24:MI"))
 
+(defn- join-column-ref
+  "Render a join column, casting to text when the two sides of a heuristic
+  join (a naming-convention guess, not a real FK) turn out to have
+  different DB types - e.g. one side stored as varchar, the other as uuid.
+  Real FK joins are never cast: the constraint already guarantees the types
+  line up, so casting would just throw away index usage."
+  [needs-cast? alias column]
+  (str (q alias column) (when needs-cast? "::text")))
+
 (defn- build-join-clause [{:keys [tables joins aliases]}]
   (when (not-empty (rest tables))
     (let [join-statements (map (fn [[_from-alias to-alias relation join]]
-                                 (let [[a1 t1 _ a2 t2] relation
+                                 (let [[a1 t1 _ a2 t2 _resolution needs-cast?] relation
                                        {to-table :table to-schema :schema} (get aliases to-alias)
                                        join-keyword (if join (str join " JOIN") "JOIN")]
                                    (str join-keyword " " (q to-schema to-table) " AS " (q to-alias)
-                                        " ON " (q a1 t1)
-                                        " = " (q a2 t2))))
+                                        " ON " (join-column-ref needs-cast? a1 t1)
+                                        " = " (join-column-ref needs-cast? a2 t2))))
                                ;; (reverse joins)
                                joins)]
       (s/join " " join-statements))))

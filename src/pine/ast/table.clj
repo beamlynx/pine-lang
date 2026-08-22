@@ -66,6 +66,56 @@
     :foreign-key "fk"
     :heuristic   "heuristic"))
 
+(defn- column-db-type
+  "Look up a real column's DB type straight from the indexed references -
+  same lookup as pine.data-types/get-column-type, duplicated locally to
+  avoid a cycle (that namespace already requires this one)."
+  [references schema table column]
+  (let [columns (if schema
+                  (get-in references [:schema schema :table table :columns])
+                  (get-in references [:table table :columns]))]
+    (some #(when (= (:column %) column) (:type %)) columns)))
+
+(def ^:private type-families
+  "Postgres types that already compare across each other with a plain `=` -
+  same numeric/string/temporal family, just spelled differently
+  (`integer` vs `bigint`, `character varying` vs `text`). Grouped so
+  mismatched-heuristic-types? only flags a *genuine* cross-family mismatch
+  (e.g. `character varying` vs `uuid`), not two column types that were
+  always going to join fine as-is."
+  {"smallint" :number "integer" :number "bigint" :number
+   "numeric" :number "decimal" :number "real" :number "double precision" :number
+   "character varying" :string "character" :string "text" :string
+   "date" :temporal "timestamp" :temporal
+   "timestamp without time zone" :temporal "timestamp with time zone" :temporal
+   "time" :temporal "time without time zone" :temporal "time with time zone" :temporal})
+
+(defn- type-family
+  "The comparability bucket for a DB type - falls back to the type itself
+  for anything not in type-families (uuid, boolean, jsonb, ...), so two
+  columns of the same unlisted type still count as compatible, but never
+  compatible with a *different* unlisted type."
+  [db-type]
+  (get type-families db-type db-type))
+
+(defn- mismatched-heuristic-types?
+  "A heuristic join is only a naming-convention guess, not a real FK, so
+  nothing guarantees the two sides even share a type - e.g. one table's
+  \"_id\" column stored as varchar while the other's \"id\" is a native
+  uuid. A real FK can't have this problem: Postgres requires a usable
+  equality operator between the two column types to create the constraint
+  in the first place. Compares type *families* rather than exact type
+  strings, so e.g. integer vs bigint (already comparable) isn't flagged -
+  only a genuine cross-family mismatch is. Returns false (no cast needed)
+  when either side's type is unknown, since that's not evidence of a
+  mismatch."
+  [resolution s1 t1 raw-col s2 t2 raw-f-col references]
+  (boolean
+   (and (= resolution "heuristic")
+        (let [type1 (column-db-type references s1 t1 raw-col)
+              type2 (column-db-type references s2 t2 raw-f-col)]
+          (and type1 type2 (not= (type-family type1) (type-family type2)))))))
+
 (defn- join-helper
   "Find the references between the tables, get the columns for the first
   reference and return the pair of alias and columns that will be used for the join.
@@ -76,8 +126,13 @@
   isn't reachable through the CTE. A raw column that was already nil (e.g. an
   invalid explicit .hint_col against a real table) is left alone, unchanged
   from the pre-existing behavior of surfacing a hint-less, unresolved join
-  rather than no join at all."
-  [references t1 t2 a1 a2 c direction rename1 rename2]
+  rather than no join at all.
+
+  The returned tuple carries a trailing needs-cast? flag - true only for a
+  heuristic join whose two columns turn out to have different DB types - so
+  eval.clj can cast both sides to text instead of handing Postgres an
+  operator it doesn't have (e.g. `character varying = uuid`)."
+  [references t1 t2 s1 s2 a1 a2 c direction rename1 rename2]
   (when-let [refs (get-in references [:table t1 :referred-by t2 :via])] ;; get references for the tables
     (let [get-col-fn            (if c (fn [_] c) (fn [xs] (if xs (first xs) nil)))
           col-key               (-> refs keys get-col-fn)
@@ -94,11 +149,13 @@
                                 ;; entry matched col-key) - resolution-of throws on a nil/
                                 ;; unmatched tag, so guard it the same way the columns above
                                 ;; already tolerate a nil raw-col/raw-f-col.
-          resolution            (when join (resolution-of join))]
+          resolution            (when join (resolution-of join))
+          needs-cast?           (boolean (and resolution
+                                              (mismatched-heuristic-types? resolution s1 t1 raw-col s2 t2 raw-f-col references)))]
       (when-not rejected?
         (if (= direction :of)
-          [a2 f-col :of a1 col resolution]
-          [a1 col :has a2 f-col resolution])))))
+          [a2 f-col :of a1 col resolution needs-cast?]
+          [a1 col :has a2 f-col resolution needs-cast?])))))
 
 (defn- has-id-column? [references {:keys [table schema]}]
   (let [columns (if schema
@@ -150,9 +207,9 @@
         candidates2 (resolve-table alias2)
         try-direction (fn [cs1 cs2 aa1 aa2 direction]
                         (first
-                         (for [{t1 :table rename1 :rename} cs1
-                               {t2 :table rename2 :rename} cs2
-                               :let [result (join-helper references t1 t2 aa1 aa2 c direction rename1 rename2)]
+                         (for [{t1 :table s1 :schema rename1 :rename} cs1
+                               {t2 :table s2 :schema rename2 :rename} cs2
+                               :let [result (join-helper references t1 t2 s1 s2 aa1 aa2 c direction rename1 rename2)]
                                :when result]
                            result)))]
     (or

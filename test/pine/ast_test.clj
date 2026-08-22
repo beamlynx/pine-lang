@@ -174,31 +174,49 @@
            (generate :joins "a | b .a_id = .id"))))
 
   (testing "Generate ast for `join` where there is a relation"
-    (is (= [["c_0" "e_1" ["c_0" "id" :has "e_1" "company_id" "fk"] nil]]
+    (is (= [["c_0" "e_1" ["c_0" "id" :has "e_1" "company_id" "fk" false] nil]]
            (generate :joins "company | employee")))
-    (is (= [["c_0" "e_1" ["c_0" "id" :has "e_1" "company_id" "fk"] nil]]
+    (is (= [["c_0" "e_1" ["c_0" "id" :has "e_1" "company_id" "fk" false] nil]]
            (generate :joins "company | employee .company_id")))
-    (is (= [["c_0" "e_1" ["c_0" nil :has "e_1" nil nil] nil]]
+    (is (= [["c_0" "e_1" ["c_0" nil :has "e_1" nil nil false] nil]]
            (generate :joins "company | employee .employee_id"))) ;; trying with incorrect id
     )
   (testing "Generate ast for `join` where there is ambiguity"
-    (is (= [["e_0" "d_1" ["e_0" "id" :has "d_1" "created_by" "fk"] nil]]
+    (is (= [["e_0" "d_1" ["e_0" "id" :has "d_1" "created_by" "fk" false] nil]]
            (generate :joins "employee | document .created_by")))
-    (is (= [["e_0" "d_1" ["e_0" "id" :has "d_1" "employee_id" "fk"] nil]]
+    (is (= [["e_0" "d_1" ["e_0" "id" :has "d_1" "employee_id" "fk" false] nil]]
            (generate :joins "employee | document .employee_id"))))
+
+  (testing "Generate ast for `join` where a heuristic relation's two sides have different DB types"
+    ;; `order` has no real FK to `customer` (see fixtures.clj) - the relation
+    ;; is only found heuristically, and order.customer_id (varchar) doesn't
+    ;; match customer.id (integer). needs-cast? (last element) is true here,
+    ;; but false for every real FK relation above, since a FK guarantees the
+    ;; two columns already share a compatible type.
+    (is (= [["c_0" "o_1" ["c_0" "id" :has "o_1" "customer_id" "heuristic" true] nil]]
+           (generate :joins "customer | order"))))
+
+  (testing "Generate ast for `join` where a heuristic relation's two sides are different spellings of the same type family"
+    ;; order.user_id is bigint against user.id's integer - a different type
+    ;; string, but already comparable with a plain `=` since both are
+    ;; numeric. needs-cast? must stay false here, unlike the varchar/integer
+    ;; case above - otherwise every heuristic join between, say, int and
+    ;; bigint id columns would get an unnecessary (and index-defeating) cast.
+    (is (= [["u_0" "o_1" ["u_0" "id" :has "o_1" "user_id" "heuristic" false] nil]]
+           (generate :joins "user | order"))))
 
   (testing "Generate ast for `join` using self join"
     ;; By default, we narrow the results
     ;; i.e. we join with the child
-    (is (= [["e_0" "e_1" ["e_0" "id" :has "e_1" "reports_to" "fk"] nil]]
+    (is (= [["e_0" "e_1" ["e_0" "id" :has "e_1" "reports_to" "fk" false] nil]]
            (generate :joins "employee | employee")))
-    (is (= [["e_0" "e_1" ["e_0" "id" :has "e_1" "reports_to" "fk"] nil]]
+    (is (= [["e_0" "e_1" ["e_0" "id" :has "e_1" "reports_to" "fk" false] nil]]
            (generate :joins "employee | employee .reports_to")))
 
     ;; However, we can exlicitly saw that the table is a parent using the `^` character
-    (is (= [["e_0" "e_1" ["e_0" "reports_to" :of "e_1" "id" "fk"] nil]]
+    (is (= [["e_0" "e_1" ["e_0" "reports_to" :of "e_1" "id" "fk" false] nil]]
            (generate :joins "employee | employee :parent")))
-    (is (= [["e_0" "e_1" ["e_0" "reports_to" :of "e_1" "id" "fk"] nil]]
+    (is (= [["e_0" "e_1" ["e_0" "reports_to" :of "e_1" "id" "fk" false] nil]]
            (generate :joins "employee | employee :parent .reports_to"))))
 
   (testing "Generate ast for `join` with explicit columns"

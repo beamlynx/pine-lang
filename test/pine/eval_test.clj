@@ -156,6 +156,14 @@
                 (:query (generate "employee | employee :parent"))
                 "ON \"e_0\".\"reports_to\" = \"e_1\".\"id\""))))
 
+  (testing "Heuristic join between mismatched column types casts both sides to text"
+    ;; order.customer_id is varchar, customer.id is integer, and the relation
+    ;; is only found by naming convention (no real FK) - without the cast,
+    ;; Postgres would reject the join outright: operator does not exist.
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"o_1\".id AS \"__o_1__id\", \"o_1\".* FROM \"customer\" AS \"c_0\" JOIN \"order\" AS \"o_1\" ON \"c_0\".\"id\"::text = \"o_1\".\"customer_id\"::text LIMIT 250",
+            :params nil}
+           (generate "customer | order"))))
+
   (testing "Joins with explicit columns"
     ;; Basic explicit join (tables a, b, c don't exist in schema so no auto-id columns)
     (is (= {:query "SELECT \"b_1\".* FROM \"a\" AS \"a_0\" JOIN \"b\" AS \"b_1\" ON \"a_0\".\"id\" = \"b_1\".\"a_id\" LIMIT 250",

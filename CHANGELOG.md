@@ -4,6 +4,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 ### Fixed
+- A heuristic join (a naming-convention guess, not a real foreign key) whose two columns had different DB types — e.g. one stored as `varchar`, the other as `uuid` — generated a join Postgres rejected outright (`operator does not exist: character varying = uuid`), since nothing checked the columns' types were even compatible before joining them. Each committed join's relation tuple now carries a 7th `needs-cast?` element; when true, both sides of the generated `ON` clause are cast to `text`. Real FK joins are never affected — the constraint already guarantees the types are compatible.
 - A table with no foreign key and no heuristic match to another table never showed up as a table hint, even though its columns were fully indexed — for example, a lookup table nothing else references. Table hints now fall back to the plain schema index for a table like this, so it can still be a starting point for a query. It still won't show up as a join target, since it genuinely has nothing to join through.
 - Fixing the above meant Postgres's own `pg_catalog` and `information_schema` tables could start appearing in hints too. Column indexing now excludes both schemas outright.
 
