@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [0.40.0] - 2026-08-26
 ### Fixed
 - A query could hang forever, taking every other database-backed request down with it, if whatever launched the server was not reading the server's own standard output. The server printed the full SQL of every query it ran; once nothing drained that stream, its buffer filled and each print blocked permanently. Endpoints that never touch the database kept working normally, including `/api/v1/build`, which made the server look healthy while every query sat unanswered. Per-query logging is now off unless `PINE_LOG_QUERIES=1` is set. Startup messages, which are few and only appear when a connection is indexed, are unchanged.
 - Registering a connection that was already registered leaked a database connection every time. A connection's id is derived from its own host and port, so re-registering the same database always overwrote the existing entry — but the pool it displaced was never closed, and the pool settings keep one connection open at all times. Each stale pool therefore held a real database connection for the life of the process; 32 of them accumulated in a single desktop session, against a default server limit of 100. Registering the same database as the same user now reuses the existing pool instead of building another one.
