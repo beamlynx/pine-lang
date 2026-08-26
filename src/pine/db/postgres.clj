@@ -230,6 +230,26 @@ WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"]
                      :else (get-references-helper id))]
     (index-references references)))
 
+(def ^:private log-queries?
+  "Per-query logging, opt-in via PINE_LOG_QUERIES=1.
+
+  These prints used to be unconditional, which was a real hazard rather than
+  just noise. Whatever launches pine-server has to drain its stdout; if
+  nothing does, the pipe buffer fills and every `prn` blocks forever, which
+  deadlocks every endpoint that runs SQL. beamlynx-desktop hit exactly that
+  -- 17 threads parked in StreamEncoder.write inside run-query, while
+  /api/v1/build kept answering because it reads an in-memory index and never
+  prints. The consumer side is fixed too (beamlynx-desktop's
+  server-process.ts now drains stdout), but a firehose that prints every
+  query's full SQL should not be on by default regardless: it is also the
+  query text, including literal values, going to a stream nobody asked to
+  receive it on."
+  (= "1" (System/getenv "PINE_LOG_QUERIES")))
+
+(defn- log-query [fmt & args]
+  (when log-queries?
+    (prn (apply format fmt args))))
+
 (defn convert-param-for-postgres
   "Convert parameter values to appropriate types for PostgreSQL"
   [param]
@@ -246,21 +266,21 @@ WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"]
   (let [pool (connections/get-connection-pool id)
         {:keys [query params]} query
         params (map convert-param-for-postgres params)
-        _ (prn (format "Running query: %s" query))
+        _ (log-query "Running query: %s" query)
         result (with-open [conn (.getConnection pool)]
                  (jdbc/query {:connection conn} (cons query params) {:as-arrays? true :identifiers identity}))
-        _ (prn "Done!")]
+        _ (log-query "Done!")]
     result))
 
 (defn run-action-query [id query]
   (let [pool (connections/get-connection-pool id)
         {:keys [query params]} query
         params (map convert-param-for-postgres params)
-        _ (prn (format "Running action: %s" query))
+        _ (log-query "Running action: %s" query)
         result (with-open [conn (.getConnection pool)]
                  (jdbc/execute! {:connection conn} (cons query params)))
         affected-rows (first result)
-        _ (prn (format "Affected rows: %d" affected-rows))]
+        _ (log-query "Affected rows: %d" affected-rows)]
     affected-rows))
 
 (defn run-action-queries-in-transaction
@@ -275,10 +295,10 @@ WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"]
        (fn [tx]
          (mapv (fn [{:keys [table query params]}]
                  (let [params (map convert-param-for-postgres (or params []))
-                       _ (prn (format "Running action (tx): %s" query))
+                       _ (log-query "Running action (tx): %s" query)
                        result (jdbc/execute! tx (cons query params) {:transaction? false})
                        affected (first result)]
-                   (prn (format "Affected rows: %d" affected))
+                   (log-query "Affected rows: %d" affected)
                    [(or table "table") affected]))
                queries))))))
 
@@ -293,12 +313,12 @@ WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"]
                        (clojure.string/starts-with? trimmed-query "WITH")
                        (clojure.string/starts-with? trimmed-query "SHOW")
                        (clojure.string/starts-with? trimmed-query "EXPLAIN"))
-        _ (prn (format "Running raw SQL: %s" sql-query))
+        _ (log-query "Running raw SQL: %s" sql-query)
         result (with-open [conn (.getConnection pool)]
                  (if is-select?
                    (jdbc/query {:connection conn} sql-query {:as-arrays? true :identifiers identity})
                    (jdbc/execute! {:connection conn} sql-query)))
-        _ (prn "Done!")]
+        _ (log-query "Done!")]
     (if is-select?
       result
       ;; Return array format for action queries to match expected structure

@@ -4,6 +4,17 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-08-26
+### Fixed
+- A query could hang forever, taking every other database-backed request down with it, if whatever launched the server was not reading the server's own standard output. The server printed the full SQL of every query it ran; once nothing drained that stream, its buffer filled and each print blocked permanently. Endpoints that never touch the database kept working normally, including `/api/v1/build`, which made the server look healthy while every query sat unanswered. Per-query logging is now off unless `PINE_LOG_QUERIES=1` is set. Startup messages, which are few and only appear when a connection is indexed, are unchanged.
+- Registering a connection that was already registered leaked a database connection every time. A connection's id is derived from its own host and port, so re-registering the same database always overwrote the existing entry — but the pool it displaced was never closed, and the pool settings keep one connection open at all times. Each stale pool therefore held a real database connection for the life of the process; 32 of them accumulated in a single desktop session, against a default server limit of 100. Registering the same database as the same user now reuses the existing pool instead of building another one.
+
+### Changed
+- Registering a **different** database or user under a connection id that is already taken now fails with an explanatory error, instead of silently taking that id over. Because a connection id is only a host and port, two databases on the same server share one id and could never both be registered — the old behaviour pointed the existing id at the new database, so queries a caller believed were running against the first database quietly ran against the second. Disconnect the existing connection first to reuse the id. The error names the id and says why.
+
+### Security
+- The server no longer prints every query's SQL, including literal values, to standard output by default. Set `PINE_LOG_QUERIES=1` to opt back in when debugging.
+
 ## [0.39.0] - 2026-08-22
 ### Fixed
 - A heuristic join (a naming-convention guess, not a real foreign key) whose two columns had different DB types — e.g. one stored as `varchar`, the other as `uuid` — generated a join Postgres rejected outright (`operator does not exist: character varying = uuid`), since nothing checked the columns' types were even compatible before joining them. Each committed join's relation tuple now carries a 7th `needs-cast?` element; when true, both sides of the generated `ON` clause are cast to `text`. Real FK joins are never affected — the constraint already guarantees the types are compatible.
