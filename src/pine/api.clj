@@ -11,6 +11,7 @@
    [clojure.string :as str]
    [compojure.core :refer [defroutes DELETE GET POST]]
    [compojure.route :as route]
+   [pine.access-policy :as access-policy]
    [pine.ast.main :as ast]
    [pine.db.connections :as connections] ;; Encode arrays and json results in API responses
    [pine.db.main :as db]
@@ -41,10 +42,12 @@
   ([expression cursor connection-id]
    (generate-state expression cursor connection-id {}))
   ([expression cursor connection-id variables]
+   (generate-state expression cursor connection-id variables []))
+  ([expression cursor connection-id variables access-policy]
    (let [{:keys [result error]} (->> expression parser/parse)
          conn-id (or connection-id @db/connection-id)]
      (if result
-       {:result (ast/generate result conn-id expression cursor variables)}
+       {:result (ast/generate result conn-id expression cursor variables access-policy)}
        {:error-type "parse"
         :error error}))))
 
@@ -56,15 +59,17 @@
   point of assignment. An expression can assign multiple variables before its last op
   determines the final SQL. All assignments from one expression become available as
   CTE variables to the next."
-  [expressions connection-id]
-  (reduce (fn [{:keys [variables]} expression]
-            (let [{:keys [result error]} (generate-state expression nil connection-id variables)]
-              (if error
-                (reduced {:error error})
-                {:variables (merge variables (:pending-assignments result))
-                 :last-state result})))
-          {:variables {} :last-state nil}
-          expressions))
+  ([expressions connection-id]
+   (evaluate-expressions expressions connection-id []))
+  ([expressions connection-id access-policy]
+   (reduce (fn [{:keys [variables]} expression]
+             (let [{:keys [result error]} (generate-state expression nil connection-id variables access-policy)]
+               (if error
+                 (reduced {:error error})
+                 {:variables (merge variables (:pending-assignments result))
+                  :last-state result})))
+           {:variables {} :last-state nil}
+           expressions)))
 
 (defn- trim-pipes [s]
   (-> s
@@ -111,6 +116,8 @@
   ([expressions cursor]
    (api-build expressions cursor nil))
   ([expressions cursor connection-id]
+   (api-build expressions cursor connection-id []))
+  ([expressions cursor connection-id access-policy]
    (let [conn-id (or connection-id @db/connection-id)
          connection-name (connections/get-connection-name conn-id)]
      (try
@@ -121,16 +128,16 @@
              ;; empty :table op, which is what lets an empty input still show
              ;; table hints on Tab instead of "nothing found".
              last-expr     (or (last exprs) "")]
-         (let [{:keys [variables error]} (evaluate-expressions context-exprs conn-id)]
+         (let [{:keys [variables error]} (evaluate-expressions context-exprs conn-id access-policy)]
            (if error
              {:connection-id connection-name :error error}
-             (let [result                    (generate-state last-expr cursor conn-id variables)
+             (let [result                    (generate-state last-expr cursor conn-id variables access-policy)
                    {state :result build-error :error} result]
                (if build-error
                  {:connection-id connection-name :error build-error}
                  {:connection-id connection-name
                   :version version
-                  :query (-> last-expr trim-pipes (generate-state nil conn-id variables) :result eval/build-query eval/formatted-query)
+                  :query (-> last-expr trim-pipes (generate-state nil conn-id variables access-policy) :result eval/build-query eval/formatted-query)
                   :ast (prune-ast state)})))))
        (catch Exception e {:connection-id connection-name
                            :error (.getMessage e)})))))
@@ -157,6 +164,8 @@
   ([expressions]
    (api-eval expressions nil))
   ([expressions connection-id]
+   (api-eval expressions connection-id []))
+  ([expressions connection-id access-policy]
    (let [conn-id (or connection-id @db/connection-id)
          connection-name (connections/get-connection-name conn-id)]
      (try
@@ -166,10 +175,10 @@
              trimmed       (trim-pipes (or last-expr ""))]
          (if (str/blank? trimmed)
            {:connection-id connection-name}
-           (let [{:keys [variables error]} (evaluate-expressions context-exprs conn-id)]
+           (let [{:keys [variables error]} (evaluate-expressions context-exprs conn-id access-policy)]
              (if error
                {:connection-id connection-name :error error}
-               (let [{last-state :result build-error :error} (generate-state trimmed nil conn-id variables)]
+               (let [{last-state :result build-error :error} (generate-state trimmed nil conn-id variables access-policy)]
                  (if build-error
                    {:connection-id connection-name :error build-error}
                    (let [query (-> last-state eval/build-query eval/formatted-query)]
@@ -294,12 +303,14 @@
   ;; query building and evaluation
   (POST "/api/v1/build" {params :params}
     (let [{:keys [expressions expression cursor connection-id]} params
-          exprs (or expressions (when expression [expression]))]
-      (->> (api-build exprs cursor connection-id) response)))
+          exprs (or expressions (when expression [expression]))
+          rules (access-policy/sanitize-rules (:access-policy params))]
+      (->> (api-build exprs cursor connection-id rules) response)))
   (POST "/api/v1/eval" {params :params}
     (let [{:keys [expressions expression connection-id]} params
-          exprs (or expressions (when expression [expression]))]
-      (->> (api-eval exprs connection-id) response)))
+          exprs (or expressions (when expression [expression]))
+          rules (access-policy/sanitize-rules (:access-policy params))]
+      (->> (api-eval exprs connection-id rules) response)))
 
   ;; raw SQL execution
   (POST "/api/v1/sql" {params :params}

@@ -4,6 +4,11 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-08-31
+### Added
+- `/api/v1/build` and `/api/v1/eval` accept an optional `access-policy` rule array. Any column no rule allows comes back as `xxxxx` in the generated SQL instead of its real value; `.*` expansion is checked column-by-column. Rule types: `column-type` (allow-listed Postgres types), `foreign-key` (relation source columns), `column-name` (suffix match, e.g. `_id`). No policy given -- no change in behavior.
+- `information_schema`/`pg_catalog` are always exempt -- they're schema metadata, not application data.
+
 ## [0.40.0] - 2026-08-26
 ### Fixed
 - A query could hang forever, taking every other database-backed request down with it, if whatever launched the server was not reading the server's own standard output. The server printed the full SQL of every query it ran; once nothing drained that stream, its buffer filled and each print blocked permanently. Endpoints that never touch the database kept working normally, including `/api/v1/build`, which made the server look healthy while every query sat unanswered. Per-query logging is now off unless `PINE_LOG_QUERIES=1` is set. Startup messages, which are few and only appear when a connection is indexed, are unchanged.

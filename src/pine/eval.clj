@@ -1,6 +1,7 @@
 (ns pine.eval
   (:require
    [clojure.string :as s]
+   [pine.access-policy :as access-policy]
    [pine.db.main :as db]))
 
 (defn q
@@ -42,22 +43,46 @@
                                joins)]
       (s/join " " join-statements))))
 
-(defn- build-columns-clause [{:keys [operation columns current]}]
+(defn- build-columns-clause [{:keys [operation columns current] :as state}]
   (let [type (-> operation :type)
+        rules (:access-policy state)
+        restricted? (seq rules)
+        ;; An explicit `select: alias.*` is just as opaque to per-column
+        ;; redaction as the implicit current-table `.*` handled below -
+        ;; expand it first so the rest of this function only ever sees real
+        ;; columns (or, for a variable/CTE alias, is left untouched).
+        ;; vec, not mapcat's lazy seq: the later `(into columns expanded)`
+        ;; below relies on conj appending (vector semantics) - conj on a
+        ;; plain seq prepends instead, which would silently put every
+        ;; expanded/auto-id column in reverse order.
+        columns (if restricted?
+                  (vec (mapcat #(access-policy/expand-explicit-star state %) columns))
+                  columns)
         ;; Separate auto-ID columns from user-selected columns
         {auto-id-columns true user-columns nil} (group-by #(:auto-id %) columns)
         ;; Check if any non-auto-ID columns are selected for the current table
         current-table-has-columns? (some #(= (:alias %) current) user-columns)
+        star-eligible? (not (contains? #{:select :delete-action :group} type))
+        ;; Under the access policy, a bare `current.*` is opaque to the
+        ;; per-column check redaction depends on - expand it into an
+        ;; explicit column list (pine.access-policy/expand-star) so each one
+        ;; can be checked and redacted individually. Policy off: unchanged.
+        expanded (when (and restricted? star-eligible? (not current-table-has-columns?))
+                   (access-policy/expand-star state current))
+        columns (if (seq expanded) (into columns expanded) columns)
+        current-table-has-columns? (or current-table-has-columns? (seq expanded))
         select-all (cond
-                     (contains? #{:select :delete-action :group} type) ""
+                     (not star-eligible?) ""
                      current-table-has-columns? ""  ; Don't add .* if current table has explicit columns
                      :else (str (if (seq columns) ", " "") (q current) ".*"))]
     (str
      "SELECT "
      (s/join
       ", "
-      (map (fn [{:keys [column alias column-alias symbol auto-id col-fn]}]
-             (let [c (cond
+      (map (fn [{:keys [column alias column-alias symbol auto-id col-fn] :as col}]
+             (let [redact? (and restricted? (access-policy/sensitive-column? state rules col))
+                   c (cond
+                       redact? access-policy/redacted-sql-literal
                        ;; Auto-ID columns should render as unquoted id
                        auto-id (str (q alias) ".id")
                        ;; Column function (currently date functions)
@@ -65,8 +90,12 @@
                        ;; Symbol-based columns (like aggregates)
                        (empty? column) (if alias (str (q alias) "." symbol) symbol)
                        ;; Regular columns
-                       :else (q alias column))]
-               (if column-alias (str c " AS " (q column-alias)) c))) columns))
+                       :else (q alias column))
+                   ;; A redacted literal loses Postgres' automatic naming of a
+                   ;; bare column reference, so name it explicitly whenever no
+                   ;; explicit column-alias was already going to do that job.
+                   out-alias (or column-alias (when redact? (if (empty? column) symbol column)))]
+               (if out-alias (str c " AS " (q out-alias)) c))) columns))
      select-all
      " FROM")))
 
@@ -201,10 +230,14 @@
                           :columns non-aggregate-cols
                           :operation {:type :group})
         ;; Build SELECT clause using the same logic as regular queries, but add aliases to all columns
+        rules (:access-policy state)
+        restricted? (seq rules)
         select-parts (s/join
                       ", "
-                      (map (fn [{:keys [column alias column-alias symbol auto-id col-fn]}]
-                             (let [c (cond
+                      (map (fn [{:keys [column alias column-alias symbol auto-id col-fn] :as col}]
+                             (let [redact? (and restricted? (access-policy/sensitive-column? state rules col))
+                                   c (cond
+                                       redact? access-policy/redacted-sql-literal
                                        ;; Auto-ID columns should render as unquoted id
                                        auto-id (str (q alias) ".id")
                                        ;; Column function (currently date functions)

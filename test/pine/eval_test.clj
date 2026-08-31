@@ -7,26 +7,30 @@
 
 (defn- generate
   "Helper function to generate the sql"
-  [expression]
-  (-> expression
-      parser/parse
-      :result
-      (ast/generate :test)
-      eval/build-query))
+  ([expression]
+   (generate expression []))
+  ([expression access-policy]
+   (-> expression
+       parser/parse
+       :result
+       (ast/generate :test nil nil {} access-policy)
+       eval/build-query)))
 
 (defn- generate-expressions
   "Evaluate a list of pine expressions sequentially, threading variables.
   Returns the SQL of the last expression."
-  [expressions]
-  (let [{:keys [last-state]}
-        (reduce (fn [{:keys [variables]} expr]
-                  (let [{:keys [result]} (parser/parse expr)
-                        state (ast/generate result :test nil nil variables)]
-                    {:variables (merge variables (:pending-assignments state))
-                     :last-state state}))
-                {:variables {} :last-state nil}
-                expressions)]
-    (eval/build-query last-state)))
+  ([expressions]
+   (generate-expressions expressions []))
+  ([expressions access-policy]
+   (let [{:keys [last-state]}
+         (reduce (fn [{:keys [variables]} expr]
+                   (let [{:keys [result]} (parser/parse expr)
+                         state (ast/generate result :test nil nil variables access-policy)]
+                     {:variables (merge variables (:pending-assignments state))
+                      :last-state state}))
+                 {:variables {} :last-state nil}
+                 expressions)]
+     (eval/build-query last-state))))
 
 (deftest test-build-query
 
@@ -742,3 +746,78 @@
       ;; Each one's own checkpoint must still carry the right GROUP BY body.
       (is (clojure.string/includes? query (str "\"" x-name "\" AS ( SELECT \"c\".\"id\", COUNT(1) AS \"count\"")))
       (is (clojure.string/includes? query (str "\"" y-name "\" AS ( SELECT \"c\".\"id\", COUNT(1) AS \"count\""))))))
+
+(def ^:private column-type-rule
+  ;; Mirrors the values beamlynx-desktop seeds a new connection's default
+  ;; policy with (DEFAULT_ACCESS_POLICY_RULES, credential-store.ts) -- this
+  ;; module itself carries no default of its own, so tests construct their
+  ;; own rule vectors explicitly rather than reaching for a shared default.
+  {:type "column-type"
+   :allow ["uuid" "boolean" "bool"
+           "smallint" "integer" "bigint" "int2" "int4" "int8"
+           "numeric" "decimal" "real" "double precision" "float4" "float8" "money"
+           "date" "time" "time without time zone" "time with time zone"
+           "timestamp" "timestamp without time zone" "timestamp with time zone" "timestamptz"
+           "USER-DEFINED"]})
+
+(deftest test-access-policy
+  ;; `report` (fixtures.clj) has a "character varying" column (title) alongside
+  ;; an "integer" id - a real non-allow-listed type next to an allowed one.
+  ;; `order` has a "character varying" customer_id that's a heuristic (not a
+  ;; real FK) join source - fixtures.clj deliberately types it that way to
+  ;; test the same cross-family-type join casting elsewhere in this file.
+
+  (testing "Policy off (default, empty/absent rules): unaffected, even for a table with a text column"
+    (is (= "SELECT \"r_0\".id AS \"__r_0__id\", \"r_0\".* FROM \"report\" AS \"r_0\" LIMIT 1"
+           (:query (generate "report | limit: 1")))))
+
+  (testing "column-type rule: implicit `.*` is expanded and the text column is redacted"
+    (is (= "SELECT \"r_0\".id AS \"__r_0__id\", \"r_0\".\"id\", 'xxxxx' AS \"title\" FROM \"report\" AS \"r_0\" LIMIT 1"
+           (:query (generate "report | limit: 1" [column-type-rule])))))
+
+  (testing "column-type rule: an explicitly selected text column is redacted, its name preserved"
+    (is (= "SELECT 'xxxxx' AS \"title\", \"r_0\".\"id\", \"r_0\".id AS \"__r_0__id\" FROM \"report\" AS \"r_0\" LIMIT 250"
+           (:query (generate "report | select: title, id" [column-type-rule])))))
+
+  (testing "column-type rule: allowed types (uuid, integer) pass through untouched; jsonb does not"
+    (is (= "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".\"id\", 'xxxxx' AS \"data\", \"c_0\".\"uuid_col\" FROM \"customer\" AS \"c_0\" LIMIT 1"
+           (:query (generate "customer | limit: 1" [column-type-rule])))))
+
+  (testing "column-type rule: a table with no sensitive columns renders exactly as it would unrestricted, apart from being expanded"
+    (is (= "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".\"id\", \"c_0\".\"created_at\" FROM \"company\" AS \"c_0\" LIMIT 1"
+           (:query (generate "company | limit: 1" [column-type-rule])))))
+
+  (testing "column-type rule: a varchar-typed FK-shaped column stays redacted -- type is the only signal this rule has"
+    (is (= "SELECT \"o_0\".id AS \"__o_0__id\", \"o_0\".\"id\", 'xxxxx' AS \"customer_id\", \"o_0\".\"user_id\" FROM \"order\" AS \"o_0\" LIMIT 1"
+           (:query (generate "order | limit: 1" [column-type-rule])))))
+
+  (testing "foreign-key rule: unmasks that same column once added, real FK or heuristic relation alike"
+    (is (= "SELECT \"o_0\".id AS \"__o_0__id\", \"o_0\".\"id\", \"o_0\".\"customer_id\", \"o_0\".\"user_id\" FROM \"order\" AS \"o_0\" LIMIT 1"
+           (:query (generate "order | limit: 1" [column-type-rule {:type "foreign-key"}])))))
+
+  (testing "column-name rule: unmasks the same column by suffix alone, with no foreign-key rule present -- the weaker, opt-in signal"
+    (is (= "SELECT \"o_0\".id AS \"__o_0__id\", \"o_0\".\"id\", \"o_0\".\"customer_id\", \"o_0\".\"user_id\" FROM \"order\" AS \"o_0\" LIMIT 1"
+           (:query (generate "order | limit: 1" [column-type-rule {:type "column-name" :suffix "_id"}])))))
+
+  (testing "An unrecognized rule type matches nothing -- fail-closed and forward-compatible, not an error"
+    (is (= "SELECT \"r_0\".id AS \"__r_0__id\", 'xxxxx' AS \"id\", 'xxxxx' AS \"title\" FROM \"report\" AS \"r_0\" LIMIT 1"
+           (:query (generate "report | limit: 1" [{:type "some-future-rule-type" :whatever "x"}])))))
+
+  (testing "information_schema/pg_catalog are structurally exempt, regardless of rules -- catalog metadata, not application data. The MCP tool surface's own docs tell an agent to query information_schema.* directly for schema discovery; redacting it would silently defeat that."
+    (is (= "SELECT \"c_0\".\"table_name\", \"c_0\".\"column_name\" FROM \"information_schema\".\"columns\" AS \"c_0\" LIMIT 250"
+           (:query (generate "information_schema.columns | select: table_name, column_name" [{:type "column-name" :suffix "-never-matches"}]))))
+    (is (= "SELECT \"pt_0\".\"typname\" FROM \"pg_catalog\".\"pg_type\" AS \"pt_0\" LIMIT 250"
+           (:query (generate "pg_catalog.pg_type | select: typname" [{:type "column-name" :suffix "-never-matches"}])))))
+
+  (testing "column-type rule: an explicit per-alias star (`select: alias.*`, distinct from the implicit current-table default) is expanded and redacted too"
+    (is (= "SELECT \"r\".\"id\", 'xxxxx' AS \"title\", \"r\".id AS \"__r__id\" FROM \"report\" AS \"r\" LIMIT 250"
+           (:query (generate "report as r | s: r.*" [column-type-rule])))))
+
+  (testing "column-type rule: a variable's own CTE body redacts at its source; the outer `.*` re-selects the already-safe result"
+    (let [query (:query (generate-expressions ["report |= r" "r | limit: 1"] [column-type-rule]))]
+      (is (clojure.string/includes? query "\"r\" AS ( SELECT \"r_0\".\"id\", 'xxxxx' AS \"title\" FROM \"report\" AS \"r_0\" )"))
+      (is (clojure.string/includes? query "SELECT \"r\".* FROM \"r\" AS \"r\""))))
+
+  (testing "column-type rule: GROUP BY a redacted column still runs, but every group collapses to the placeholder - a known tradeoff, not a leak"
+    (is (= "WITH \"x_1\" AS ( SELECT 'xxxxx' AS \"title\" FROM \"report\" AS \"r_0\" ) SELECT \"x_1\".\"title\", COUNT(1) AS \"count\" FROM \"x_1\" GROUP BY \"x_1\".\"title\""
+           (:query (generate "report | group: title => count" [column-type-rule]))))))
