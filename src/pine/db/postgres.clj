@@ -81,17 +81,26 @@ WHERE con.contype = 'f'
   is_nullable,
   column_default
 FROM information_schema.columns
-WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"]
+WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+ORDER BY table_schema, table_name, ordinal_position"]
     (with-open [conn (.getConnection pool)]
       (rest (jdbc/query {:connection conn} sql opts)))))
 
-(defn- index-columns [acc columns]
+(defn- index-columns
+  "Index columns per schema+table and per bare table name. :columns is kept
+  in the order given (ordinal position, per get-columns' ORDER BY) - the
+  access policy's `.*` expansion relies on this to lay out redacted columns
+  in the same order Postgres would give a real `SELECT *`. Plain `conj`
+  here would prepend (the accumulator starts from nil, and `(conj nil x)`
+  builds a list, not a vector), silently reversing that order - `(fnil conj
+  [])` seeds a vector instead, so conj appends."
+  [acc columns]
   (reduce (fn [acc [schema table col _pos type _len nullable default]]
             (let [col {:column col :type type :nullable nullable :default default}]
               (-> acc
-                  (update-in [:schema schema :table table :columns] conj col)
+                  (update-in [:schema schema :table table :columns] (fnil conj []) col)
                   (update-in [:schema schema :table table :column-set] (fnil conj #{}) col)
-                  (update-in [:table table :columns] conj col)
+                  (update-in [:table table :columns] (fnil conj []) col)
                   (update-in [:table table :column-set] (fnil conj #{}) col))))
           acc
           columns))

@@ -36,6 +36,7 @@
             ;; - connection
             :connection-id nil
             :references {}
+            :access-policy []      ;; vector of rule maps (pine.access-policy); empty/absent = no redaction
             :variables {}               ;; {"varname" <nested-AST>}, populated from |= assignments in prior expressions
             :assign    nil              ;; variable name from the last |= op in this expression
             :pending-assignments {}     ;; {"varname" <state-snapshot>} accumulated by |= ops in this expression
@@ -119,15 +120,19 @@
   [variables]
   (count variables))
 
-(defn pre-handle [state connection-id ops-count expression cursor variables]
-  (-> state
-      (assoc :references (db/init-references connection-id))
-      (assoc :connection-id connection-id)
-      (assoc :pending-count ops-count)
-      (assoc :expression expression)
-      (assoc :cursor cursor)
-      (assoc :variables variables)
-      (assoc :auto-cte-count (next-auto-cte-count variables))))
+(defn pre-handle
+  ([state connection-id ops-count expression cursor variables]
+   (pre-handle state connection-id ops-count expression cursor variables []))
+  ([state connection-id ops-count expression cursor variables access-policy]
+   (-> state
+       (assoc :references (db/init-references connection-id))
+       (assoc :connection-id connection-id)
+       (assoc :pending-count ops-count)
+       (assoc :expression expression)
+       (assoc :cursor cursor)
+       (assoc :variables variables)
+       (assoc :access-policy (or access-policy []))
+       (assoc :auto-cte-count (next-auto-cte-count variables)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Checkpoint helpers
@@ -346,7 +351,13 @@
                                   (-> tables reverse rest reverse)
                                   tables)))
       add-prettify
-      (dissoc :references)))
+      ;; :references is normally internal-only scaffolding, dropped before the
+      ;; state is used further - but when :access-policy is non-empty, eval.clj
+      ;; needs it at SQL-render time to resolve each column's real DB type/table
+      ;; (see pine.access-policy). Nested variable/CTE snapshots (taken earlier,
+      ;; via assign/handle) already carry :references regardless, since this
+      ;; dissoc only ever runs once, on the final top-level state.
+      (#(if (seq (:access-policy %)) % (dissoc % :references)))))
 
 (defn generate
   ([parse-tree]
@@ -356,8 +367,10 @@
   ([parse-tree connection-id expression cursor]
    (generate parse-tree connection-id expression cursor {}))
   ([parse-tree connection-id expression cursor variables]
+   (generate parse-tree connection-id expression cursor variables []))
+  ([parse-tree connection-id expression cursor variables access-policy]
    (let [full-state (-> state
-                        (pre-handle connection-id (count parse-tree) expression cursor variables)
+                        (pre-handle connection-id (count parse-tree) expression cursor variables access-policy)
                         (handle-ops parse-tree))
          truncated-state (when (and cursor expression)
                            (generate-truncated-state expression cursor connection-id variables))]

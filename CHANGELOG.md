@@ -3,6 +3,9 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Added
+- `/api/v1/build` and `/api/v1/eval` accept an optional `access-policy` rule array. Any column no rule allows comes back as `xxxxx` in the generated SQL instead of its real value; `.*` expansion is checked column-by-column. Rule types: `column-type` (allow-listed Postgres types), `foreign-key` (relation source columns), `column-name` (suffix match, e.g. `_id`). No policy given -- no change in behavior.
+- `information_schema`/`pg_catalog` are always exempt -- they're schema metadata, not application data.
 
 ## [0.40.0] - 2026-08-26
 ### Fixed
