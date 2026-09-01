@@ -191,10 +191,17 @@
                          {:connection-id connection-name
                           :version version
                           :result rows
-                          :columns columns})
+                          :columns columns
+                          ;; Already computed as part of generate-state's shared
+                          ;; post-handle pipeline (ast/main.clj's add-prettify runs
+                          ;; on every build or eval alike) - free to expose here
+                          ;; without a second /api/v1/build round trip, unlike
+                          ;; client.ts's prettify() which pays for one on purpose.
+                          :prettified (:prettified last-state)})
                        (catch Exception e {:connection-id connection-name
                                            :error (.getMessage e)
-                                           :query query})))))))))
+                                           :query query
+                                           :prettified (:prettified last-state)})))))))))
        (catch Exception e {:connection-id connection-name
                            :error (.getMessage e)})))))
 
