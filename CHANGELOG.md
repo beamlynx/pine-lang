@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [0.42.0] - 2026-09-02
 ### Added
 - `/api/v1/eval` now also returns `prettified` (a nicely formatted rendering of the expression that ran), the same value `/api/v1/build` already returned. It was already computed internally on every request; callers that want to show an evaluated expression cleanly no longer need a second `/api/v1/build` round trip to get it.
 
