@@ -4,6 +4,10 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-09-02
+### Added
+- `/api/v1/eval` now also returns `prettified` (a nicely formatted rendering of the expression that ran), the same value `/api/v1/build` already returned. It was already computed internally on every request; callers that want to show an evaluated expression cleanly no longer need a second `/api/v1/build` round trip to get it.
+
 ## [0.41.0] - 2026-08-31
 ### Added
 - `/api/v1/build` and `/api/v1/eval` accept an optional `access-policy` rule array. Any column no rule allows comes back as `xxxxx` in the generated SQL instead of its real value; `.*` expansion is checked column-by-column. Rule types: `column-type` (allow-listed Postgres types), `foreign-key` (relation source columns), `column-name` (suffix match, e.g. `_id`). No policy given -- no change in behavior.
