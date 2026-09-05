@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Added
+- `? table` finds every join chain between wherever a pipe expression currently is and a named table, e.g. `company | ? document` — not just the direct next hop, but every path through the schema graph (including multi-hop ones), ordered by fewest *parent* hops first (then fewest total hops as the tiebreak) — a child relation is usually the more meaningful direction, so `employee | ? document` prefers a direct child route over a longer one that zig-zags back up through a parent table first. It composes on top of any existing Pine expression (`company | where: active = true | ? document`), but is terminal: nothing meaningful follows it, and there's currently no bare `table1 ? table2` form — the `|` is required, same as any other operation. Results come back under a new `hints.paths` bucket, each a full pine expression ready to splice in place of the `? target` segment; while the target table name is still being typed, `hints.table` continues to serve suggestions, narrowed to tables actually reachable from the current context (not every table in the schema, since anything else is guaranteed to resolve to zero paths once fully typed). `? table` never builds a runnable query itself — evaluating it is a no-op, same as bare `delete:`. See `docs/paths.md`.
 
 ## [0.42.0] - 2026-09-02
 ### Added

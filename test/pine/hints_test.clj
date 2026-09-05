@@ -326,5 +326,80 @@
             {:schema nil :table "employee" :column "id" :related-column "id" :parent false
              :resolution "synthetic" :pine "employee"}]
            (->> (-> "employee | s: id, company_id | l: 10 | " gen :table)
-                (filter #(or (= (:resolution %) "synthetic") (= (:table %) "company"))))))))
+                (filter #(or (= (:resolution %) "synthetic") (= (:table %) "company")))))))
+
+  (testing "Generate `paths` hints - direct and multi-hop joins between two tables"
+    ;; company -> document: one direct FK (company_id), plus two 2-hop routes
+    ;; through employee (document has two FKs to employee: employee_id, created_by).
+    ;; Shortest first.
+    (is (= [{:pine "z.document .company_id" :length 1
+             :hops [{:schema "z" :table "document" :column "company_id" :related-column "id"
+                     :parent false :resolution "fk" :pine "z.document .company_id"}]}
+            {:pine "y.employee .company_id | z.document .employee_id" :length 2
+             :hops [{:schema "y" :table "employee" :column "company_id" :related-column "id"
+                     :parent false :resolution "fk" :pine "y.employee .company_id"}
+                    {:schema "z" :table "document" :column "employee_id" :related-column "id"
+                     :parent false :resolution "fk" :pine "z.document .employee_id"}]}
+            {:pine "y.employee .company_id | z.document .created_by" :length 2
+             :hops [{:schema "y" :table "employee" :column "company_id" :related-column "id"
+                     :parent false :resolution "fk" :pine "y.employee .company_id"}
+                    {:schema "z" :table "document" :column "created_by" :related-column "id"
+                     :parent false :resolution "fk" :pine "z.document .created_by"}]}]
+           (-> "company | ? document" gen :paths)))
+
+    ;; Schema-qualified target narrows to that schema only
+    (is (= 3 (count (-> "company | ? z.document" gen :paths))))
+    (is (= [] (-> "company | ? x.document" gen :paths)))
+
+    ;; Searching a table against itself always comes back empty - no
+    ;; special-casing, the source is already in its own visited set.
+    (is (= [] (-> "company | ? company" gen :paths)))
+    (is (= [] (-> "employee | ? employee" gen :paths))) ;; even with a self-referential FK (reports_to)
+
+    ;; No preceding table at all - nothing to search from.
+    (is (= [] (-> "? document" gen :paths))))
+
+  (testing "Generate `paths` hints - fewest-parent-hops-first, not just shortest-first"
+    ;; department -> team -> worker is the "real" hierarchy (both hops are
+    ;; child hops); department also keeps a direct, denormalized pointer at
+    ;; its own lead worker (lead_worker_id), a 1-hop shortcut that happens
+    ;; to point the "wrong" way relative to the hierarchy above - a PARENT
+    ;; hop, since department is the one with the FK column here. The
+    ;; all-child 2-hop route through team wins despite being longer.
+    (is (= [{:pine "w.team .department_id | w.worker .team_id" :length 2
+             :hops [{:schema "w" :table "team" :column "department_id" :related-column "id"
+                     :parent false :resolution "fk" :pine "w.team .department_id"}
+                    {:schema "w" :table "worker" :column "team_id" :related-column "id"
+                     :parent false :resolution "fk" :pine "w.worker .team_id"}]}
+            {:pine "w.worker .lead_worker_id :parent" :length 1
+             :hops [{:schema "w" :table "worker" :column "id" :related-column "lead_worker_id"
+                     :parent true :resolution "fk" :pine "w.worker .lead_worker_id :parent"}]}]
+           (-> "department | ? worker" gen :paths)))
+
+    ;; Symmetric case, searching the other direction: from worker, the same
+    ;; shortcut is now a CHILD hop (worker is the parent side of
+    ;; lead_worker_id) - so the direct route wins both on hop count AND
+    ;; parent-hop count, no conflict to resolve.
+    (is (= ["w.department .lead_worker_id"
+            "w.team .team_id :parent | w.department .department_id :parent"]
+           (->> (-> "worker | ? department" gen :paths) (map :pine)))))
+
+  (testing "`? token` falls back to table-name suggestions until the token names a real table -
+            but only ones actually reachable from the current context, not every table in the
+            schema, since anything else is guaranteed to resolve to zero paths once fully typed"
+    ;; "d" substring-matches both "document" and "order" - only "document" is
+    ;; reachable from company (order has no path to/from company at all), so
+    ;; "order" is correctly excluded even though it matches the typed token.
+    (is (= [{:schema "z" :table "document" :pine "z.document"}]
+           (-> "company | ? d" gen :table)))
+    (is (= [] (-> "company | ? document" gen :table)))
+
+    ;; Empty token shows only what's reachable from company (employee,
+    ;; document) - not all 7 known tables, e.g. `report`/`order`/`user`/
+    ;; `customer` have no path to/from company and are correctly excluded.
+    (is (= #{"employee" "document"}
+           (->> (-> "company | ? " gen :table) (map :table) set)))
+
+    ;; No preceding table at all - nothing reachable, so nothing suggested.
+    (is (= [] (-> "? doc" gen :table)))))
 

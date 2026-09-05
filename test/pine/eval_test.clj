@@ -356,7 +356,13 @@
 
   (testing "delete"
     (is (= {:query " /* No SQL. Evaluate the pine expression for results */ "}
-           (generate "company | delete:")))))
+           (generate "company | delete:"))))
+
+  (testing "paths"
+    ;; :paths only generates candidate pine expressions (hints.paths) - it
+    ;; never builds a runnable query of its own, same as bare `delete:` above.
+    (is (= {:query " /* No SQL. Pick a path from hints.paths and build that expression instead */ "}
+           (generate "company | ? document")))))
 
 (deftest test-action-operations
   (testing "Action operations should use different query execution path"

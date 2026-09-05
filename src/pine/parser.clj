@@ -495,6 +495,26 @@
     :else (throw (ex-info "Unknown UPDATE-PARTIAL operation" {:_ operation}))))
 
 ;; -----
+;; PATHS
+;; -----
+
+(defmethod -normalize-op :PATHS [payload]
+  (match payload
+    ;; Empty target: "? "
+    [:PATHS] {:type :paths :value {:table ""}}
+
+    ;; Schema.table
+    [:PATHS [:symbol schema] [:symbol table]]
+    {:type :paths :value {:table table :schema schema}}
+
+    ;; Only table
+    [:PATHS [:symbol table]]
+    {:type :paths :value {:table table}}
+
+    :else
+    (throw (ex-info "Unknown PATHS operation" {:_ payload}))))
+
+;; -----
 ;; ASSIGN
 ;; -----
 

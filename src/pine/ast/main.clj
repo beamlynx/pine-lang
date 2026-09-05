@@ -83,7 +83,7 @@
             ;; POST
             ;; ---
             ;; - hints
-            :hints          {:table [] :select [] :order [] :where [] :update []}
+            :hints          {:table [] :select [] :order [] :where [] :update [] :paths []}
 
             ;; ---
             ;; Checkpoint
@@ -233,6 +233,12 @@
     :update-action (update-action/handle state value)
     :update-partial (update-action/handle state value)
     :assign (assign/handle state value)
+    ;; :paths adds no table/join of its own - the target it names is already
+    ;; fully captured in :operation by handle-ops, which is all
+    ;; hints/generate-path-hints needs. :current is deliberately left
+    ;; untouched, so it still points at whatever real table/variable the
+    ;; pipe left off at - that's the path search's starting point.
+    :paths state
     ;; No operations
     :no-op state
     (update state :errors conj [type "Unknown operation type in parse tree"])))

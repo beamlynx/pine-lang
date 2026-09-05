@@ -1,5 +1,6 @@
 (ns pine.ast.hints
-  (:require [clojure.string :as str]
+  (:require [clojure.set :as set]
+            [clojure.string :as str]
             [pine.ast.table :as table]))
 
 (defn- filter-relations
@@ -198,6 +199,155 @@
          ;; `company_structure` — mirrors the sort already done in table-hints.
          (sort-by (comp count :table)))))
 
+;; ---------------------------------------------------------------------------
+;; Path Hints (`? target-table` - all join chains between two tables)
+;; ---------------------------------------------------------------------------
+
+;; A densely-connected schema (e.g. most tables FK'd to a shared tenant/company
+;; hub) can otherwise make the search explode combinatorially - these keep it
+;; bounded rather than trying to be individually "smart" about which paths
+;; matter more.
+(def ^:private max-path-depth 4)
+(def ^:private max-paths 50)
+
+(defn- real-relation-hints
+  "Single-hop candidates from a REAL table (own schema, with `rename`
+  translating its columns back through whatever a variable might expose them
+  as). This is the real-relation half of relation-hints's per-source lookup,
+  generalized so multi-hop path search can call it again for every
+  intermediate hop - always with an empty rename past the first hop, since
+  every hop after the first is a real table, never a variable."
+  [state table rename]
+  (let [parents  (-> state :references :table (get table) :refers-to)
+        children (-> state :references :table (get table) :referred-by)]
+    (mapcat
+     (fn [[target relation]]
+       (create-hint-from-relation-array
+        target (mapcat identity (vals (:via relation))) rename {}))
+     (concat parents children))))
+
+(defn- path-priority
+  "A path's sort key: fewest parent hops first, then fewest total hops as
+  the tiebreak - a child relation (`:parent false`, e.g. company->employee)
+  is the meaningful direction a user is usually asking about, while a
+  parent hop (e.g. document->employee) is the 'zoom out' direction and
+  worth taking only when nothing more direct exists. Lower sorts first.
+
+  This makes find-table-paths below a uniform-cost search (Dijkstra's
+  algorithm) rather than plain breadth-first search: a child hop costs 0,
+  a parent hop costs 1, and paths are popped from the frontier in
+  non-decreasing total cost - so `employee | ? document` returns the
+  direct one-hop child route ahead of the two-hop route through
+  employee's own parent company, even though both are valid and the
+  parent route used to win ties by depth alone under plain BFS."
+  [hops]
+  [(count (filter :parent hops)) (count hops)])
+
+(defn- find-table-paths
+  "All simple paths from each of `sources` to `target-table` (optionally
+  narrowed to `target-schema`), walking the same FK/heuristic graph
+  relation-hints walks one hop at a time, popped off the search frontier in
+  path-priority order (see above) rather than level-by-level - so results
+  already come back best-first, not just grouped by depth. A table already
+  used earlier in a given path is never revisited (simple paths only) -
+  this is also why searching a table against itself (`company | ? company`)
+  comes back empty with no special-casing: the source is in its own path's
+  visited set from the start.
+
+  A path is only ever tested against the target when it's POPPED off the
+  frontier (in priority order), never at the moment it's created - since
+  path-priority only ever grows as a path is extended (a hop is worth 0 or
+  1, monotonically), whatever gets popped next is guaranteed to be at
+  least as good as anything still waiting, so `found` fills up in true
+  priority order rather than whatever order paths happened to be
+  discovered in (this is the standard uniform-cost/Dijkstra optimality
+  argument, just enumerating every hit instead of stopping at the first).
+  A path stops being expanded once it reaches max-path-depth hops - unlike
+  a global depth counter, this lets a genuinely longer path keep being
+  explored even while shorter, lower-priority paths elsewhere in the
+  frontier are still being popped first."
+  [state sources target-table target-schema]
+  (let [target? (fn [hop]
+                  (and (= (:table hop) target-table)
+                       (or (nil? target-schema) (= (:schema hop) target-schema))))]
+    (loop [frontier (for [{:keys [table rename]} sources]
+                      {:visited #{table} :hops [] :table table :rename rename})
+           found []]
+      (if (or (empty? frontier) (>= (count found) max-paths))
+        found
+        (let [sorted (sort-by #(path-priority (:hops %)) frontier)
+              {:keys [visited hops table rename]} (first sorted)
+              rest-frontier (rest sorted)]
+          (if (and (seq hops) (target? (last hops)))
+            (recur rest-frontier (conj found hops))
+            (let [expanded (when (< (count hops) max-path-depth)
+                             (->> (real-relation-hints state table rename)
+                                  (remove #(contains? visited (:table %)))
+                                  (map (fn [hop] {:visited (conj visited (:table hop))
+                                                  :hops (conj hops hop)
+                                                  :table (:table hop)
+                                                  :rename {}}))))]
+              (recur (concat rest-frontier expanded) found))))))))
+
+(defn- reachable-table-names
+  "Every real table name reachable from `sources` within max-path-depth hops
+  - not full paths (see find-table-paths), just which table *names* are
+  reachable at all. Cheaper than full path enumeration (a table is only
+  ever expanded once, however many parallel edges lead to it) and is what
+  actually answers 'is this a valid destination', since a table this
+  doesn't include is guaranteed to come back with zero paths once fully
+  named anyway. A source table itself is never included - it's excluded
+  from its own reachable set from the start, the same reason
+  find-table-paths always returns empty for `t | ? t`."
+  [state sources]
+  (let [source-tables (into #{} (map :table sources))]
+    (loop [frontier (for [{:keys [table rename]} sources] {:table table :rename rename})
+           seen source-tables
+           depth 0]
+      (if (or (empty? frontier) (>= depth max-path-depth))
+        (set/difference seen source-tables)
+        (let [next (->> frontier
+                        (mapcat (fn [{:keys [table rename]}] (real-relation-hints state table rename)))
+                        (remove #(contains? seen (:table %)))
+                        (map (fn [hop] {:table (:table hop) :rename {}}))
+                        distinct)]
+          (recur next (into seen (map :table next)) (inc depth)))))))
+
+(defn- path->hint
+  "Render one discovered path as {:pine ... :length N :hops [...]}. Each hop
+  keeps the same shape a single-hop table hint already has (schema/table/
+  column/related-column/parent/resolution/pine) - a path is a subset of that,
+  not a new shape - and the path's own :pine is just those hops' :pine joined
+  the same way the user would type them: piped, in order."
+  [hops]
+  (let [hops (mapv #(assoc % :pine (generate-expression %)) hops)]
+    {:pine (str/join " | " (map :pine hops))
+     :length (count hops)
+     :hops hops}))
+
+(defn generate-path-hints
+  "Dispatch for a `? token` operation. While `token` isn't (yet) the exact
+  name of a real table, this is still table-name typeahead (:table bucket)
+  rather than the path search itself - but narrowed to table-hints ∩
+  reachable-table-names, not every table in the schema: a path can be many
+  hops away, so this isn't limited to direct joins from the current
+  context, but it IS limited to tables a path could actually reach, since
+  anything outside that set is guaranteed to resolve to zero paths the
+  moment it's fully typed. Only once `token` names a real table does this
+  run the actual path search (:paths bucket)."
+  [state]
+  (let [{token :table target-schema :schema} (-> state :operation :value)
+        current-entry (-> state :aliases (get (state :current)))
+        sources (when current-entry (table/resolve-table current-entry))]
+    (if (and (seq token) (contains? (-> state :references :table) token))
+      (let [paths (find-table-paths state sources token target-schema)]
+        {:key :paths :hints (map path->hint paths)})
+      (let [reachable (reachable-table-names state sources)]
+        {:key :table
+         :hints (->> (table-hints state token)
+                     (filter #(contains? reachable (:table %)))
+                     (map (fn [h] (assoc h :pine (generate-expression h)))))}))))
+
 (defn generate-table-hints [state]
   (let [{token :table parent :parent} (-> state :tables reverse first)
         from-alias (state :context)
@@ -330,26 +480,32 @@
    (handle state nil))
   ([state truncated-state]
    (let [state-for-hints (or truncated-state state)
-         op-type (-> state-for-hints :operation :type)
-         hints (case op-type
-                 :table (generate-table-hints state-for-hints)
-                 :select (generate-column-hints state-for-hints (state-for-hints :columns))
-                 :select-partial (generate-column-hints state-for-hints (state-for-hints :columns))
-                 :order-partial (generate-column-hints state-for-hints (state-for-hints :order))
-                 :order (generate-column-hints state-for-hints (state-for-hints :order))
-                 :where-partial (generate-where-hints state-for-hints)
-                 :where (generate-all-column-hints state-for-hints)
-                 :update-partial (generate-update-hints state-for-hints)
-                 [])
-         hints (if (#{:select :select-partial :order :order-partial
-                      :where :where-partial :update-partial}
-                    op-type)
-                 (sort-column-hints hints)
-                 hints)
-         hint-key (case op-type
-                    :select-partial :select
-                    :order-partial :order
-                    :where-partial :where
-                    :update-partial :update
-                    op-type)]
-     (assoc-in state [:hints hint-key] (or hints [])))))
+         op-type (-> state-for-hints :operation :type)]
+     ;; :paths is handled separately: unlike every other op-type, which bucket
+     ;; it lands in (:table vs :paths) depends on the search's runtime result,
+     ;; not on op-type alone (see generate-path-hints).
+     (if (= op-type :paths)
+       (let [{:keys [key hints]} (generate-path-hints state-for-hints)]
+         (assoc-in state [:hints key] (or hints [])))
+       (let [hints (case op-type
+                     :table (generate-table-hints state-for-hints)
+                     :select (generate-column-hints state-for-hints (state-for-hints :columns))
+                     :select-partial (generate-column-hints state-for-hints (state-for-hints :columns))
+                     :order-partial (generate-column-hints state-for-hints (state-for-hints :order))
+                     :order (generate-column-hints state-for-hints (state-for-hints :order))
+                     :where-partial (generate-where-hints state-for-hints)
+                     :where (generate-all-column-hints state-for-hints)
+                     :update-partial (generate-update-hints state-for-hints)
+                     [])
+             hints (if (#{:select :select-partial :order :order-partial
+                          :where :where-partial :update-partial}
+                        op-type)
+                     (sort-column-hints hints)
+                     hints)
+             hint-key (case op-type
+                        :select-partial :select
+                        :order-partial :order
+                        :where-partial :where
+                        :update-partial :update
+                        op-type)]
+         (assoc-in state [:hints hint-key] (or hints [])))))))
