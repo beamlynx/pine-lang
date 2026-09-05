@@ -226,37 +226,105 @@
         target (mapcat identity (vals (:via relation))) rename {}))
      (concat parents children))))
 
+(defn- same-direction-hints
+  "Single-hop candidates from `table`, restricted to one direction only -
+  either every :refers-to relation (parent? true) or every :referred-by
+  one (parent? false) - used to walk 'the same kind of ownership step'
+  when checking whether a hop is transitively redundant (see
+  redundant-hop? below). Always an empty rename: only ever called on a
+  real intermediate table, same as real-relation-hints past the first hop."
+  [state table parent?]
+  (filter #(= (:parent %) parent?) (real-relation-hints state table {})))
+
+(defn- redundant-hop?
+  "True if `target` is reachable from `table` via some OTHER same-direction
+  (all :parent parent?) route of at least two hops - i.e. the direct
+  table->target edge in this direction is a transitively redundant
+  shortcut: dropping it loses no reachability, since the same destination
+  is already derivable through a longer, more specific chain. This is
+  transitive reduction (Aho/Garey/Ullman 1972) - the standard graph
+  operation for finding exactly this: the minimal edge set that preserves
+  a DAG's reachability, i.e. which edges are shortcuts implied by a
+  longer path already in the graph.
+
+  This is what a denormalized foreign key looks like: e.g.
+  document.company_id duplicates what company->employee->document
+  already reaches, so it's redundant - as opposed to a genuinely distinct
+  relation like department.lead_worker_id, which ISN'T redundant, because
+  department has no other same-direction route to worker at all. Fan-in
+  (how many tables point at the same target) can't tell these two cases
+  apart on its own - lead_worker_id and company_id might have similar
+  fan-in - only actually checking reachability can.
+
+  `table` itself is never revisited - looping back through the very
+  start doesn't count as an alternate route (some of these ownership
+  graphs contain real cycles once a 'wrong-direction' shortcut FK like
+  lead_worker_id is added - e.g. department->worker->team->department -
+  and going around one of those isn't a genuine alternate path either).
+  This matters even at depth 1: a self-referential FK (e.g.
+  employee.reports_to) puts `table` in its OWN same-direction neighbor
+  set, and without excluding `table` from the very first frontier too, a
+  search would bounce off that self-loop and re-derive `table`'s own
+  direct edges a second time, making every one of them look falsely
+  redundant with itself."
+  [state table target parent?]
+  (loop [frontier (->> (same-direction-hints state table parent?)
+                       (map :table)
+                       (remove #(or (= % target) (= % table)))
+                       distinct)
+         visited #{table}
+         depth 1]
+    (cond
+      (some #(= % target) frontier) true
+      (or (empty? frontier) (>= depth max-path-depth)) false
+      :else
+      (recur (->> frontier
+                  (mapcat #(same-direction-hints state % parent?))
+                  (map :table)
+                  (remove visited)
+                  distinct)
+             (into visited frontier)
+             (inc depth)))))
+
 (defn- path-priority
-  "A path's sort key: fewest direction changes first, then fewest total
-  hops as the tiebreak. Lower sorts first.
+  "A path's sort key: fewest transitively-redundant hops first, then
+  fewest direction changes, then fewest total hops as the final tiebreak.
+  Lower sorts first.
 
-  A run of hops all in the same direction (all child, e.g.
+  Redundant hops (see redundant-hop? above) are checked first and
+  outrank everything else: a denormalized shortcut FK is the least
+  meaningful reason two tables are 'connected', even when it's also the
+  shortest and most direction-pure route. Direction changes are checked
+  next - a run of hops all in the same direction (all child, e.g.
   company->employee->document, or all parent, e.g. the same route read
-  backwards) is a coherent 'zoom in' or 'zoom out' - equally meaningful
-  either way, which is why this only counts CHANGES of direction, not
-  parent hops specifically (an earlier version of this penalized parent
-  hops directly, which wrongly favored the child direction over the
-  parent one - they're symmetric). A path that hops up and then back down
-  (or vice versa) is a detour through a branch unrelated to either table,
-  and is only worth taking when nothing more direct exists.
+  backwards) is a coherent 'zoom in' or 'zoom out', equally meaningful
+  either way, which is why this counts CHANGES of direction rather than
+  penalizing one direction over the other - they're symmetric. A path
+  that hops up and then back down (or vice versa) is a detour through a
+  branch unrelated to either table, worth taking only when nothing more
+  direct exists.
 
-  This is turn-penalty shortest path (the technique road-network routers
-  use to penalize a U-turn/reversal, not just distance) - a hop's cost
-  depends on the direction of the hop *before* it, not just the hop
-  itself. It's solved here the standard way: rather than track '(table,
-  last-direction)' as explicit search state, the cost is just recomputed
-  from the path so far each time (cheap at these lengths) - a direction
-  change between consecutive hops costs 1, staying the course costs 0.
-  Since a path can only ever gain turns as it's extended (never lose
-  one), this still makes find-table-paths below a uniform-cost search
-  (Dijkstra's algorithm) rather than plain breadth-first search: paths
-  are popped from the frontier in non-decreasing total cost, so a longer
-  but direction-pure route can outrank a shorter one that backtracks."
-  [hops]
-  (let [turns (->> (partition 2 1 hops)
+  Both are turn-penalty-shaped costs (the technique road-network routers
+  use to penalize a U-turn/reversal, or here, a denormalized shortcut -
+  not just distance): a hop's cost depends on context (the hop before
+  it, or the wider reference graph), not just the hop itself. Rather
+  than track that context as explicit search state, both are just
+  recomputed from the path so far each time (cheap at these lengths) -
+  and since a path can only ever gain redundant hops or turns as it's
+  extended (never lose one), this still makes find-table-paths below a
+  uniform-cost search (Dijkstra's algorithm) rather than plain
+  breadth-first search: paths are popped from the frontier in
+  non-decreasing total cost, so a longer but more meaningful route can
+  outrank a shorter, less meaningful one."
+  [state source-table hops]
+  (let [froms (into [source-table] (map :table (butlast hops)))
+        redundant (->> (map vector froms hops)
+                       (filter (fn [[from hop]] (redundant-hop? state from (:table hop) (:parent hop))))
+                       count)
+        turns (->> (partition 2 1 hops)
                    (filter (fn [[a b]] (not= (:parent a) (:parent b))))
                    count)]
-    [turns (count hops)]))
+    [redundant turns (count hops)]))
 
 (defn- find-table-paths
   "All simple paths from each of `sources` to `target-table` (optionally
@@ -286,12 +354,12 @@
                   (and (= (:table hop) target-table)
                        (or (nil? target-schema) (= (:schema hop) target-schema))))]
     (loop [frontier (for [{:keys [table rename]} sources]
-                      {:visited #{table} :hops [] :table table :rename rename})
+                      {:visited #{table} :hops [] :table table :rename rename :origin table})
            found []]
       (if (or (empty? frontier) (>= (count found) max-paths))
         found
-        (let [sorted (sort-by #(path-priority (:hops %)) frontier)
-              {:keys [visited hops table rename]} (first sorted)
+        (let [sorted (sort-by #(path-priority state (:origin %) (:hops %)) frontier)
+              {:keys [visited hops table rename origin]} (first sorted)
               rest-frontier (rest sorted)]
           (if (and (seq hops) (target? (last hops)))
             (recur rest-frontier (conj found hops))
@@ -301,7 +369,8 @@
                                   (map (fn [hop] {:visited (conj visited (:table hop))
                                                   :hops (conj hops hop)
                                                   :table (:table hop)
-                                                  :rename {}}))))]
+                                                  :rename {}
+                                                  :origin origin}))))]
               (recur (concat rest-frontier expanded) found))))))))
 
 (defn- reachable-table-names

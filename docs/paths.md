@@ -35,15 +35,18 @@ same pipe, though the grammar doesn't specifically forbid it, the same as `count
 company | ? document
 ```
 
-Returns three paths. All three routes here stay in one direction the whole way (company owns employee owns
-document), so the ordering is just shortest-first — see [Constraints](#constraints) for what changes once a
-route has to double back through a *different* direction instead:
+Returns three paths - but not shortest first:
 
 ```
-document .company_id
 employee .company_id | document .employee_id
 employee .company_id | document .created_by
+document .company_id
 ```
+
+`document.company_id` is the shortest route, but it's also a denormalized copy of what
+`company | employee | document` already reaches — the classic "every row also stores its tenant id" column —
+so it ranks last despite being one hop instead of two. See [Constraints](#constraints) for exactly what that
+means and why.
 
 ### Composed on top of an existing expression
 
@@ -67,17 +70,28 @@ table, `hints.paths` fills with the search results.
 
 - Only simple paths (no table visited twice) are considered, so `company | ? company` and a self-referential
   FK (e.g. `employee.reports_to`) never produce a path back to the table already in scope.
-- Ordered by fewest *direction changes* first, then by fewest total hops as the tiebreak — not shortest-first
-  alone. A run of hops that's all "child" (zooming in, e.g. `company` to its own `employee`) or all "parent"
-  (zooming out, e.g. `document` back up to the `employee` that owns it) is a coherent route in one direction;
-  neither direction is favored over the other. What's penalized is a route that switches — a parent hop
-  followed by a child hop, or vice versa — since that's a detour through a branch unrelated to either table.
-  Concretely: if `department` has a denormalized shortcut column pointing straight at a `worker` two levels
-  down, and that same `worker` has its own `shift`s, then `department | ? shift` returns the three-hop route
-  through the real `team`/`worker` hierarchy (all child hops) ahead of the two-hop route that takes the
-  shortcut and then has to double back down to `shift` (a direction change) — both are valid paths, but the
-  direction-pure one is the more meaningful answer. When every candidate route already stays in one direction
-  (as in the example above), this ordering and shortest-first coincide.
+- Ordered by fewest *transitively redundant* hops first, then fewest *direction changes*, then fewest total
+  hops as the final tiebreak — not shortest-first alone.
+  - A hop is **transitively redundant** if the table it lands on is already reachable another way, through a
+    longer chain of hops in the same direction. `document.company_id` is the textbook case: it duplicates
+    what `company | employee | document` already reaches, the same "every row also stores its tenant id"
+    column that denormalized multi-tenant schemas commonly add for query convenience. It isn't wrong to use,
+    but it's the least meaningful reason two tables are "connected", so it ranks behind any non-redundant
+    route regardless of length. A shortcut like `department.lead_worker_id` (a department's directly-assigned
+    lead worker) is different: `department` has no *other* route to `worker` at all, so it isn't a duplicate
+    of anything and isn't penalized here — it's a genuinely distinct relationship that only happens to also
+    be reachable, less directly, through `team`.
+  - A **direction change** is a route that hops "up" (parent) then "down" (child), or vice versa, partway
+    through. A run of hops that's all child (zooming in, e.g. `company` to its own `employee`) or all parent
+    (zooming out, e.g. `document` back up to the `employee` that owns it) is a coherent route in one
+    direction; neither direction is favored over the other. What's penalized is only the switch between them,
+    since that's a detour through a branch unrelated to either table. Concretely: `department | ? shift`
+    returns the three-hop route through the real `team`/`worker` hierarchy (all child hops) ahead of a
+    two-hop route that takes the `lead_worker_id` shortcut and then has to double back down to `shift` (one
+    direction change) — both are valid, but the direction-pure one is the more meaningful answer.
+
+  When every candidate route is equally non-redundant and equally direction-pure (or the schema has no
+  redundant/shortcut edges at all, as most of it doesn't), this ordering and shortest-first coincide.
 - Capped at 4 hops and 50 total results, to keep a densely-connected schema (e.g. most tables FK'd to a shared
   tenant/company hub) from exploding combinatorially. This is not a guarantee that every existing path is
   found — only that the search stays bounded, and that whichever paths it does return are the best-ordered
@@ -87,16 +101,26 @@ table, `hints.paths` fills with the search results.
 
 ## Implementation
 
-`ast/hints.clj`'s `find-table-paths` runs a *turn-penalty* shortest-path search — the technique road-network
-routers use to penalize a U-turn/reversal, not just distance — over the same `:refers-to`/`:referred-by`
-reference map [joins.md](joins.md#reference-map-structure-dbpostgresclj) already builds, calling
-`real-relation-hints` (the real-relation half of `relation-hints`, generalized to run again at every
-intermediate hop) at each step. A hop's cost depends on the hop before it, not just the hop itself — 0 if it
-continues in the same direction (both parent, or both child), 1 if it changes direction — so candidate routes
-are popped from the search frontier in `path-priority` order (`[direction-change-count, total-hop-count]`,
-ascending) rather than level-by-level: this is a uniform-cost search (Dijkstra's algorithm), the same family of
-algorithm as plain breadth-first search, just generalized from unweighted edges to edges whose cost depends on
-the direction of the previous one. The search starts from `resolve-table` on `:current` — whatever real table
-or variable the preceding pipe left off at, since the `:paths` operation itself adds no table/join of its own
-(see `ast/main.clj`'s `handle-op`). Each hop keeps the same shape a single-hop table hint already has
-(schema/table/column/related-column/parent/resolution/pine) — a path is a subset of that, not a new shape.
+`ast/hints.clj`'s `find-table-paths` runs a uniform-cost search (Dijkstra's algorithm) over the same
+`:refers-to`/`:referred-by` reference map [joins.md](joins.md#reference-map-structure-dbpostgresclj) already
+builds, calling `real-relation-hints` (the real-relation half of `relation-hints`, generalized to run again at
+every intermediate hop) at each step. A hop's cost isn't fixed - it depends on context, checked fresh each time
+by `path-priority`:
+
+- **Redundant?** (`redundant-hop?`) - is the hop's destination already reachable via some *other*
+  same-direction route of at least two hops? This is transitive reduction (Aho/Garey/Ullman 1972): the
+  standard operation for finding which edges in a graph are shortcuts already implied by a longer path. Costs
+  1 if so, 0 otherwise.
+- **Direction change?** - does this hop's direction (parent/child) differ from the one before it? This is
+  turn-penalty shortest path, the technique road-network routers use to penalize a U-turn/reversal rather than
+  just distance - a hop's cost depends on the hop immediately before it. Costs 1 if the direction changed, 0
+  otherwise.
+
+Candidate routes are popped from the search frontier in `path-priority` order (`[redundant-hop-count,
+direction-change-count, total-hop-count]`, ascending) rather than level-by-level: this is still the same
+family of algorithm as plain breadth-first search, just generalized from unweighted edges to edges whose cost
+depends on the wider reference graph and the hop before them, rather than being fixed. The search starts from
+`resolve-table` on `:current` — whatever real table or variable the preceding pipe left off at, since the
+`:paths` operation itself adds no table/join of its own (see `ast/main.clj`'s `handle-op`). Each hop keeps the
+same shape a single-hop table hint already has (schema/table/column/related-column/parent/resolution/pine) — a
+path is a subset of that, not a new shape.

@@ -329,13 +329,14 @@
                 (filter #(or (= (:resolution %) "synthetic") (= (:table %) "company")))))))
 
   (testing "Generate `paths` hints - direct and multi-hop joins between two tables"
-    ;; company -> document: one direct FK (company_id), plus two 2-hop routes
-    ;; through employee (document has two FKs to employee: employee_id, created_by).
-    ;; Shortest first.
-    (is (= [{:pine "z.document .company_id" :length 1
-             :hops [{:schema "z" :table "document" :column "company_id" :related-column "id"
-                     :parent false :resolution "fk" :pine "z.document .company_id"}]}
-            {:pine "y.employee .company_id | z.document .employee_id" :length 2
+    ;; company -> document: two 2-hop routes through employee (document has
+    ;; two FKs to employee: employee_id, created_by), plus one direct FK
+    ;; (company_id) - but document.company_id is a transitively redundant
+    ;; shortcut (company -> employee -> document already reaches document),
+    ;; a denormalized copy of what the employee-mediated routes already
+    ;; give you, so it ranks last despite being the shortest - see the
+    ;; "transitively redundant" testing block below for why.
+    (is (= [{:pine "y.employee .company_id | z.document .employee_id" :length 2
              :hops [{:schema "y" :table "employee" :column "company_id" :related-column "id"
                      :parent false :resolution "fk" :pine "y.employee .company_id"}
                     {:schema "z" :table "document" :column "employee_id" :related-column "id"
@@ -344,7 +345,10 @@
              :hops [{:schema "y" :table "employee" :column "company_id" :related-column "id"
                      :parent false :resolution "fk" :pine "y.employee .company_id"}
                     {:schema "z" :table "document" :column "created_by" :related-column "id"
-                     :parent false :resolution "fk" :pine "z.document .created_by"}]}]
+                     :parent false :resolution "fk" :pine "z.document .created_by"}]}
+            {:pine "z.document .company_id" :length 1
+             :hops [{:schema "z" :table "document" :column "company_id" :related-column "id"
+                     :parent false :resolution "fk" :pine "z.document .company_id"}]}]
            (-> "company | ? document" gen :paths)))
 
     ;; Schema-qualified target narrows to that schema only
@@ -378,17 +382,37 @@
     ;; route now wins despite being longer.
     (is (= [{:pine "w.team .department_id | w.worker .team_id | w.shift .worker_id" :length 3}
             {:pine "w.worker .lead_worker_id :parent | w.shift .worker_id" :length 2}]
-           (->> (-> "department | ? shift" gen :paths) (map #(select-keys % [:pine :length])))))
+           (->> (-> "department | ? shift" gen :paths) (map #(select-keys % [:pine :length]))))))
 
-    ;; Symmetric case, searching the other direction: worker -> company-like
-    ;; "up" chains are just as direction-pure as "down" chains - document ->
-    ;; company (all parent hops) sorts purely by length, the same as
-    ;; company -> document (all child hops) does above. Neither direction is
-    ;; privileged over the other.
-    (is (= [{:pine "x.company .company_id :parent" :length 1}
-            {:pine "y.employee .employee_id :parent | x.company .company_id :parent" :length 2}
-            {:pine "y.employee .created_by :parent | x.company .company_id :parent" :length 2}]
-           (->> (-> "document | ? company" gen :paths) (map #(select-keys % [:pine :length]))))))
+  (testing "Generate `paths` hints - transitively redundant edges (denormalized FKs) rank last"
+    ;; document.company_id duplicates what company -> employee -> document
+    ;; already reaches (transitive reduction, Aho/Garey/Ullman 1972) - a
+    ;; classic denormalized "every row also stores its tenant id" column, as
+    ;; opposed to department.lead_worker_id above, which ISN'T redundant:
+    ;; department has no OTHER same-direction route to worker at all, so
+    ;; that shortcut is a genuinely distinct relationship, not a duplicate
+    ;; of a longer chain, and keeps winning on length as already shown.
+    (is (= ["y.employee .company_id | z.document .employee_id"
+            "y.employee .company_id | z.document .created_by"
+            "z.document .company_id"]
+           (->> (-> "company | ? document" gen :paths) (map :pine))))
+
+    ;; Symmetric case, searching the other direction: company.company_id
+    ;; read backwards is still the same redundant edge, so document ->
+    ;; company ranks it last too - the same standard, not a new one, in
+    ;; either direction.
+    (is (= ["y.employee .employee_id :parent | x.company .company_id :parent"
+            "y.employee .created_by :parent | x.company .company_id :parent"
+            "x.company .company_id :parent"]
+           (->> (-> "document | ? company" gen :paths) (map :pine))))
+
+    ;; A self-referential FK (employee.reports_to) must not fool the
+    ;; redundancy check into bouncing off employee's own self-loop and
+    ;; falsely "rediscovering" a direct edge as if it had an alternate route
+    ;; - company -> employee (direct, via company_id) stays non-redundant
+    ;; and ranked first, ahead of the two longer, turn-taking routes through
+    ;; document.
+    (is (= "y.employee .company_id" (:pine (first (-> "company | ? employee" gen :paths))))))
 
   (testing "`? token` falls back to table-name suggestions until the token names a real table -
             but only ones actually reachable from the current context, not every table in the
