@@ -92,7 +92,7 @@ table, `hints.paths` fills with the search results.
 
   When every candidate route is equally non-redundant and equally direction-pure (or the schema has no
   redundant/shortcut edges at all, as most of it doesn't), this ordering and shortest-first coincide.
-- Capped at 4 hops, 20 total results, and 150ms of search time, to keep a densely-connected schema (e.g. most
+- Capped at 4 hops, 10 total results, and 150ms of search time, to keep a densely-connected schema (e.g. most
   tables FK'd to a shared tenant/company hub) from exploding combinatorially. The first two bound any one
   path's length and how many are collected once real matches start turning up; the time cap covers what
   neither does on its own — an unreachable, or genuinely rare, target never trips the result-count cap (nothing

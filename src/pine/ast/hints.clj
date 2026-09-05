@@ -208,7 +208,7 @@
 ;; bounded rather than trying to be individually "smart" about which paths
 ;; matter more.
 (def ^:private max-path-depth 4)
-(def ^:private max-paths 20)
+(def ^:private max-paths 10)
 
 ;; A hop/result cap alone doesn't bound how much SEARCHING an unreachable or
 ;; genuinely rare target can force - max-paths never engages if nothing is
