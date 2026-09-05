@@ -434,3 +434,25 @@
     (is (= {:type :assign :value "my_var"}
            (last (:result (parse "company | where: id = 1 | s: name |= my_var")))))))
 
+(deftest test-paths
+  (testing "`? table` parses as a :paths op, composed after an ordinary pipe chain"
+    (is (= [{:type :table :value {:table "company"}}
+            {:type :paths :value {:table ""}}]
+           (p "company | ?")))
+    (is (= [{:type :table :value {:table "company"}}
+            {:type :paths :value {:table "employee"}}]
+           (p "company | ? employee")))
+    (is (= [{:type :table :value {:table "company"}}
+            {:type :paths :value {:table "employee" :schema "y"}}]
+           (p "company | ? y.employee"))))
+
+  (testing "`? table` composes on top of an arbitrary pipe chain, not just a bare table"
+    (is (= [{:type :table :value {:table "company"}}
+            {:type :where :value [(dt/column "id") "=" (dt/number "1")]}
+            {:type :paths :value {:table "employee"}}]
+           (p "company | where: id = 1 | ? employee"))))
+
+  (testing "`? table` has no table-mods of its own - not part of PATHS's grammar"
+    (is (= [{:type :paths :value {:table "employee"}}]
+           (p "? employee")))))
+

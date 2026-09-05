@@ -1,10 +1,11 @@
 OPERATIONS := <ws*> OPERATION <ws*> (<"|"> <ws*> OPERATION <ws*>)*
 ASSIGN     := <"="> <ws*> symbol
 
-OPERATION    := SELECT-PARTIAL | SELECT | WHERE-PARTIAL | WHERE | LIMIT | FROM | ORDER-PARTIAL | ORDER | COUNT | DELETE-ACTION | DELETE | UPDATE-PARTIAL | UPDATE-ACTION | GROUP | ASSIGN | TABLE
+OPERATION    := SELECT-PARTIAL | SELECT | WHERE-PARTIAL | WHERE | LIMIT | FROM | ORDER-PARTIAL | ORDER | COUNT | DELETE-ACTION | DELETE | UPDATE-PARTIAL | UPDATE-ACTION | GROUP | ASSIGN | PATHS | TABLE
 
 
 TABLE             := table table-mods
+PATHS             := <"?"> <ws*> table
 
 SELECT-PARTIAL    := <select-op> aliased-columns <","> <ws*> partial-alias | <select-op> partial-alias | <select-op> aliased-columns? <",">?
 SELECT            := <select-op> aliased-columns

@@ -326,5 +326,110 @@
             {:schema nil :table "employee" :column "id" :related-column "id" :parent false
              :resolution "synthetic" :pine "employee"}]
            (->> (-> "employee | s: id, company_id | l: 10 | " gen :table)
-                (filter #(or (= (:resolution %) "synthetic") (= (:table %) "company"))))))))
+                (filter #(or (= (:resolution %) "synthetic") (= (:table %) "company")))))))
+
+  (testing "Generate `paths` hints - direct and multi-hop joins between two tables"
+    ;; company -> document: two 2-hop routes through employee (document has
+    ;; two FKs to employee: employee_id, created_by), plus one direct FK
+    ;; (company_id) - but document.company_id is a transitively redundant
+    ;; shortcut (company -> employee -> document already reaches document),
+    ;; a denormalized copy of what the employee-mediated routes already
+    ;; give you, so it ranks last despite being the shortest - see the
+    ;; "transitively redundant" testing block below for why.
+    (is (= [{:pine "y.employee .company_id | z.document .employee_id" :length 2
+             :hops [{:schema "y" :table "employee" :column "company_id" :related-column "id"
+                     :parent false :resolution "fk" :pine "y.employee .company_id"}
+                    {:schema "z" :table "document" :column "employee_id" :related-column "id"
+                     :parent false :resolution "fk" :pine "z.document .employee_id"}]}
+            {:pine "y.employee .company_id | z.document .created_by" :length 2
+             :hops [{:schema "y" :table "employee" :column "company_id" :related-column "id"
+                     :parent false :resolution "fk" :pine "y.employee .company_id"}
+                    {:schema "z" :table "document" :column "created_by" :related-column "id"
+                     :parent false :resolution "fk" :pine "z.document .created_by"}]}
+            {:pine "z.document .company_id" :length 1
+             :hops [{:schema "z" :table "document" :column "company_id" :related-column "id"
+                     :parent false :resolution "fk" :pine "z.document .company_id"}]}]
+           (-> "company | ? document" gen :paths)))
+
+    ;; Schema-qualified target narrows to that schema only
+    (is (= 3 (count (-> "company | ? z.document" gen :paths))))
+    (is (= [] (-> "company | ? x.document" gen :paths)))
+
+    ;; Searching a table against itself always comes back empty - no
+    ;; special-casing, the source is already in its own visited set.
+    (is (= [] (-> "company | ? company" gen :paths)))
+    (is (= [] (-> "employee | ? employee" gen :paths))) ;; even with a self-referential FK (reports_to)
+
+    ;; No preceding table at all - nothing to search from.
+    (is (= [] (-> "? document" gen :paths))))
+
+  (testing "Generate `paths` hints - fewest direction-changes first, not just shortest-first"
+    ;; department -> worker: the 1-hop shortcut (lead_worker_id, a PARENT
+    ;; hop) and the 2-hop route through team (both child hops) are each
+    ;; direction-pure on their own (a single hop can't "change direction"),
+    ;; so the tiebreak is just hop count - the shortcut wins. Direction only
+    ;; matters once a route would have to CHANGE direction partway - see
+    ;; department -> shift below.
+    (is (= ["w.worker .lead_worker_id :parent"
+            "w.team .department_id | w.worker .team_id"]
+           (->> (-> "department | ? worker" gen :paths) (map :pine))))
+
+    ;; department -> shift: the shortcut now has to double back (department
+    ;; -[parent]-> worker -[child]-> shift, one direction change) to reach a
+    ;; target one hop further out than worker itself, while the "real"
+    ;; hierarchy route (department -[child]-> team -[child]-> worker
+    ;; -[child]-> shift) never changes direction. The longer, direction-pure
+    ;; route now wins despite being longer.
+    (is (= [{:pine "w.team .department_id | w.worker .team_id | w.shift .worker_id" :length 3}
+            {:pine "w.worker .lead_worker_id :parent | w.shift .worker_id" :length 2}]
+           (->> (-> "department | ? shift" gen :paths) (map #(select-keys % [:pine :length]))))))
+
+  (testing "Generate `paths` hints - transitively redundant edges (denormalized FKs) rank last"
+    ;; document.company_id duplicates what company -> employee -> document
+    ;; already reaches (transitive reduction, Aho/Garey/Ullman 1972) - a
+    ;; classic denormalized "every row also stores its tenant id" column, as
+    ;; opposed to department.lead_worker_id above, which ISN'T redundant:
+    ;; department has no OTHER same-direction route to worker at all, so
+    ;; that shortcut is a genuinely distinct relationship, not a duplicate
+    ;; of a longer chain, and keeps winning on length as already shown.
+    (is (= ["y.employee .company_id | z.document .employee_id"
+            "y.employee .company_id | z.document .created_by"
+            "z.document .company_id"]
+           (->> (-> "company | ? document" gen :paths) (map :pine))))
+
+    ;; Symmetric case, searching the other direction: company.company_id
+    ;; read backwards is still the same redundant edge, so document ->
+    ;; company ranks it last too - the same standard, not a new one, in
+    ;; either direction.
+    (is (= ["y.employee .employee_id :parent | x.company .company_id :parent"
+            "y.employee .created_by :parent | x.company .company_id :parent"
+            "x.company .company_id :parent"]
+           (->> (-> "document | ? company" gen :paths) (map :pine))))
+
+    ;; A self-referential FK (employee.reports_to) must not fool the
+    ;; redundancy check into bouncing off employee's own self-loop and
+    ;; falsely "rediscovering" a direct edge as if it had an alternate route
+    ;; - company -> employee (direct, via company_id) stays non-redundant
+    ;; and ranked first, ahead of the two longer, turn-taking routes through
+    ;; document.
+    (is (= "y.employee .company_id" (:pine (first (-> "company | ? employee" gen :paths))))))
+
+  (testing "`? token` falls back to table-name suggestions until the token names a real table -
+            but only ones actually reachable from the current context, not every table in the
+            schema, since anything else is guaranteed to resolve to zero paths once fully typed"
+    ;; "d" substring-matches both "document" and "order" - only "document" is
+    ;; reachable from company (order has no path to/from company at all), so
+    ;; "order" is correctly excluded even though it matches the typed token.
+    (is (= [{:schema "z" :table "document" :pine "z.document"}]
+           (-> "company | ? d" gen :table)))
+    (is (= [] (-> "company | ? document" gen :table)))
+
+    ;; Empty token shows only what's reachable from company (employee,
+    ;; document) - not all 7 known tables, e.g. `report`/`order`/`user`/
+    ;; `customer` have no path to/from company and are correctly excluded.
+    (is (= #{"employee" "document"}
+           (->> (-> "company | ? " gen :table) (map :table) set)))
+
+    ;; No preceding table at all - nothing reachable, so nothing suggested.
+    (is (= [] (-> "? doc" gen :table)))))
 

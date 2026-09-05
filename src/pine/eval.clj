@@ -374,6 +374,9 @@
       (= type :group) (build-group-query state)
       ;; no op
       (= type :delete) {:query " /* No SQL. Evaluate the pine expression for results */ "}
+      ;; :paths only generates candidate pine expressions (see hints.paths) -
+      ;; it never builds a query of its own, same as bare :delete above.
+      (= type :paths) {:query " /* No SQL. Pick a path from hints.paths and build that expression instead */ "}
       :else (build-select-query (update state :limit #(or % 250))))))
 
 (defn formatted-query [build-result]
