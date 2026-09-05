@@ -359,30 +359,36 @@
     ;; No preceding table at all - nothing to search from.
     (is (= [] (-> "? document" gen :paths))))
 
-  (testing "Generate `paths` hints - fewest-parent-hops-first, not just shortest-first"
-    ;; department -> team -> worker is the "real" hierarchy (both hops are
-    ;; child hops); department also keeps a direct, denormalized pointer at
-    ;; its own lead worker (lead_worker_id), a 1-hop shortcut that happens
-    ;; to point the "wrong" way relative to the hierarchy above - a PARENT
-    ;; hop, since department is the one with the FK column here. The
-    ;; all-child 2-hop route through team wins despite being longer.
-    (is (= [{:pine "w.team .department_id | w.worker .team_id" :length 2
-             :hops [{:schema "w" :table "team" :column "department_id" :related-column "id"
-                     :parent false :resolution "fk" :pine "w.team .department_id"}
-                    {:schema "w" :table "worker" :column "team_id" :related-column "id"
-                     :parent false :resolution "fk" :pine "w.worker .team_id"}]}
-            {:pine "w.worker .lead_worker_id :parent" :length 1
-             :hops [{:schema "w" :table "worker" :column "id" :related-column "lead_worker_id"
-                     :parent true :resolution "fk" :pine "w.worker .lead_worker_id :parent"}]}]
-           (-> "department | ? worker" gen :paths)))
+  (testing "Generate `paths` hints - fewest direction-changes first, not just shortest-first"
+    ;; department -> worker: the 1-hop shortcut (lead_worker_id, a PARENT
+    ;; hop) and the 2-hop route through team (both child hops) are each
+    ;; direction-pure on their own (a single hop can't "change direction"),
+    ;; so the tiebreak is just hop count - the shortcut wins. Direction only
+    ;; matters once a route would have to CHANGE direction partway - see
+    ;; department -> shift below.
+    (is (= ["w.worker .lead_worker_id :parent"
+            "w.team .department_id | w.worker .team_id"]
+           (->> (-> "department | ? worker" gen :paths) (map :pine))))
 
-    ;; Symmetric case, searching the other direction: from worker, the same
-    ;; shortcut is now a CHILD hop (worker is the parent side of
-    ;; lead_worker_id) - so the direct route wins both on hop count AND
-    ;; parent-hop count, no conflict to resolve.
-    (is (= ["w.department .lead_worker_id"
-            "w.team .team_id :parent | w.department .department_id :parent"]
-           (->> (-> "worker | ? department" gen :paths) (map :pine)))))
+    ;; department -> shift: the shortcut now has to double back (department
+    ;; -[parent]-> worker -[child]-> shift, one direction change) to reach a
+    ;; target one hop further out than worker itself, while the "real"
+    ;; hierarchy route (department -[child]-> team -[child]-> worker
+    ;; -[child]-> shift) never changes direction. The longer, direction-pure
+    ;; route now wins despite being longer.
+    (is (= [{:pine "w.team .department_id | w.worker .team_id | w.shift .worker_id" :length 3}
+            {:pine "w.worker .lead_worker_id :parent | w.shift .worker_id" :length 2}]
+           (->> (-> "department | ? shift" gen :paths) (map #(select-keys % [:pine :length])))))
+
+    ;; Symmetric case, searching the other direction: worker -> company-like
+    ;; "up" chains are just as direction-pure as "down" chains - document ->
+    ;; company (all parent hops) sorts purely by length, the same as
+    ;; company -> document (all child hops) does above. Neither direction is
+    ;; privileged over the other.
+    (is (= [{:pine "x.company .company_id :parent" :length 1}
+            {:pine "y.employee .employee_id :parent | x.company .company_id :parent" :length 2}
+            {:pine "y.employee .created_by :parent | x.company .company_id :parent" :length 2}]
+           (->> (-> "document | ? company" gen :paths) (map #(select-keys % [:pine :length]))))))
 
   (testing "`? token` falls back to table-name suggestions until the token names a real table -
             but only ones actually reachable from the current context, not every table in the

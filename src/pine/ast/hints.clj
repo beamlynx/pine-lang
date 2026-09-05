@@ -227,21 +227,36 @@
      (concat parents children))))
 
 (defn- path-priority
-  "A path's sort key: fewest parent hops first, then fewest total hops as
-  the tiebreak - a child relation (`:parent false`, e.g. company->employee)
-  is the meaningful direction a user is usually asking about, while a
-  parent hop (e.g. document->employee) is the 'zoom out' direction and
-  worth taking only when nothing more direct exists. Lower sorts first.
+  "A path's sort key: fewest direction changes first, then fewest total
+  hops as the tiebreak. Lower sorts first.
 
-  This makes find-table-paths below a uniform-cost search (Dijkstra's
-  algorithm) rather than plain breadth-first search: a child hop costs 0,
-  a parent hop costs 1, and paths are popped from the frontier in
-  non-decreasing total cost - so `employee | ? document` returns the
-  direct one-hop child route ahead of the two-hop route through
-  employee's own parent company, even though both are valid and the
-  parent route used to win ties by depth alone under plain BFS."
+  A run of hops all in the same direction (all child, e.g.
+  company->employee->document, or all parent, e.g. the same route read
+  backwards) is a coherent 'zoom in' or 'zoom out' - equally meaningful
+  either way, which is why this only counts CHANGES of direction, not
+  parent hops specifically (an earlier version of this penalized parent
+  hops directly, which wrongly favored the child direction over the
+  parent one - they're symmetric). A path that hops up and then back down
+  (or vice versa) is a detour through a branch unrelated to either table,
+  and is only worth taking when nothing more direct exists.
+
+  This is turn-penalty shortest path (the technique road-network routers
+  use to penalize a U-turn/reversal, not just distance) - a hop's cost
+  depends on the direction of the hop *before* it, not just the hop
+  itself. It's solved here the standard way: rather than track '(table,
+  last-direction)' as explicit search state, the cost is just recomputed
+  from the path so far each time (cheap at these lengths) - a direction
+  change between consecutive hops costs 1, staying the course costs 0.
+  Since a path can only ever gain turns as it's extended (never lose
+  one), this still makes find-table-paths below a uniform-cost search
+  (Dijkstra's algorithm) rather than plain breadth-first search: paths
+  are popped from the frontier in non-decreasing total cost, so a longer
+  but direction-pure route can outrank a shorter one that backtracks."
   [hops]
-  [(count (filter :parent hops)) (count hops)])
+  (let [turns (->> (partition 2 1 hops)
+                   (filter (fn [[a b]] (not= (:parent a) (:parent b))))
+                   count)]
+    [turns (count hops)]))
 
 (defn- find-table-paths
   "All simple paths from each of `sources` to `target-table` (optionally

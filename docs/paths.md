@@ -35,9 +35,9 @@ same pipe, though the grammar doesn't specifically forbid it, the same as `count
 company | ? document
 ```
 
-Returns three paths. All three routes here happen to be pure "child" hops (company owns employee owns
+Returns three paths. All three routes here stay in one direction the whole way (company owns employee owns
 document), so the ordering is just shortest-first — see [Constraints](#constraints) for what changes once a
-route has to go through a *parent* hop instead:
+route has to double back through a *different* direction instead:
 
 ```
 document .company_id
@@ -67,14 +67,17 @@ table, `hints.paths` fills with the search results.
 
 - Only simple paths (no table visited twice) are considered, so `company | ? company` and a self-referential
   FK (e.g. `employee.reports_to`) never produce a path back to the table already in scope.
-- Ordered by fewest *parent* hops first, then by fewest total hops as the tiebreak — not shortest-first alone.
-  A child relation (e.g. `company` to its own `employee`) is the direction someone asking "how do these
-  connect" usually means; a parent hop (e.g. `document` back up to the `employee` that owns it) is the
-  "zoom out" direction, worth taking only when nothing more direct exists. Concretely: if `company` has an
-  `employee`, and `employee` has a `document`, then `employee | ? document` returns the direct one-hop child
-  route (`document .employee_id`) ahead of the two-hop route back through `company` — both are valid paths,
-  but the all-child one is the answer someone's actually asking for. When every candidate route happens to be
-  all-child hops (as in the example above), this ordering and shortest-first coincide.
+- Ordered by fewest *direction changes* first, then by fewest total hops as the tiebreak — not shortest-first
+  alone. A run of hops that's all "child" (zooming in, e.g. `company` to its own `employee`) or all "parent"
+  (zooming out, e.g. `document` back up to the `employee` that owns it) is a coherent route in one direction;
+  neither direction is favored over the other. What's penalized is a route that switches — a parent hop
+  followed by a child hop, or vice versa — since that's a detour through a branch unrelated to either table.
+  Concretely: if `department` has a denormalized shortcut column pointing straight at a `worker` two levels
+  down, and that same `worker` has its own `shift`s, then `department | ? shift` returns the three-hop route
+  through the real `team`/`worker` hierarchy (all child hops) ahead of the two-hop route that takes the
+  shortcut and then has to double back down to `shift` (a direction change) — both are valid paths, but the
+  direction-pure one is the more meaningful answer. When every candidate route already stays in one direction
+  (as in the example above), this ordering and shortest-first coincide.
 - Capped at 4 hops and 50 total results, to keep a densely-connected schema (e.g. most tables FK'd to a shared
   tenant/company hub) from exploding combinatorially. This is not a guarantee that every existing path is
   found — only that the search stays bounded, and that whichever paths it does return are the best-ordered
@@ -84,14 +87,16 @@ table, `hints.paths` fills with the search results.
 
 ## Implementation
 
-`ast/hints.clj`'s `find-table-paths` runs a uniform-cost search (Dijkstra's algorithm) over the same
-`:refers-to`/`:referred-by` reference map [joins.md](joins.md#reference-map-structure-dbpostgresclj) already
-builds, calling `real-relation-hints` (the real-relation half of `relation-hints`, generalized to run again at
-every intermediate hop) at each step. Each candidate route in the search frontier is popped in `path-priority`
-order — `[parent-hop-count, total-hop-count]`, ascending — rather than level-by-level, so a child hop
-effectively costs 0 and a parent hop costs 1: this is the same family of algorithm as plain breadth-first
-search, just generalized from unweighted edges to two-tier-weighted ones (the specific two-weight case is
-sometimes called "0-1 BFS"). The search starts from `resolve-table` on `:current` — whatever real table or
-variable the preceding pipe left off at, since the `:paths` operation itself adds no table/join of its own
+`ast/hints.clj`'s `find-table-paths` runs a *turn-penalty* shortest-path search — the technique road-network
+routers use to penalize a U-turn/reversal, not just distance — over the same `:refers-to`/`:referred-by`
+reference map [joins.md](joins.md#reference-map-structure-dbpostgresclj) already builds, calling
+`real-relation-hints` (the real-relation half of `relation-hints`, generalized to run again at every
+intermediate hop) at each step. A hop's cost depends on the hop before it, not just the hop itself — 0 if it
+continues in the same direction (both parent, or both child), 1 if it changes direction — so candidate routes
+are popped from the search frontier in `path-priority` order (`[direction-change-count, total-hop-count]`,
+ascending) rather than level-by-level: this is a uniform-cost search (Dijkstra's algorithm), the same family of
+algorithm as plain breadth-first search, just generalized from unweighted edges to edges whose cost depends on
+the direction of the previous one. The search starts from `resolve-table` on `:current` — whatever real table
+or variable the preceding pipe left off at, since the `:paths` operation itself adds no table/join of its own
 (see `ast/main.clj`'s `handle-op`). Each hop keeps the same shape a single-hop table hint already has
 (schema/table/column/related-column/parent/resolution/pine) — a path is a subset of that, not a new shape.

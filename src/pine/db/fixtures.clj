@@ -43,12 +43,14 @@
 ;;              |     id (PK)      |
 ;;              +------------------+
 ;;
-;;   `w`.`department` / `w`.`team` / `w`.`worker` - isolated from the tree
-;;   above on purpose (see the foreign-keys comment below): its only job is
-;;   to give find-table-paths a case where the shortest route and the
-;;   fewest-parent-hops route disagree, which company/employee/document
-;;   can't (every route there is already all-child, so shortest-first and
-;;   fewest-parent-hops-first always pick the same winner).
+;;   `w`.`department` / `w`.`team` / `w`.`worker` / `w`.`shift` - isolated
+;;   from the tree above on purpose (see the foreign-keys comment below):
+;;   its only job is to give find-table-paths a case where a shorter route
+;;   that changes direction (parent hop then child hop, or vice versa)
+;;   competes against a longer route that stays in one direction the whole
+;;   way, which company/employee/document can't (every route there already
+;;   stays in one direction, so shortest-first and fewest-direction-changes
+;;   always pick the same winner).
 ;;
 ;;     +------------------------+
 ;;     |     w.department       |
@@ -70,6 +72,13 @@
 ;;                          +-------|      team_id (FK)      |
 ;;                                  |          id (PK)       |<--+ (lead_worker_id)
 ;;                                  +------------------------+
+;;                                      ^
+;;                                      |       +------------------------+
+;;                                      |       |       w.shift          |
+;;                                      |       |                        |
+;;                                      +-------|      worker_id (FK)    |
+;;                                              |          id (PK)       |
+;;                                              +------------------------+
 
 (def foreign-keys [["y"  "employee"      "company_id"    "x"  "company"  "id"]
                    ["z"  "document"      "employee_id"   "y"  "employee" "id"]
@@ -80,16 +89,21 @@
 
                    ["z"  "document"      "company_id"    "x"  "company" "id"]
 
-                   ;; department -> team -> worker is the "real" hierarchy
-                   ;; (both hops are child hops, department | ? worker).
+                   ;; department -> team -> worker -> shift is the "real"
+                   ;; hierarchy (every hop here is a child hop).
                    ["w"  "team"          "department_id" "w"  "department" "id"]
                    ["w"  "worker"        "team_id"       "w"  "team"       "id"]
+                   ["w"  "shift"         "worker_id"     "w"  "worker"     "id"]
                    ;; department also keeps a direct, denormalized pointer at
                    ;; its own lead worker - a real-world shortcut FK that
                    ;; happens to point the "wrong" way relative to the
-                   ;; hierarchy above: department refers to worker here, so
-                   ;; this 1-hop route is a PARENT hop, competing against the
-                   ;; 2-hop, all-child route through team.
+                   ;; hierarchy above (department refers to worker here, a
+                   ;; PARENT hop). `department | ? shift` can reach shift
+                   ;; either via this shortcut then back down to shift (a
+                   ;; parent hop followed by a child hop - one direction
+                   ;; change) or via team/worker (three child hops, zero
+                   ;; direction changes) - the longer, direction-pure route
+                   ;; should win.
                    ["w"  "department"    "lead_worker_id" "w"  "worker"     "id"]])
 
 ;; schema table col pos type len nullable default
@@ -140,12 +154,14 @@
               ["public"  "report"   "id"    nil  "integer"            nil  nil  nil]
               ["public"  "report"   "title" nil  "character varying"  nil  nil  nil]
 
-              ;; department/team/worker - see the foreign-keys comment above.
+              ;; department/team/worker/shift - see the foreign-keys comment above.
               ["w"  "department"  "id"              nil  "integer"  nil  nil  nil]
               ["w"  "department"  "lead_worker_id"  nil  "integer"  nil  nil  nil]
               ["w"  "team"        "id"              nil  "integer"  nil  nil  nil]
               ["w"  "team"        "department_id"   nil  "integer"  nil  nil  nil]
               ["w"  "worker"      "id"              nil  "integer"  nil  nil  nil]
-              ["w"  "worker"      "team_id"         nil  "integer"  nil  nil  nil]])
+              ["w"  "worker"      "team_id"         nil  "integer"  nil  nil  nil]
+              ["w"  "shift"       "id"              nil  "integer"  nil  nil  nil]
+              ["w"  "shift"       "worker_id"       nil  "integer"  nil  nil  nil]])
 
 (def references [foreign-keys columns])
