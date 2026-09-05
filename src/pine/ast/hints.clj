@@ -208,7 +208,19 @@
 ;; bounded rather than trying to be individually "smart" about which paths
 ;; matter more.
 (def ^:private max-path-depth 4)
-(def ^:private max-paths 50)
+(def ^:private max-paths 20)
+
+;; A hop/result cap alone doesn't bound how much SEARCHING an unreachable or
+;; genuinely rare target can force - max-paths never engages if nothing is
+;; ever found, and max-path-depth only bounds any one path's length, not how
+;; much of a densely-branching depth-4 space has to be explored before
+;; concluding nothing more exists. This is deliberately wall-clock, not a
+;; fixed expansion count: it directly bounds what actually matters (how long
+;; the search takes) rather than a proxy that would need re-tuning if a
+;; future change alters the cost of a single expansion. Checked once per
+;; queue pop in find-table-paths (see there) - cheap relative to a pop's own
+;; cost, so checking every single time costs nothing worth batching.
+(def ^:private max-search-millis 150)
 
 (defn- real-relation-hints
   "Single-hop candidates from a REAL table (own schema, with `rename`
@@ -325,12 +337,17 @@
   non-decreasing total cost, so a longer but more meaningful route can
   outrank a shorter, less meaningful one.
 
-  `relation-lookup` is passed straight through to redundant-hop? - see
-  its own docstring."
-  [relation-lookup source-table hops]
+  `redundant?` is a `(fn [from to parent?] bool)` - find-table-paths passes
+  a memoized redundant-hop? (scoped to the whole search), since the exact
+  same (from, to, direction) question recurs constantly across sibling
+  candidate routes that share a prefix, and redundant-hop? runs its own
+  bounded BFS every time it's asked - the loop/frontier-building overhead
+  of redundant-hop? itself, not just the relation lookups inside it (see
+  find-table-paths's own docstring for why both need memoizing)."
+  [redundant? source-table hops]
   (let [froms (into [source-table] (map :table (butlast hops)))
         redundant (->> (map vector froms hops)
-                       (filter (fn [[from hop]] (redundant-hop? relation-lookup from (:table hop) (:parent hop))))
+                       (filter (fn [[from hop]] (redundant? from (:table hop) (:parent hop))))
                        count)
         turns (->> (partition 2 1 hops)
                    (filter (fn [[a b]] (not= (:parent a) (:parent b))))
@@ -361,35 +378,57 @@
   explored even while shorter, lower-priority paths elsewhere in the
   queue are still being popped first.
 
-  Two things that used to make this scale badly on a schema with a wide
-  'hub' table (e.g. a shared tenant/account table referenced directly by
-  hundreds of others - confirmed by timing a synthetic 150-child fixture
-  at several seconds before this fix, growing worse than quadratically):
+  Three things that used to make this scale badly on a densely-connected
+  schema (confirmed by timing synthetic fixtures - a 150-table shared-hub
+  fixture at several seconds, a 200-table/15-branches-per-table fixture at
+  over a minute - both growing far worse than linearly before this fix):
 
   - `relation-lookup` memoizes real-relation-hints (always with an empty
-    rename - see same-direction-hints), scoped to this one call. Every
-    entry sharing a common prefix re-asks redundant-hop? about the exact
-    same (table, direction) pairs; without this, that work was redone
-    from scratch, depth-many times over, for every candidate route.
+    rename - see same-direction-hints), scoped to this one call - reused
+    for the main search's own expansion below too, whenever an entry's
+    rename is already empty (every hop past the first always is; only a
+    restricted-variable source's very first hop can have a real rename,
+    and that's a handful of calls at most). Without this, the same table
+    got re-queried from scratch every time a different candidate route
+    happened to pass through it.
+  - `redundant?` memoizes redundant-hop? ITSELF (not just the relation
+    lookups inside it), keyed by the (from, to, direction) triple being
+    asked about. This mattered even after the point above: redundant-hop?
+    re-runs its own bounded BFS - building a fresh frontier/visited set,
+    iterating up to max-path-depth times - on every single call, and a
+    factor with 20-ish relations at every hop asks it about a very large
+    number of distinct triples across a single search. Caching the
+    relation lookups it makes internally left that outer loop-and-set
+    overhead unpaid for; caching its own result outright removes it.
   - Each entry's :priority is computed once, when the entry is created,
     not recomputed on every comparison - and the queue itself is a real
     heap (java.util.PriorityQueue, O(log n) push/pop) rather than
     `sort-by`-ing the entire remaining frontier on every single pop (that
-    was O(n) pops each doing an O(n log n) sort - O(n^2 log n) overall
-    for a wide hub, even before accounting for what each comparison cost).
+    was O(n) pops each doing an O(n log n) sort - O(n^2 log n) overall,
+    even before accounting for what each comparison cost).
     A monotonic :seq tiebreaks entries of otherwise-equal priority, since
     PriorityQueue (unlike sort-by) isn't stable - without it, routes
     genuinely tied in priority (e.g. document's two FKs to employee)
-    could come back in a different order from one run to the next."
+    could come back in a different order from one run to the next.
+
+  None of the above bounds how much SEARCHING an unreachable or genuinely
+  rare target can force in the first place - max-paths never engages if
+  nothing is ever found, and a dense-enough schema can still take a while
+  to exhaust even with cheap per-expansion cost. `deadline` (max-search-
+  millis, checked once per pop) bounds that directly: once time is up,
+  return whatever's been found so far, the same 'bounded, not necessarily
+  exhaustive' guarantee max-path-depth and max-paths already make."
   [state sources target-table target-schema]
   (let [target? (fn [hop]
                   (and (= (:table hop) target-table)
                        (or (nil? target-schema) (= (:schema hop) target-schema))))
         relation-lookup (memoize (fn [table] (real-relation-hints state table {})))
+        redundant? (memoize (fn [from to parent?] (redundant-hop? relation-lookup from to parent?)))
+        hints-for (fn [table rename] (if (seq rename) (real-relation-hints state table rename) (relation-lookup table)))
         next-seq (let [counter (atom -1)] (fn [] (swap! counter inc)))
         make-entry (fn [visited hops table rename origin]
                      {:visited visited :hops hops :table table :rename rename :origin origin
-                      :priority (path-priority relation-lookup origin hops)
+                      :priority (path-priority redundant? origin hops)
                       :seq (next-seq)})
         queue (java.util.PriorityQueue.
                (reify java.util.Comparator
@@ -397,19 +436,20 @@
                    (compare [(:priority a) (:seq a)] [(:priority b) (:seq b)]))))]
     (doseq [{:keys [table rename]} sources]
       (.add queue (make-entry #{table} [] table rename table)))
-    (loop [found []]
-      (if (or (.isEmpty queue) (>= (count found) max-paths))
-        found
-        (let [{:keys [visited hops table rename origin]} (.poll queue)]
-          (if (and (seq hops) (target? (last hops)))
-            (recur (conj found hops))
-            (do
-              (when (< (count hops) max-path-depth)
-                (doseq [hop (->> (real-relation-hints state table rename)
-                                 (remove #(contains? visited (:table %))))]
-                  (.add queue (make-entry (conj visited (:table hop)) (conj hops hop)
-                                          (:table hop) {} origin))))
-              (recur found))))))))
+    (let [deadline (+ (System/nanoTime) (* max-search-millis 1000000))]
+      (loop [found []]
+        (if (or (.isEmpty queue) (>= (count found) max-paths) (> (System/nanoTime) deadline))
+          found
+          (let [{:keys [visited hops table rename origin]} (.poll queue)]
+            (if (and (seq hops) (target? (last hops)))
+              (recur (conj found hops))
+              (do
+                (when (< (count hops) max-path-depth)
+                  (doseq [hop (->> (hints-for table rename)
+                                   (remove #(contains? visited (:table %))))]
+                    (.add queue (make-entry (conj visited (:table hop)) (conj hops hop)
+                                            (:table hop) {} origin))))
+                (recur found)))))))))
 
 (defn- reachable-table-names
   "Every real table name reachable from `sources` within max-path-depth hops

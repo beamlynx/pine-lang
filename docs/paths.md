@@ -92,10 +92,14 @@ table, `hints.paths` fills with the search results.
 
   When every candidate route is equally non-redundant and equally direction-pure (or the schema has no
   redundant/shortcut edges at all, as most of it doesn't), this ordering and shortest-first coincide.
-- Capped at 4 hops and 50 total results, to keep a densely-connected schema (e.g. most tables FK'd to a shared
-  tenant/company hub) from exploding combinatorially. This is not a guarantee that every existing path is
-  found — only that the search stays bounded, and that whichever paths it does return are the best-ordered
-  ones (see above), not an arbitrary depth-level slice.
+- Capped at 4 hops, 20 total results, and 150ms of search time, to keep a densely-connected schema (e.g. most
+  tables FK'd to a shared tenant/company hub) from exploding combinatorially. The first two bound any one
+  path's length and how many are collected once real matches start turning up; the time cap covers what
+  neither does on its own — an unreachable, or genuinely rare, target never trips the result-count cap (nothing
+  is ever found to count), and a dense enough schema can still take a while to exhaust even at a cheap
+  per-step cost. None of this guarantees every existing path is found — only that the search stays bounded, and
+  that whichever paths it does return are the best-ordered ones (see above), not an arbitrary depth-level
+  slice or a race against the clock.
 - `? table` never produces SQL. Evaluating a pine expression that ends in one is a no-op (same as bare
   `delete:`) — pick one of the returned paths and build *that* expression instead.
 
