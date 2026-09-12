@@ -13,3 +13,4 @@ rather than a direct push.
 6. Run `./scripts/check-version-sync.sh` to confirm `src/pine/version.clj` and `playground.docker-compose.yml` agree.
 7. Commit all changed files: `Release X.Y.Z: <short description of the unreleased changes>`.
 8. Push the branch and open a PR against `master`.
+9. Once the PR merges, tag the merge commit on `master` and push the tag: `git tag X.Y.Z && git push origin X.Y.Z`. `beamlynx-desktop`'s `bundled-versions.json` pins a real tag rather than a SHA once one exists for the bundled version — skipping this leaves no tag for it to pin to.
