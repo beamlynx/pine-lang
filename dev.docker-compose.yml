@@ -1,0 +1,74 @@
+
+# Local manual-testing sandbox: Postgres and MySQL side by side, same tables,
+# same seed data (docker/db/init and docker/mysql/init respectively - the
+# MySQL seed is a deliberate hand-translation of the Postgres one, kept in
+# sync by hand since there's no cross-dialect seed generator). Read-write on
+# both (unlike the Postgres playground's read-only pine_readonly user) - the
+# point here is exercising update!/delete!, not just read paths.
+#
+# Manual verification only, not CI. Database only, no `pine` server image:
+# whatever you're testing here (e.g. the MySQL dialect work) is likely still
+# uncommitted/unreleased, so there's no built pine image with it yet. Run
+# pine-lang from source instead:
+#
+#   docker compose -f dev.docker-compose.yml up -d
+#   clj -M:run-dev   # or clj -M:run
+#
+# Then register a connection (via the UI, or curl) against whichever
+# database you want:
+#
+#   Postgres: host localhost, port 5435, db pine, user pine, password pine
+#   MySQL:    host localhost, port 3308, db pine, user pine, password pine
+#
+#   curl -X POST http://localhost:33333/api/v1/connections \
+#     -H "Content-Type: application/json" \
+#     -d '{"dbtype":"mysql","host":"localhost","port":3308,"dbname":"pine","user":"pine","password":"pine"}'
+#
+# Deliberately separate ports from playground.docker-compose.yml (5434) so
+# both can run at once without colliding, and kept out of that file on
+# purpose so check-version-sync.sh (which only greps
+# playground.docker-compose.yml) never sees it.
+services:
+  dev-db-postgres:
+    image: postgres:15
+    container_name: pine_dev_db_postgres
+    environment:
+      POSTGRES_USER: pine
+      POSTGRES_PASSWORD: pine
+      POSTGRES_DB: pine
+    ports:
+      - "5435:5432"
+    volumes:
+      - dev-db-data-postgres:/var/lib/postgresql/data
+      # Same seed pine-lang's Postgres playground uses (docker/db/init) -
+      # one source of truth, so "same tables, same seed data" isn't just a
+      # promise, it's the same files.
+      - ./docker/db/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pine -d pine"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  dev-db-mysql:
+    image: mysql:8.4
+    container_name: pine_dev_db_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: pine
+      MYSQL_USER: pine
+      MYSQL_PASSWORD: pine
+    ports:
+      - "3308:3306"
+    volumes:
+      - dev-db-data-mysql:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  dev-db-data-postgres:
+  dev-db-data-mysql:

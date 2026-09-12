@@ -32,6 +32,34 @@
                  expressions)]
      (eval/build-query last-state))))
 
+(defn- generate-mysql
+  "Same as generate, but resolves the MySQL dialect through the real
+  get-dialect -> :test-mysql sentinel path (not a hand-bound *dialect*
+  var), so the resolution logic itself is exercised."
+  ([expression]
+   (generate-mysql expression []))
+  ([expression access-policy]
+   (-> expression
+       parser/parse
+       :result
+       (ast/generate :test-mysql nil nil {} access-policy)
+       eval/build-query)))
+
+(defn- generate-mysql-expressions
+  "generate-expressions, against the MySQL dialect."
+  ([expressions]
+   (generate-mysql-expressions expressions []))
+  ([expressions access-policy]
+   (let [{:keys [last-state]}
+         (reduce (fn [{:keys [variables]} expr]
+                   (let [{:keys [result]} (parser/parse expr)
+                         state (ast/generate result :test-mysql nil nil variables access-policy)]
+                     {:variables (merge variables (:pending-assignments state))
+                      :last-state state}))
+                 {:variables {} :last-state nil}
+                 expressions)]
+     (eval/build-query last-state))))
+
 (deftest test-build-query
 
   (testing "qualify table"
@@ -827,3 +855,133 @@
   (testing "column-type rule: GROUP BY a redacted column still runs, but every group collapses to the placeholder - a known tradeoff, not a leak"
     (is (= "WITH \"x_1\" AS ( SELECT 'xxxxx' AS \"title\" FROM \"report\" AS \"r_0\" ) SELECT \"x_1\".\"title\", COUNT(1) AS \"count\" FROM \"x_1\" GROUP BY \"x_1\".\"title\""
            (:query (generate "report | group: title => count" [column-type-rule]))))))
+
+(deftest test-build-query-mysql
+  ;; Every Postgres assertion above must stay byte-identical through this
+  ;; whole file - that's the regression guard for the refactor this MySQL
+  ;; support was built on top of. This deftest is the MySQL side: same
+  ;; fixtures, same expressions where possible, routed through the real
+  ;; :test-mysql -> get-dialect -> :mysql path (not a hand-bound *dialect*
+  ;; var), so dialect resolution itself is exercised end to end.
+
+  (testing "qualify table: backtick quoting, not double-quote"
+    ;; The one case that can't go through generate-mysql: q is asserted
+    ;; standalone, with no state/connection-id to resolve a dialect from.
+    (is (= "`x`" (binding [eval/*dialect* :mysql] (eval/q "x"))))
+    (is (= "`x`.`y`" (binding [eval/*dialect* :mysql] (eval/q "x" "y")))))
+
+  (testing "Select"
+    (is (= {:query "SELECT `c_0`.id AS `__c_0__id`, `c_0`.* FROM `company` AS `c_0` LIMIT 250"
+            :params nil}
+           (generate-mysql "company"))))
+
+  (testing "FK join"
+    (is (= {:query "SELECT `c_0`.id AS `__c_0__id`, `e_1`.id AS `__e_1__id`, `e_1`.* FROM `company` AS `c_0` JOIN `employee` AS `e_1` ON `c_0`.`id` = `e_1`.`company_id` LIMIT 250"
+            :params nil}
+           (generate-mysql "company | employee"))))
+
+  (testing "Heuristic join between mismatched column types casts both sides via CAST(... AS CHAR), not ::text"
+    (is (= {:query "SELECT `c_0`.id AS `__c_0__id`, `o_1`.id AS `__o_1__id`, `o_1`.* FROM `customer` AS `c_0` JOIN `order` AS `o_1` ON CAST(`c_0`.`id` AS CHAR) = CAST(`o_1`.`customer_id` AS CHAR) LIMIT 250"
+            :params nil}
+           (generate-mysql "customer | order"))))
+
+  (testing "WHERE: ILIKE/NOT ILIKE map to LIKE/NOT LIKE - MySQL has no ILIKE"
+    (is (= "SELECT `c_0`.id AS `__c_0__id`, `c_0`.* FROM `company` AS `c_0` WHERE `c_0`.`name` LIKE ? LIMIT 250"
+           (:query (generate-mysql "company | where: name ilike 'acme%'"))))
+    (is (= "SELECT `c_0`.id AS `__c_0__id`, `c_0`.* FROM `company` AS `c_0` WHERE `c_0`.`name` NOT LIKE ? LIMIT 250"
+           (:query (generate-mysql "company | where: name not ilike 'acme%'")))))
+
+  (testing "WHERE: explicit ::cast renders as CAST(expr AS TYPE), not expr::type"
+    (is (= "SELECT `c_0`.id AS `__c_0__id`, `c_0`.* FROM `company` AS `c_0` WHERE CAST(`c_0`.`name` AS CHAR) = ? LIMIT 250"
+           (:query (generate-mysql "company | where: name = 'Acme Inc.' ::text"))))
+    (is (= "SELECT `c_0`.id AS `__c_0__id`, `c_0`.* FROM `company` AS `c_0` WHERE CAST(`c_0`.`id` AS CHAR(36)) = ? LIMIT 250"
+           (:query (generate-mysql "company | where: id = '123e4567-e89b-12d3-a456-426614174000' ::uuid")))))
+
+  (testing "WHERE: automatic (schema-driven) casts are minimal - uuid and date stay a bare `?`, jsonb still needs CAST(? AS JSON)"
+    (is (= {:query "SELECT `c_0`.id AS `__c_0__id`, `c_0`.* FROM `customer` AS `c_0` WHERE `c_0`.`uuid_col` = ? LIMIT 250"
+            :params (list (dt/uuid "1c50ee25-4938-4b77-b831-bc41a0ee3d0c"))}
+           (generate-mysql "customer | where: uuid_col = '1c50ee25-4938-4b77-b831-bc41a0ee3d0c'")))
+    (is (= {:query "SELECT `c_0`.id AS `__c_0__id`, `c_0`.* FROM `company` AS `c_0` WHERE `c_0`.`created_at` = ? LIMIT 250"
+            :params (list (dt/date "2025-01-01"))}
+           (generate-mysql "company | where: created_at = '2025-01-01'")))
+    (is (= {:query "SELECT `c_0`.id AS `__c_0__id`, `c_0`.* FROM `customer` AS `c_0` WHERE `c_0`.`data` = CAST(? AS JSON) LIMIT 250"
+            :params (list (dt/jsonb "{\"a\": 1}"))}
+           (generate-mysql "customer | where: data = '{\"a\": 1}'"))))
+
+  (testing "Date bucketing: DATE_FORMAT, not TO_CHAR(DATE_TRUNC(...))"
+    (is (= {:query "SELECT DATE_FORMAT(`e_0`.`created_at`, '%Y') AS `year`, `e_0`.id AS `__e_0__id` FROM `employee` AS `e_0` LIMIT 250"
+            :params nil}
+           (generate-mysql "employee | select: created_at => year")))
+    (is (= {:query "SELECT DATE_FORMAT(`e_0`.`created_at`, '%Y-%m') AS `month`, `e_0`.id AS `__e_0__id` FROM `employee` AS `e_0` LIMIT 250"
+            :params nil}
+           (generate-mysql "employee | select: created_at => month")))
+    (is (= {:query "SELECT DATE_FORMAT(`e_0`.`created_at`, '%Y-%m-%d') AS `day`, `e_0`.id AS `__e_0__id` FROM `employee` AS `e_0` LIMIT 250"
+            :params nil}
+           (generate-mysql "employee | select: created_at => day")))
+    ;; week: no DATE_TRUNC equivalent in MySQL - DATE_SUB/WEEKDAY instead.
+    ;; WEEKDAY() returns 0 for Monday, matching Postgres's week boundary.
+    (is (= {:query "SELECT DATE_FORMAT(DATE_SUB(`e_0`.`created_at`, INTERVAL WEEKDAY(`e_0`.`created_at`) DAY), '%Y-%m-%d') AS `week`, `e_0`.id AS `__e_0__id` FROM `employee` AS `e_0` LIMIT 250"
+            :params nil}
+           (generate-mysql "employee | select: created_at => week")))
+    (is (= {:query "SELECT DATE_FORMAT(`e_0`.`created_at`, '%Y-%m-%d %H') AS `hour`, `e_0`.id AS `__e_0__id` FROM `employee` AS `e_0` LIMIT 250"
+            :params nil}
+           (generate-mysql "employee | select: created_at => hour")))
+    (is (= {:query "SELECT DATE_FORMAT(`e_0`.`created_at`, '%Y-%m-%d %H:%i') AS `minute`, `e_0`.id AS `__e_0__id` FROM `employee` AS `e_0` LIMIT 250"
+            :params nil}
+           (generate-mysql "employee | select: created_at => minute"))))
+
+  (testing "Count"
+    (is (= {:query "WITH x AS ( SELECT `c_0`.* FROM `company` AS `c_0` ) SELECT COUNT(*) FROM x"
+            :params nil}
+           (generate-mysql "company | count:"))))
+
+  (testing "Group"
+    (is (= {:query "WITH `x_1` AS ( SELECT `e_0`.`status` AS `status` FROM `email` AS `e_0` ) SELECT `x_1`.`status`, COUNT(1) AS `count` FROM `x_1` GROUP BY `x_1`.`status`"
+            :params nil}
+           (generate-mysql "email | group: status => count"))))
+
+  (testing "Variable used as table generates a CTE"
+    (is (= {:query "WITH `active_companies` AS ( SELECT `c_0`.* FROM `company` AS `c_0` ) SELECT `active_companies`.* FROM `active_companies` AS `active_companies` LIMIT 250"
+            :params nil}
+           (generate-mysql-expressions ["company |= active_companies"
+                                        "active_companies"]))))
+
+  (testing "data_types.clj: tinyint maps to the integer branch, not boolean"
+    ;; If tinyint had landed in the boolean branch instead, `= 1` would come
+    ;; back wrapped as dt/pine-boolean rather than dt/number - the exact
+    ;; wrong-results bug this mapping choice exists to avoid (see
+    ;; data_types.clj: a bare `true` would otherwise get rewritten into the
+    ;; string "true", which MySQL coerces to 0, silently matching the wrong rows).
+    (is (= {:query "SELECT `p_0`.id AS `__p_0__id`, `p_0`.* FROM `product` AS `p_0` WHERE `p_0`.`active` = ? LIMIT 250"
+            :params (map dt/number ["1"])}
+           (generate-mysql "product | where: active = 1"))))
+
+  (testing "data_types.clj: datetime maps to the date branch, but MySQL's auto-cast for it is a bare `?` (unlike Postgres's ?::timestamp)"
+    (is (= {:query "SELECT `p_0`.id AS `__p_0__id`, `p_0`.* FROM `product` AS `p_0` WHERE `p_0`.`released` = ? LIMIT 250"
+            :params (list (dt/date "2025-01-01"))}
+           (generate-mysql "product | where: released = '2025-01-01'"))))
+
+  (testing "delete!/update! wrap the inner SELECT in a derived table (MySQL error 1093/1235) - identity for Postgres, already asserted above"
+    (is (= {:query "DELETE FROM `company` WHERE `id` IN ( SELECT * FROM ( SELECT `c_0`.`id` FROM `company` AS `c_0` ) AS `pine_sub` )"
+            :params nil}
+           (generate-mysql "company | delete! .id")))
+
+    ;; The error-1235 case specifically: LIMIT inside an IN subquery. Must
+    ;; land inside the derived-table wrap (`... c_0\" LIMIT 5 ) AS`), not
+    ;; escape out to the DELETE's own IN clause.
+    (is (= {:query "DELETE FROM `company` WHERE `id` IN ( SELECT * FROM ( SELECT `c_0`.`id` FROM `company` AS `c_0` LIMIT 5 ) AS `pine_sub` )"
+            :params nil}
+           (generate-mysql "company | limit: 5 | delete! .id")))
+
+    (is (= {:queries [{:table "company"
+                       :query "UPDATE `company` SET `name` = ? WHERE id IN ( SELECT * FROM ( SELECT `c_0`.`id` FROM `company` AS `c_0` WHERE `c_0`.`id` = ? ) AS `pine_sub` )"
+                       :params (list (dt/string "John Doe") (dt/number "1"))}]}
+           (generate-mysql "company | where: id = 1 | update! name = 'John Doe'")))
+
+    ;; Same case as the jsonb auto-cast test above, but through the
+    ;; update path: both the CAST(? AS JSON) auto-cast and the derived-table
+    ;; wrap have to hold together in one query.
+    (is (= {:queries [{:table "customer"
+                       :query "UPDATE `customer` SET `data` = CAST(? AS JSON) WHERE id IN ( SELECT * FROM ( SELECT `c_0`.`id` FROM `customer` AS `c_0` WHERE `c_0`.`id` = ? ) AS `pine_sub` )"
+                       :params (list (dt/jsonb "{\"test\": 1}") (dt/number "1"))}]}
+           (generate-mysql "customer | where: id = 1 | update! data = '{\"test\": 1}'")))))

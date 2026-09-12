@@ -162,6 +162,20 @@
               ["w"  "worker"      "id"              nil  "integer"  nil  nil  nil]
               ["w"  "worker"      "team_id"         nil  "integer"  nil  nil  nil]
               ["w"  "shift"       "id"              nil  "integer"  nil  nil  nil]
-              ["w"  "shift"       "worker_id"       nil  "integer"  nil  nil  nil]])
+              ["w"  "shift"       "worker_id"       nil  "integer"  nil  nil  nil]
+
+              ;; `product` exists only to exercise data_types.clj's MySQL
+              ;; branches (json/datetime/tinyint) in eval-test's MySQL
+              ;; deftest - additive, isolated from every other table (no FK,
+              ;; and no column ending in `_id`/`Id`, so the heuristic
+              ;; relation detector doesn't invent spurious relations from it).
+              ["public"  "product"  "id"         nil  "integer"  nil  nil  nil]
+              ["public"  "product"  "config"     nil  "json"     nil  nil  nil]
+              ["public"  "product"  "released"   nil  "datetime" nil  nil  nil]
+              ["public"  "product"  "active"     nil  "tinyint"  nil  nil  nil]
+              [nil  "product"  "id"              nil  "integer"  nil  nil  nil]
+              [nil  "product"  "config"          nil  "json"     nil  nil  nil]
+              [nil  "product"  "released"        nil  "datetime" nil  nil  nil]
+              [nil  "product"  "active"          nil  "tinyint"  nil  nil  nil]])
 
 (def references [foreign-keys columns])
