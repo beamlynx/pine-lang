@@ -4,7 +4,7 @@
 
 Pine is a domain-specific language (DSL) for querying databases. It provides a concise, pipe-based syntax that compiles to SQL.
 
-**Tech Stack**: Clojure 1.11.3, Instaparse (BNF grammar-based parsing), PostgreSQL
+**Tech Stack**: Clojure 1.11.3, Instaparse (BNF grammar-based parsing), PostgreSQL and MySQL 8.0+ (MySQL 5.7 isn't supported — Pine emits `WITH`/CTEs for `count:`, `group:`, every `|=` variable, and auto-checkpoints, which 5.7 can't run)
 
 ## Key Files
 

@@ -26,3 +26,46 @@ docker-compose -f playground.docker-compose.yml up sample-db-ecommerce
 ```
 
 From the UI, connect to the database using port 5434 (See: `playground.docker-compose.yml`).
+
+# Local Postgres + MySQL sandbox (manual testing, both dialects)
+
+`dev.docker-compose.yml` brings up a read-write Postgres and a read-write
+MySQL side by side, seeded with the same tables and the same data
+(`docker/db/init` and `docker/mysql/init` respectively -- the MySQL seed is
+a hand-translation of the Postgres one, kept in sync by hand). Unlike the
+playground above, both are read-write, so `update!`/`delete!` are testable
+too, and there's no bundled `pine` server image -- whatever dialect work
+you're testing here is likely still unreleased, so run pine-lang from
+source against it instead:
+
+```bash
+docker compose -f dev.docker-compose.yml up -d
+clj -M:run-dev   # or clj -M:run
+```
+
+Connection details:
+
+| | Postgres | MySQL |
+|---|---|---|
+| host | localhost | localhost |
+| port | 5435 | 3308 |
+| database | pine | pine |
+| user / password | pine / pine | pine / pine |
+
+```bash
+curl -X POST http://localhost:33333/api/v1/connections \
+  -H "Content-Type: application/json" \
+  -d '{"dbtype":"mysql","host":"localhost","port":3308,"dbname":"pine","user":"pine","password":"pine"}'
+```
+
+The MySQL seed additionally has `warehouses`/`warehouse_staff` (a
+heuristic-only relation, no real FK -- see `references.clj`'s naming-based
+detection) and a second database, `pine_other`, with `SELECT` granted to
+the `pine` user -- a live check that MySQL's `DATABASE()`-scoped schema
+introspection actually excludes it (unlike Postgres, MySQL's
+`information_schema` is server-global, not connection-scoped).
+
+Kept out of `playground.docker-compose.yml` on purpose (different ports,
+read-write instead of read-only, no `pine` image) so
+`check-version-sync.sh` -- which only greps `playground.docker-compose.yml`
+-- never sees it.

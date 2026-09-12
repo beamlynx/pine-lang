@@ -25,8 +25,8 @@
 ;; forgets to call it, passes the wrong state, or leaks a new field through
 ;; some other path would go uncaught. Calling api-build with connection-id
 ;; :test is what makes this possible: :test is a shared sentinel
-;; (pine.db.connections/test-connection-id) that both the schema lookup
-;; (postgres.clj) and the connection-name lookup (connections.clj) recognize,
+;; (pine.db.connections/test-connection-ids) that both the schema lookup
+;; (pine.db.main) and the connection-name lookup (connections.clj) recognize,
 ;; so api-build's connections/get-connection-name call — which normally
 ;; requires a real registered connection pool — succeeds without one.
 (deftest test-api-build-ast

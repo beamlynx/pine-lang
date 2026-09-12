@@ -2,8 +2,7 @@
   (:require
    [clojure.test :refer [deftest is testing]]
    [pine.db.connections :as connections]
-   [pine.db.main :as db]
-   [pine.db.postgres :as postgres])
+   [pine.db.main :as db])
   (:import (com.zaxxer.hikari HikariDataSource)))
 
 (defn- fake-pool [closed?]
@@ -39,7 +38,7 @@
 (deftest test-reindex-references
   (testing "re-runs the indexer even when a value is already cached"
     (let [calls (atom 0)]
-      (with-redefs [postgres/get-indexed-references (fn [_id] (swap! calls inc) {:call @calls})]
+      (with-redefs [db/get-indexed-references (fn [_id] (swap! calls inc) {:call @calls})]
         (is (= "conn-reindex" (db/reindex-references "conn-reindex")))
         (is (= {:call 1} (@db/references "conn-reindex")))
         (db/reindex-references "conn-reindex")
@@ -121,3 +120,47 @@
         (is @new-closed? "the rejected pool must be closed, not leaked")
         (finally
           (swap! connections/pools dissoc "user-test:5432"))))))
+
+(deftest test-jdbc-url
+  (testing "Postgres: dbtype defaults, port defaults to 5432"
+    (is (= "jdbc:postgresql://h:5432/d" (connections/jdbc-url {:host "h" :dbname "d"})))
+    (is (= "jdbc:postgresql://h:5433/d" (connections/jdbc-url {:host "h" :port 5433 :dbname "d"}))))
+
+  (testing "MySQL: port defaults to 3306, plus the fixed connection params"
+    (is (= (str "jdbc:mysql://h:3306/d?connectionTimeZone=SERVER&forceConnectionTimeZoneToSession=false"
+                "&preserveInstants=false&allowPublicKeyRetrieval=true"
+                "&zeroDateTimeBehavior=CONVERT_TO_NULL&tinyInt1isBit=false&characterEncoding=UTF-8")
+           (connections/jdbc-url {:dbtype "mysql" :host "h" :dbname "d"})))
+    (is (clojure.string/starts-with? (connections/jdbc-url {:dbtype "mysql" :host "h" :port 3307 :dbname "d"})
+                                     "jdbc:mysql://h:3307/d?"))))
+
+(deftest test-jdbc-url->label
+  (testing "Postgres URL, no query string"
+    (is (= "h:5432 · d" (connections/jdbc-url->label "jdbc:postgresql://h:5432/d"))))
+
+  (testing "MySQL URL with a ?params suffix - regression test for the naive (s/split url #\"/\") parse, which took the ?params-corrupted segment as the dbname"
+    (is (= "h:3306 · pine"
+           (connections/jdbc-url->label
+            (connections/jdbc-url {:dbtype "mysql" :host "h" :dbname "pine"}))))))
+
+(deftest test-get-dialect
+  (testing "sentinel test connection ids resolve without touching any pool"
+    (is (= :postgres (connections/get-dialect :test)))
+    (is (= :mysql (connections/get-dialect :test-mysql))))
+
+  (testing "a registered HikariDataSource's own JDBC URL scheme wins"
+    (try
+      (swap! connections/pools assoc "dialect-mysql" (fake-hikari "jdbc:mysql://h:3306/d" "u" (atom false)))
+      (swap! connections/pools assoc "dialect-pg" (fake-hikari "jdbc:postgresql://h:5432/d" "u" (atom false)))
+      (is (= :mysql (connections/get-dialect "dialect-mysql")))
+      (is (= :postgres (connections/get-dialect "dialect-pg")))
+      (finally
+        (swap! connections/pools dissoc "dialect-mysql" "dialect-pg"))))
+
+  (testing "defaults to :postgres for anything else - an unregistered id, or a non-HikariDataSource pool"
+    (is (= :postgres (connections/get-dialect "no-such-connection")))
+    (try
+      (swap! connections/pools assoc "dialect-fake" (fake-pool (atom false)))
+      (is (= :postgres (connections/get-dialect "dialect-fake")))
+      (finally
+        (swap! connections/pools dissoc "dialect-fake")))))

@@ -3,6 +3,10 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Added
+- MySQL 8.0+ as a second, fully-parallel database backend alongside Postgres — identifier quoting, date bucketing, casts, and update!/delete! all render MySQL-correct SQL, and schema introspection is scoped to the connected database via `DATABASE()`. A query touching a `DATETIME`/`DATE`/`TIME` column correctly returns its value as JSON (MySQL's JDBC driver returns `java.time.LocalDateTime`/`LocalDate`/`LocalTime`, which needed their own Cheshire encoders alongside Postgres's existing ones). MySQL 5.7 isn't supported: Pine emits `WITH` (CTEs) for `count:`, `group:`, every `|=` variable, and auto-checkpoints, and 5.7 has no CTE support. Covered by the same fixture-based test suite Postgres already has (no live database in CI), plus manual verification against a real MySQL server (`dev.docker-compose.yml`).
+### Changed
+- Every request that fails now prints to the server's stdout: a new `wrap-exception-logging` middleware catches anything that escapes every route handler (including a failure while encoding the response itself), and every route's own `catch` blocks now log too. Previously a caught-and-handled failure (a bad connection, an unreachable database) produced a normal error response but printed nothing, making it undebuggable without reproducing by hand outside the server.
 
 ## [0.43.0] - 2026-09-06
 ### Added

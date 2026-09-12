@@ -71,7 +71,7 @@
 (defn- foreign-key-source-column?
   "Whether `column` is a source column of a detected foreign-key or
   heuristic relation for `table` -- i.e. pine-lang's own join-relation
-  index (postgres.clj's index-foreign-keys/index-heuristic-relations,
+  index (pine.db.references' index-foreign-keys/index-heuristic-relations,
   both of which populate the same [:table T :refers-to ...] shape) already
   treats it as identifier-shaped, real FK or naming-convention guess alike.
   A lookup against index pine-lang builds anyway, not new indexing."
@@ -122,7 +122,7 @@
   "Keep only the first entry for each :column name, preserving order.
   Needed because references' schema-less [:table table :columns] bucket
   aggregates columns across every schema that has a same-named table (see
-  index-columns in postgres.clj) - an unqualified alias whose table name
+  index-columns in pine.db.references) - an unqualified alias whose table name
   happens to exist in more than one schema would otherwise expand into the
   same column name twice."
   [columns]

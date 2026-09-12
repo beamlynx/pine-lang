@@ -50,7 +50,15 @@
     "uuid" (uuid (:value value))
     "boolean" (pine-boolean (:value value))
     "bool" (pine-boolean (:value value))
-    ("integer" "int" "int4" "bigint" "int8" "smallint" "int2")
+    ("integer" "int" "int4" "bigint" "int8" "smallint" "int2" "tinyint" "mediumint")
+    ;; MySQL's TINYINT/MEDIUMINT are plain integers, not booleans - even
+    ;; TINYINT(1), which conventionally holds 0/1. Mapping it to "boolean"
+    ;; instead would be a wrong-results bug: `= true` parses as a bare
+    ;; :symbol (inlined literally into SQL), but convert-value-to-db-type
+    ;; with db-type "boolean" would rewrite it into a :boolean value that
+    ;; gets bound as the string "true" - which MySQL coerces to 0, silently
+    ;; matching the *false* rows. Leaving it unmapped and inlining the
+    ;; literal is simply correct.
     (if (= (:type value) :string)
       ;; Convert string to number if it's actually a number
       (try
@@ -58,8 +66,8 @@
         (catch Exception _
           value))
       value)
-    ("varchar" "text" "char" "character") (string (:value value))
-    ("date" "timestamp" "timestamptz" "timestamp without time zone" "timestamp with time zone")
+    ("varchar" "text" "char" "character" "longtext" "mediumtext" "tinytext") (string (:value value))
+    ("date" "timestamp" "timestamptz" "timestamp without time zone" "timestamp with time zone" "datetime")
     (if (= (:type value) :string)
       (try
         (date (:value value))

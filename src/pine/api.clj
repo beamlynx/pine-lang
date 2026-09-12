@@ -7,6 +7,7 @@
   threads variables between expressions so each one sees what earlier ones
   produced. The last expression's SQL is the one actually returned or executed."
   (:require
+   [cheshire.core :as json]
    [cheshire.generate :refer [add-encoder encode-str]]
    [clojure.string :as str]
    [compojure.core :refer [defroutes DELETE GET POST]]
@@ -32,7 +33,33 @@
 (add-encoder org.postgresql.util.PGobject encode-str)
 (add-encoder org.postgresql.jdbc.PgArray encode-str)
 
+;; MySQL Connector/J returns java.time (JSR-310) values for DATE/DATETIME/
+;; TIME columns rather than the java.sql.Date/Timestamp Postgres's driver
+;; returns (which Cheshire already knows how to encode) - without these,
+;; any query result touching one of those columns throws
+;; JsonGenerationException while writing the HTTP response, which escapes
+;; past wrap-cors (the response never gets its headers) and reaches the
+;; browser as an unhelpful bare "blocked by CORS policy" / 500 with no
+;; body. .toString() alone is enough: all three already render ISO-8601.
+(add-encoder java.time.LocalDateTime encode-str)
+(add-encoder java.time.LocalDate encode-str)
+(add-encoder java.time.LocalTime encode-str)
+
 (def version v/version)
+
+(defn- log-exception
+  "Every catch below turns a failure into a normal {:error ...} response -
+  correct, a route handler throwing shouldn't 500 just because the
+  underlying operation failed (a bad connection, an unreachable database).
+  But none of them printed anything before this, which made a confusing
+  message (or a message that's merely the symptom, e.g. a MySQL connection
+  silently defaulting to Postgres and failing during SSL negotiation)
+  effectively undebuggable without reproducing it by hand outside the
+  server. `context` is a short label (e.g. \"connect\", \"api-eval\") naming
+  which operation failed, since the caught exception's own message alone
+  doesn't always say that."
+  [context ^Throwable e]
+  (prn (format "[%s] %s: %s" context (.getName (class e)) (.getMessage e))))
 
 (defn- generate-state
   ([expression]
@@ -139,8 +166,10 @@
                   :version version
                   :query (-> last-expr trim-pipes (generate-state nil conn-id variables access-policy) :result eval/build-query eval/formatted-query)
                   :ast (prune-ast state)})))))
-       (catch Exception e {:connection-id connection-name
-                           :error (.getMessage e)})))))
+       (catch Exception e
+         (log-exception "api-build" e)
+         {:connection-id connection-name
+          :error (.getMessage e)})))))
 
 (defn- get-columns
   ([rows]
@@ -198,12 +227,16 @@
                           ;; without a second /api/v1/build round trip, unlike
                           ;; client.ts's prettify() which pays for one on purpose.
                           :prettified (:prettified last-state)})
-                       (catch Exception e {:connection-id connection-name
-                                           :error (.getMessage e)
-                                           :query query
-                                           :prettified (:prettified last-state)})))))))))
-       (catch Exception e {:connection-id connection-name
-                           :error (.getMessage e)})))))
+                       (catch Exception e
+                         (log-exception "api-eval" e)
+                         {:connection-id connection-name
+                          :error (.getMessage e)
+                          :query query
+                          :prettified (:prettified last-state)})))))))))
+       (catch Exception e
+         (log-exception "api-eval" e)
+         {:connection-id connection-name
+          :error (.getMessage e)})))))
 
 (defn get-connection []
   (let [connection-id   @db/connection-id]
@@ -234,24 +267,32 @@
 (defn create-connection [connection]
   (try
     {:connection-id (connections/add-connection-pool connection)}
-    (catch Exception e {:error (.getMessage e)})))
+    (catch Exception e
+      (log-exception "create-connection" e)
+      {:error (.getMessage e)})))
 
 (defn connect [id]
   (try
     (-> id test-connection :connection-id set-connection-pool)
-    (catch Exception e {:error (.getMessage e)})))
+    (catch Exception e
+      (log-exception "connect" e)
+      {:error (.getMessage e)})))
 
 (defn disconnect [id]
   (try
     (connections/remove-connection-pool id)
     (db/clear-connection-if id)
     (get-connections)
-    (catch Exception e {:error (.getMessage e)})))
+    (catch Exception e
+      (log-exception "disconnect" e)
+      {:error (.getMessage e)})))
 
 (defn reindex-connection [id]
   (try
     {:connection-id (db/reindex-references id)}
-    (catch Exception e {:error (.getMessage e)})))
+    (catch Exception e
+      (log-exception "reindex-connection" e)
+      {:error (.getMessage e)})))
 
 (defn api-sql
   ([sql-query]
@@ -276,8 +317,10 @@
             :version version
             :result result
             :columns columns})
-         (catch Exception e {:connection-id connection-name
-                             :error (.getMessage e)}))))))
+         (catch Exception e
+           (log-exception "api-sql" e)
+           {:connection-id connection-name
+            :error (.getMessage e)}))))))
 
 (defn wrap-logger
   [handler]
@@ -286,6 +329,39 @@
       (when (= 404 (:status response))
         (prn (format "Path not found: %s" (:uri request))))
       response)))
+
+(defn wrap-exception-logging
+  "Every route handler below already has its own try/catch that turns a
+  failure into a normal {:error ...} response (api-eval, api-sql, connect,
+  etc.), but none of them print anything - an unhelpful exception (a bare
+  NullPointerException, say) left nothing to go on server-side, only
+  whatever string reached the client.
+
+  Wrapping wrap-json-response (not just app-routes) matters just as much:
+  an exception thrown *while encoding* an otherwise-successful response
+  (e.g. a java.time.LocalDateTime value - MySQL's JDBC driver returns one
+  for DATETIME/TIMESTAMP columns - that Cheshire has no encoder for) used
+  to happen entirely outside any try/catch here, so it reached Jetty as a
+  bare, silent 500 that skipped wrap-cors's response headers too. Skipping
+  those headers is what actually confuses a browser: its only way to
+  describe 'this response had no CORS header' is a generic 'blocked by
+  CORS policy' message, which looks like a CORS misconfiguration even
+  though CORS was never the problem. Catching everything here and
+  returning a normal, already-JSON-encoded response guarantees wrap-cors
+  (which wraps this) still gets a chance to add its headers."
+  [handler]
+  (fn [request]
+    (try
+      (handler request)
+      (catch Throwable t
+        (prn (format "Unhandled exception on %s %s: %s"
+                     (-> request :request-method name str/upper-case)
+                     (:uri request)
+                     t))
+        (.printStackTrace t)
+        {:status 500
+         :headers {"Content-Type" "application/json"}
+         :body (json/generate-string {:error (or (.getMessage t) (.getName (class t)))})}))))
 
 ;; TODO: POST method should return 401
 
@@ -336,6 +412,7 @@
   (-> app-routes
       (wrap-json-params {:keywords? true})
       wrap-json-response
+      wrap-exception-logging
       wrap-logger
       (wrap-defaults api-defaults)
       (wrap-cors :access-control-allow-origin [#".*"]

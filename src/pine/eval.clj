@@ -2,13 +2,24 @@
   (:require
    [clojure.string :as s]
    [pine.access-policy :as access-policy]
+   [pine.db.connections :as connections]
    [pine.db.main :as db]))
+
+(def ^:dynamic *dialect*
+  "Which SQL dialect build-query is rendering for - bound once at the top of
+  build-query from the state's :connection-id, then read by every pure
+  string-builder below it in the same call tree (q, casts, date bucketing,
+  the action-subquery wrap). Defaults to :postgres so eval/q and friends
+  stay usable standalone, outside any build-query call, exactly as before
+  dialects existed."
+  :postgres)
 
 (defn q
   ([a b]
    (if a (str (q a) "." (q b)) (q b)))
   ([a]
-   (str "\"" a "\"")))
+   (let [quote-char (if (= *dialect* :mysql) "`" "\"")]
+     (str quote-char a quote-char))))
 
 (defn- col-fn-format
   "Map column function names to TO_CHAR format strings"
@@ -21,6 +32,86 @@
     "hour"   "YYYY-MM-DD HH24"
     "minute" "YYYY-MM-DD HH24:MI"))
 
+(defn- col-fn-expr
+  "Render a date-bucketing expression for col-fn (e.g. `select: created_at =>
+  month`). MySQL's shape isn't just a different format string like
+  Postgres's TO_CHAR(DATE_TRUNC(...)) - week in particular needs its own
+  DATE_SUB/WEEKDAY expression, since MySQL has no DATE_TRUNC. WEEKDAY()
+  returns 0 for Monday, matching Postgres's DATE_TRUNC('week') boundary."
+  [col-fn col-ref]
+  (case *dialect*
+    :mysql (case col-fn
+             "year"   (str "DATE_FORMAT(" col-ref ", '%Y')")
+             "month"  (str "DATE_FORMAT(" col-ref ", '%Y-%m')")
+             "day"    (str "DATE_FORMAT(" col-ref ", '%Y-%m-%d')")
+             "week"   (str "DATE_FORMAT(DATE_SUB(" col-ref ", INTERVAL WEEKDAY(" col-ref ") DAY), '%Y-%m-%d')")
+             "hour"   (str "DATE_FORMAT(" col-ref ", '%Y-%m-%d %H')")
+             "minute" (str "DATE_FORMAT(" col-ref ", '%Y-%m-%d %H:%i')"))
+    (str "TO_CHAR(DATE_TRUNC('" col-fn "', " col-ref "), '" (col-fn-format col-fn) "')")))
+
+(def ^:private mysql-cast-types
+  "Translation table for a user's explicit `::cast` (and the internal
+  ::text cast used to reconcile a mismatched heuristic join) into MySQL's
+  CAST() target vocabulary, which is closed - CAST(x AS TEXT) is a hard
+  syntax error, unlike Postgres's x::text. Anything not listed here is
+  uppercased and passed through, same \"trust the user\" behavior Postgres
+  already has for casts it doesn't specifically know about."
+  {"text" "CHAR" "varchar" "CHAR" "char" "CHAR"
+   "json" "JSON" "jsonb" "JSON"
+   "uuid" "CHAR(36)"
+   "timestamp" "DATETIME" "datetime" "DATETIME"
+   "int" "SIGNED" "integer" "SIGNED" "bigint" "SIGNED" "smallint" "SIGNED"
+   "numeric" "DECIMAL" "decimal" "DECIMAL"
+   "bool" "SIGNED" "boolean" "SIGNED"})
+
+(defn- render-cast
+  "Apply an explicit cast to an already-rendered expression, dialect-aware:
+  Postgres's `expr::cast` suffix vs. MySQL's `CAST(expr AS TYPE)` wrapper."
+  [expr cast]
+  (case *dialect*
+    :mysql (str "CAST(" expr " AS " (get mysql-cast-types (s/lower-case cast) (s/upper-case cast)) ")")
+    (str expr "::" cast)))
+
+(defn- column-ref-with-cast
+  "A column reference, optionally cast - the WHERE-clause column side."
+  [alias column cast]
+  (let [ref (q alias column)]
+    (if cast (render-cast ref cast) ref)))
+
+(defn- auto-cast-placeholder
+  "The `?` placeholder for a value whose column type demands an implicit
+  cast pine adds on the user's behalf (as opposed to an explicit `::cast`
+  the user wrote, which is rendered on the column side instead - see
+  render-cast). Kept deliberately minimal for MySQL: :jsonb needs
+  CAST(? AS JSON), but :uuid and :date render as a bare `?` - MySQL has no
+  UUID type (the value's already a string) and Connector/J binds dates
+  correctly without help, so every unneeded CAST is just a new
+  syntax-error surface for no benefit."
+  [value-type]
+  (case *dialect*
+    :mysql (case value-type :jsonb "CAST(? AS JSON)" "?")
+    (case value-type :jsonb "?::jsonb" :uuid "?::uuid" :date "?::timestamp" "?")))
+
+(defn- render-operator
+  "MySQL has no ILIKE/NOT ILIKE - map to the closest MySQL equivalent."
+  [operator]
+  (if (= *dialect* :mysql)
+    (case operator "ILIKE" "LIKE" "NOT ILIKE" "NOT LIKE" operator)
+    operator))
+
+(defn- in-subquery
+  "MySQL rejects `<verb> <target> ... WHERE id IN ( SELECT ... FROM <same
+  target> ... )` on two counts: ER_UPDATE_TABLE_USED (1093) - can't select
+  from the update/delete target in its own subquery - and error 1235,
+  LIMIT isn't allowed inside an IN subquery (reachable whenever a user
+  writes `| limit: N | delete!`). Wrapping the inner SELECT in a derived
+  table sidesteps both. Identity for Postgres. Both inner selects are
+  already single-column by construction, so SELECT * here is safe."
+  [sql]
+  (case *dialect*
+    :mysql (str "SELECT * FROM ( " sql " ) AS " (q "pine_sub"))
+    sql))
+
 (defn- join-column-ref
   "Render a join column, casting to text when the two sides of a heuristic
   join (a naming-convention guess, not a real FK) turn out to have
@@ -28,7 +119,8 @@
   Real FK joins are never cast: the constraint already guarantees the types
   line up, so casting would just throw away index usage."
   [needs-cast? alias column]
-  (str (q alias column) (when needs-cast? "::text")))
+  (let [ref (q alias column)]
+    (if needs-cast? (render-cast ref "text") ref)))
 
 (defn- build-join-clause [{:keys [tables joins aliases]}]
   (when (not-empty (rest tables))
@@ -86,7 +178,7 @@
                        ;; Auto-ID columns should render as unquoted id
                        auto-id (str (q alias) ".id")
                        ;; Column function (currently date functions)
-                       col-fn (str "TO_CHAR(DATE_TRUNC('" col-fn "', " (q alias column) "), '" (col-fn-format col-fn) "')")
+                       col-fn (col-fn-expr col-fn (q alias column))
                        ;; Symbol-based columns (like aggregates)
                        (empty? column) (if alias (str (q alias) "." symbol) symbol)
                        ;; Regular columns
@@ -128,6 +220,20 @@
                  (q alias column)))
              group)))))
 
+(defn- build-where-clause [where]
+  (when (not-empty where)
+    (str "WHERE "
+         (s/join " AND "
+                 (for [[alias col cast operator value] where]
+                   (if (or (= operator "IN") (= operator "NOT IN"))
+                     (str (q alias col) " " (render-operator operator) " (" (s/join ", " (repeat (count value) "?")) ")")
+                     (str (column-ref-with-cast alias col cast) " " (render-operator operator) " "
+                          (cond
+                            (= (:type value) :symbol) (:value value)
+                            (= (:type value) :column) (let [[a col] (:value value)] (q a col))
+                            ;; Cast the parameter/value, not the column (unless explicit cast)
+                            :else (if cast "?" (auto-cast-placeholder (:type value)))))))))))
+
 (defn- build-bare-select [state]
   (let [{:keys [tables _columns limit where aliases]} state
         from         (let [{a :alias} (first tables)
@@ -135,20 +241,7 @@
                        (str (q schema table) " AS " (q a)))
         join         (build-join-clause state)
         select       (build-columns-clause state)
-        where-clause (when (not-empty where)
-                       (str "WHERE "
-                            (s/join " AND "
-                                    (for [[alias col cast operator value] where]
-                                      (if (or (= operator "IN") (= operator "NOT IN"))
-                                        (str (q alias col) " " operator " (" (s/join ", " (repeat (count value) "?"))  ")")
-                                        (str (q alias col) (when cast (str "::" cast)) " " operator " " (cond
-                                                                                                          (= (:type value) :symbol) (:value value)
-                                                                                                          (= (:type value) :column) (let [[a col] (:value value)] (q a col))
-                                                                                                                                                ;; Cast the parameter/value, not the column (unless explicit cast)
-                                                                                                          (and (= (:type value) :jsonb) (not cast)) "?::jsonb"
-                                                                                                          (and (= (:type value) :uuid) (not cast)) "?::uuid"
-                                                                                                          (and (= (:type value) :date) (not cast)) "?::timestamp"
-                                                                                                          :else "?")))))))
+        where-clause (build-where-clause where)
         group (build-group-clause state)
         order (build-order-clause state)
         limit (when limit (str "LIMIT " limit))
@@ -241,7 +334,7 @@
                                        ;; Auto-ID columns should render as unquoted id
                                        auto-id (str (q alias) ".id")
                                        ;; Column function (currently date functions)
-                                       col-fn (str "TO_CHAR(DATE_TRUNC('" col-fn "', " (q alias column) "), '" (col-fn-format col-fn) "')")
+                                       col-fn (col-fn-expr col-fn (q alias column))
                                        ;; Regular columns
                                        :else (q alias column))
                                    ;; Always use an alias: either column-alias or column name
@@ -251,19 +344,7 @@
         select-clause (str "SELECT " select-parts)
         from (str "FROM " (q schema table) " AS " (q a))
         join (build-join-clause {:tables tables :joins joins :aliases aliases})
-        where-clause (when (not-empty where)
-                       (str "WHERE "
-                            (s/join " AND "
-                                    (for [[alias col cast operator value] where]
-                                      (if (or (= operator "IN") (= operator "NOT IN"))
-                                        (str (q alias col) " " operator " (" (s/join ", " (repeat (count value) "?"))  ")")
-                                        (str (q alias col) (when cast (str "::" cast)) " " operator " " (cond
-                                                                                                          (= (:type value) :symbol) (:value value)
-                                                                                                          (= (:type value) :column) (let [[a col] (:value value)] (q a col))
-                                                                                                          (and (= (:type value) :jsonb) (not cast)) "?::jsonb"
-                                                                                                          (and (= (:type value) :uuid) (not cast)) "?::uuid"
-                                                                                                          (and (= (:type value) :date) (not cast)) "?::timestamp"
-                                                                                                          :else "?")))))))]
+        where-clause (build-where-clause where)]
     (s/join " " (filter some? [select-clause from join where-clause]))))
 
 (defn- build-outer-select-for-group
@@ -321,7 +402,7 @@
         {:keys [column]}                  delete
         state                             (assoc state :columns [{:column column :alias current}])
         {:keys [query params]}            (build-select-query state)]
-    {:query (str "DELETE FROM " (q schema table) " WHERE " (q column) " IN ( "  query " )")
+    {:query (str "DELETE FROM " (q schema table) " WHERE " (q column) " IN ( "  (in-subquery query) " )")
      :params params}))
 
 (defn- build-single-update-query [state update-alias assignments]
@@ -333,10 +414,7 @@
                                     (str (q column) " = " (cond
                                                             (= (:type value) :symbol) (:value value)
                                                             (= (:type value) :column) (let [{:keys [alias column]} value] (q alias column))
-                                                            (= (:type value) :jsonb) "?::jsonb"
-                                                            (= (:type value) :uuid) "?::uuid"
-                                                            (= (:type value) :date) "?::timestamp"
-                                                            :else "?"))))
+                                                            :else (auto-cast-placeholder (:type value))))))
                                 assignments))
         state-for-subquery (-> state
                                (assoc :columns [{:column "id" :alias update-alias}])
@@ -346,7 +424,7 @@
                            (map :value)
                            (filter #(not (or (= (:type %) :symbol) (= (:type %) :column)))))]
     {:table (if schema (str schema "." table) table)
-     :query (str "UPDATE " (q schema table) " SET " set-clause " WHERE id IN ( " query " )")
+     :query (str "UPDATE " (q schema table) " SET " set-clause " WHERE id IN ( " (in-subquery query) " )")
      :params (concat update-params params)}))
 
 (defn build-update-queries [state]
@@ -362,22 +440,23 @@
           grouped)))
 
 (defn build-query [state]
-  (let [{:keys [type]} (state :operation)]
-    (cond
-      (let [cur (-> state :current)]
-        (or (nil? cur)
-            (= "" (get-in state [:aliases cur :table])))) {:query "" :params nil}
-      (= type :delete-action) (build-delete-query state)
-      (= type :update-action) {:queries (build-update-queries state)}
-      (= type :update-partial) {:queries (build-update-queries state)}
-      (= type :count) (build-count-query state)
-      (= type :group) (build-group-query state)
-      ;; no op
-      (= type :delete) {:query " /* No SQL. Evaluate the pine expression for results */ "}
-      ;; :paths only generates candidate pine expressions (see hints.paths) -
-      ;; it never builds a query of its own, same as bare :delete above.
-      (= type :paths) {:query " /* No SQL. Pick a path from hints.paths and build that expression instead */ "}
-      :else (build-select-query (update state :limit #(or % 250))))))
+  (binding [*dialect* (connections/get-dialect (:connection-id state))]
+    (let [{:keys [type]} (state :operation)]
+      (cond
+        (let [cur (-> state :current)]
+          (or (nil? cur)
+              (= "" (get-in state [:aliases cur :table])))) {:query "" :params nil}
+        (= type :delete-action) (build-delete-query state)
+        (= type :update-action) {:queries (build-update-queries state)}
+        (= type :update-partial) {:queries (build-update-queries state)}
+        (= type :count) (build-count-query state)
+        (= type :group) (build-group-query state)
+        ;; no op
+        (= type :delete) {:query " /* No SQL. Evaluate the pine expression for results */ "}
+        ;; :paths only generates candidate pine expressions (see hints.paths) -
+        ;; it never builds a query of its own, same as bare :delete above.
+        (= type :paths) {:query " /* No SQL. Pick a path from hints.paths and build that expression instead */ "}
+        :else (build-select-query (update state :limit #(or % 250)))))))
 
 (defn formatted-query [build-result]
   (let [replacer (fn [s param]

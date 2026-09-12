@@ -4,6 +4,7 @@
         ;; db
         org.clojure/java.jdbc {:mvn/version "0.7.3"}
         org.postgresql/postgresql {:mvn/version "42.2.24.jre7"}
+        com.mysql/mysql-connector-j {:mvn/version "8.4.0" :exclusions [com.google.protobuf/protobuf-java]}
         com.zaxxer/HikariCP {:mvn/version "5.0.1"}
         ;; api
         ring/ring-core {:mvn/version "1.12.1"}
