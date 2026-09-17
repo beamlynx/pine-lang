@@ -66,7 +66,10 @@
         (catch Exception _
           value))
       value)
-    ("varchar" "text" "char" "character" "longtext" "mediumtext" "tinytext") (string (:value value))
+    ;; bpchar is Postgres's own internal name for CHAR(n)/"character" --
+    ;; pg_catalog's pg_type.typname (postgres.clj's get-columns) returns it
+    ;; where information_schema.columns would have said "character".
+    ("varchar" "text" "char" "character" "bpchar" "longtext" "mediumtext" "tinytext") (string (:value value))
     ("date" "timestamp" "timestamptz" "timestamp without time zone" "timestamp with time zone" "datetime")
     (if (= (:type value) :string)
       (try

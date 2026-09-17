@@ -28,22 +28,47 @@ WHERE con.contype = 'f'
       (rest (jdbc/query {:connection conn} sql opts)))))
 
 (defn- get-columns
-  "Get the columns for all tables"
+  "Get the columns for all tables.
+
+  Queries pg_catalog directly (pg_attribute/pg_class/pg_namespace/pg_type)
+  rather than information_schema.columns, which Postgres filters to only the
+  columns a role has some privilege on (owner, or any of SELECT/INSERT/
+  UPDATE/DELETE/REFERENCES/TRIGGER) -- a role with no grants at all saw no
+  columns, so no tables ever reached hints, even though get-foreign-keys
+  above already used pg_catalog and so already saw (and hinted) relations to
+  those same invisible tables. pg_catalog's own tables carry no such
+  filter -- like get-foreign-keys, this is metadata every role can read
+  regardless of grants; it never touches row data, so running an actual
+  query against an ungranted table is unaffected and still fails as normal.
+
+  data_type is pg_type.typname (Postgres's internal short name: e.g. int4,
+  bool, timestamptz, bpchar) rather than information_schema's ANSI display
+  name (integer, boolean, timestamp with time zone, character) --
+  convert-value-to-db-type (data_types.clj) already matches both spellings
+  side by side for every case this mattered for."
   [pool]
   (prn (format "Loading all columns..."))
   (let [opts {:as-arrays? true}
         sql "SELECT
-  table_schema,
-  table_name,
-  column_name,
-  ordinal_position,
-  data_type,
-  character_maximum_length,
-  is_nullable,
-  column_default
-FROM information_schema.columns
-WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-ORDER BY table_schema, table_name, ordinal_position"]
+  n.nspname AS table_schema,
+  c.relname AS table_name,
+  a.attname AS column_name,
+  a.attnum AS ordinal_position,
+  t.typname AS data_type,
+  (CASE WHEN t.typname IN ('varchar', 'bpchar') AND a.atttypmod > 4
+        THEN a.atttypmod - 4 END) AS character_maximum_length,
+  (CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END) AS is_nullable,
+  pg_get_expr(ad.adbin, ad.adrelid) AS column_default
+FROM pg_attribute a
+JOIN pg_class c ON c.oid = a.attrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_type t ON t.oid = a.atttypid
+LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
+WHERE a.attnum > 0
+  AND NOT a.attisdropped
+  AND c.relkind IN ('r', 'v', 'm', 'f', 'p')
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY n.nspname, c.relname, a.attnum"]
     (with-open [conn (.getConnection pool)]
       (rest (jdbc/query {:connection conn} sql opts)))))
 
