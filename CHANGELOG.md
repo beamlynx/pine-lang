@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Fixed
+- A table, column, or alias starting with an underscore (e.g. `_user`) failed to parse at all -- `symbol`'s grammar required a leading letter. Identifiers can now start with either a letter or an underscore.
 
 ## [0.44.0] - 2026-09-12
 ### Added
