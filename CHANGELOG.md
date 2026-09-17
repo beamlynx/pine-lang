@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Changed
+- A connection's id now folds in the database name (`host:port:dbname`), not just `host:port` — two different databases on the same server can be registered and connected to at the same time, where previously the second registration was rejected outright. Registering the same database again as a different user is still rejected, same as before.
 
 ## [0.44.0] - 2026-09-12
 ### Added

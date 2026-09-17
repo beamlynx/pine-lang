@@ -109,8 +109,17 @@
   (let [[_ host-port dbname] (re-find #"^jdbc:[^:]+://([^/]+)/([^?;]*)" url)]
     {:host-port host-port :dbname dbname}))
 
-(defn make-connection-id [pool]
-  (:host-port (parse-jdbc-url (.getJdbcUrl pool))))
+(defn make-connection-id
+  "host:port alone can't identify a connection -- two different databases on
+  the same server need distinct ids so both can be registered at once, so
+  dbname is folded in too. Never parsed back apart (checked: nothing in this
+  codebase splits an id), only ever compared for equality or used as a `@pools`
+  key and a Compojure route segment (`/api/v1/connections/:id/...`) -- which
+  is also why dbname is joined with `:` rather than `/`: a literal `/` would
+  split into two path segments and 404."
+  [pool]
+  (let [{:keys [host-port dbname]} (parse-jdbc-url (.getJdbcUrl pool))]
+    (str host-port ":" dbname)))
 
 (defn jdbc-url->label [url]
   (let [{:keys [host-port dbname]} (parse-jdbc-url url)]
@@ -133,9 +142,10 @@
 (defn- same-target?
   "Whether an already-registered pool points at the same database, as the
   same user, as a newly built one. Compared on the JDBC URL and username
-  rather than the connection id, because the id is only `host:port` -- two
-  different databases on one server share an id, so matching ids alone does
-  not mean the pools are interchangeable."
+  rather than just the connection id: two ids only collide here when host,
+  port, and dbname all match (make-connection-id folds dbname in), so the
+  one remaining case this distinguishes is the same database registered
+  again under a different user."
   [existing candidate]
   (and (instance? HikariDataSource existing)
        (= (.getJdbcUrl ^HikariDataSource existing) (.getJdbcUrl candidate))
@@ -145,28 +155,26 @@
   "Registers a pool for `connection` and returns its id.
 
   Never disturbs a pool that is already registered. Registering the same
-  database as the same user reuses the existing pool; anything else that
-  would land on an id already in use is rejected.
+  database as the same user reuses the existing pool; registering it again
+  as a *different* user is rejected.
 
   Both halves fix real problems. A connection id is derived from the pool's
-  own `host:port`, so re-registering the same database always lands on the
-  same key. This used to be a bare `swap! pools assoc`, which overwrote the
-  entry and left the displaced HikariDataSource open with nothing
-  referencing it. The pool config sets `minimumIdle 1`, so every orphan held
-  a real Postgres connection for the life of the process -- 32 leaked pools
-  turned up in a single desktop session, against Postgres's default limit of
-  100. A long-running session would eventually be unable to connect at all.
+  own `host:port:dbname`, so re-registering the same database always lands
+  on the same key. This used to be a bare `swap! pools assoc`, which
+  overwrote the entry and left the displaced HikariDataSource open with
+  nothing referencing it. The pool config sets `minimumIdle 1`, so every
+  orphan held a real Postgres connection for the life of the process -- 32
+  leaked pools turned up in a single desktop session, against Postgres's
+  default limit of 100. A long-running session would eventually be unable to
+  connect at all.
 
   Rejecting rather than replacing is deliberate. Closing the displaced pool
-  would fix the leak, but it would also abort queries still running on it --
-  and because the id is only `host:port`, the pool being closed could belong
-  to a *different* database the user is actively querying. Note this takes
-  nothing away: two databases on one server share an id, so they could never
-  coexist in this map anyway. Replacing silently pointed an existing
-  connection id at a different database, which is a correctness hazard on
-  top of the leak. An explicit error is the honest version of a limitation
-  that was already there. Callers that genuinely want to swap targets can
-  `remove-connection-pool` first, which closes the pool properly.
+  would fix the leak, but it would also abort queries still running on it.
+  Replacing silently pointed an existing connection id at a different user's
+  session, which is a correctness hazard on top of the leak. An explicit
+  error is the honest version of that limitation. Callers that genuinely
+  want to swap targets can `remove-connection-pool` first, which closes the
+  pool properly.
 
   Reuse compares the JDBC URL and username, so a changed *password* reuses
   the existing pool rather than rebuilding it. If credentials were rotated
@@ -187,9 +195,8 @@
       :else
       (do (.close candidate)
           (throw (ex-info
-                  (format (str "Connection id \"%s\" is already in use by a different database or user. "
-                               "pine identifies a connection by host and port only, so two databases on the "
-                               "same server cannot both be registered. Disconnect \"%s\" first.")
+                  (format (str "Connection id \"%s\" is already registered under a different user. "
+                               "Disconnect \"%s\" first.")
                           id id)
                   {:id id}))))))
 
