@@ -20,6 +20,13 @@
                                    :table "user"
                                    :join-column "id"}}]                         (p "public.user .id"))))
 
+  (testing "Parse identifiers starting with an underscore -- a leading `_` is a
+  common naming convention for internal/prefixed tables and columns (e.g.
+  `_user`), and symbol's regex used to require a leading letter, so these
+  failed to parse at all."
+    (is (= [{:type :table, :value {:table "_user"}}]                            (p "_user")))
+    (is (= {:type :select, :value [{:column "_id"}]}                            (last (p "user | select: _id")))))
+
   (testing "Parse `table` expressions with directionality"
 
     ;; table

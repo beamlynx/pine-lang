@@ -6,6 +6,9 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Changed
 - A connection's id now folds in the database name (`host:port:dbname`), not just `host:port` — two different databases on the same server can be registered and connected to at the same time, where previously the second registration was rejected outright. Registering the same database again as a different user is still rejected, same as before.
 
+### Fixed
+- A table, column, or alias starting with an underscore (e.g. `_user`) failed to parse at all -- `symbol`'s grammar required a leading letter. Identifiers can now start with either a letter or an underscore.
+
 ## [0.44.0] - 2026-09-12
 ### Added
 - MySQL 8.0+ as a second, fully-parallel database backend alongside Postgres — identifier quoting, date bucketing, casts, and update!/delete! all render MySQL-correct SQL, and schema introspection is scoped to the connected database via `DATABASE()`. A query touching a `DATETIME`/`DATE`/`TIME` column correctly returns its value as JSON (MySQL's JDBC driver returns `java.time.LocalDateTime`/`LocalDate`/`LocalTime`, which needed their own Cheshire encoders alongside Postgres's existing ones). MySQL 5.7 isn't supported: Pine emits `WITH` (CTEs) for `count:`, `group:`, every `|=` variable, and auto-checkpoints, and 5.7 has no CTE support. Covered by the same fixture-based test suite Postgres already has (no live database in CI), plus manual verification against a real MySQL server (`dev.docker-compose.yml`).
