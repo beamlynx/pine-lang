@@ -7,6 +7,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - A connection's id now folds in the database name (`host:port:dbname`), not just `host:port` — two different databases on the same server can be registered and connected to at the same time, where previously the second registration was rejected outright. Registering the same database again as a different user is still rejected, same as before.
 
 ### Fixed
+- A Postgres role with no `SELECT` grant on a table (or no `USAGE` on its schema) never saw that table's columns, so it never appeared in hints at all -- even though `get-foreign-keys` already indexed relations pointing at it, since that query already read `pg_catalog` rather than `information_schema`. Column indexing now reads `pg_catalog` (`pg_attribute`/`pg_class`/`pg_namespace`/`pg_type`) too, which every role can read regardless of grants -- schema/column metadata was never actually gated the same way row data is. Running an actual query against a table with no grant is unaffected and still fails, same as always; only introspection changes.
 - A table, column, or alias starting with an underscore (e.g. `_user`) failed to parse at all -- `symbol`'s grammar required a leading letter. Identifiers can now start with either a letter or an underscore.
 
 ## [0.44.0] - 2026-09-12
