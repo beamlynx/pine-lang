@@ -58,7 +58,7 @@
 (deftest test-add-connection-pool-does-not-leak
   (testing "re-registering the same database reuses the pool instead of stacking a new one"
     ;; The regression this guards: the id is derived from the pool's own
-    ;; host:port, so this always lands on the same key. A bare
+    ;; host:port:dbname, so this always lands on the same key. A bare
     ;; `swap! pools assoc` overwrote the entry and left the previous
     ;; HikariDataSource open and unreferenced -- and since the pool config
     ;; sets minimumIdle 1, each orphan held a real Postgres connection for
@@ -68,44 +68,41 @@
           url "jdbc:postgresql://leak-test:5432/app"]
       (try
         (with-redefs [connections/create-pool (fn [_] (fake-hikari url "app_user" first-closed?))]
-          (is (= "leak-test:5432" (connections/add-connection-pool {:host "leak-test"}))))
+          (is (= "leak-test:5432:app" (connections/add-connection-pool {:host "leak-test"}))))
         (with-redefs [connections/create-pool (fn [_] (fake-hikari url "app_user" second-closed?))]
-          (is (= "leak-test:5432" (connections/add-connection-pool {:host "leak-test"}))))
+          (is (= "leak-test:5432:app" (connections/add-connection-pool {:host "leak-test"}))))
 
         (is (not @first-closed?) "the pool still in the registry must stay open")
         (is @second-closed? "the redundant second pool must be closed, not leaked")
-        (is (= 1 (count (filter #(= "leak-test:5432" %) (keys @connections/pools)))))
+        (is (= 1 (count (filter #(= "leak-test:5432:app" %) (keys @connections/pools)))))
         (finally
-          (swap! connections/pools dissoc "leak-test:5432")))))
+          (swap! connections/pools dissoc "leak-test:5432:app")))))
 
-  (testing "a different database on the same host:port is rejected, leaving the existing pool untouched"
-    ;; A connection id is only host:port, so two different databases on one
-    ;; server collide on the same key and could never coexist here. The old
-    ;; code silently overwrote the entry, which pointed an existing
-    ;; connection id at a different database -- a correctness hazard on top
-    ;; of the leak. Closing the displaced pool instead would abort queries
-    ;; still running against a database the user may still be using, so this
-    ;; refuses rather than disturbing anything already registered.
-    (let [old-closed? (atom false)
-          new-closed? (atom false)]
+  (testing "a different database on the same host:port registers as a separate pool"
+    ;; The id now folds dbname in (host:port:dbname), so two databases on one
+    ;; server land on distinct keys and can coexist -- this is the whole
+    ;; point of the multi-database-per-server feature. Both stay open; there
+    ;; is nothing here to reject or close.
+    (let [one-closed? (atom false)
+          two-closed? (atom false)]
       (try
         (with-redefs [connections/create-pool
-                      (fn [_] (fake-hikari "jdbc:postgresql://swap-test:5432/one" "u1" old-closed?))]
-          (connections/add-connection-pool {:host "swap-test"}))
+                      (fn [_] (fake-hikari "jdbc:postgresql://swap-test:5432/one" "u1" one-closed?))]
+          (is (= "swap-test:5432:one" (connections/add-connection-pool {:host "swap-test"}))))
         (with-redefs [connections/create-pool
-                      (fn [_] (fake-hikari "jdbc:postgresql://swap-test:5432/two" "u1" new-closed?))]
-          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"already in use"
-                                (connections/add-connection-pool {:host "swap-test"}))))
+                      (fn [_] (fake-hikari "jdbc:postgresql://swap-test:5432/two" "u1" two-closed?))]
+          (is (= "swap-test:5432:two" (connections/add-connection-pool {:host "swap-test"}))))
 
-        (is (not @old-closed?) "the registered pool must not be closed out from under in-flight queries")
-        (is @new-closed? "the rejected pool must be closed, not leaked")
+        (is (not @one-closed?) "the first database's pool must stay open")
+        (is (not @two-closed?) "the second database's pool must stay open too")
         (is (= "jdbc:postgresql://swap-test:5432/one"
-               (.getJdbcUrl (@connections/pools "swap-test:5432")))
-            "the original registration must still be the one in the map")
+               (.getJdbcUrl (@connections/pools "swap-test:5432:one"))))
+        (is (= "jdbc:postgresql://swap-test:5432/two"
+               (.getJdbcUrl (@connections/pools "swap-test:5432:two"))))
         (finally
-          (swap! connections/pools dissoc "swap-test:5432")))))
+          (swap! connections/pools dissoc "swap-test:5432:one" "swap-test:5432:two")))))
 
-  (testing "a different user on the same database is rejected too"
+  (testing "a different user on the same database is rejected"
     (let [old-closed? (atom false)
           new-closed? (atom false)
           url "jdbc:postgresql://user-test:5432/app"]
@@ -113,13 +110,13 @@
         (with-redefs [connections/create-pool (fn [_] (fake-hikari url "reader" old-closed?))]
           (connections/add-connection-pool {:host "user-test"}))
         (with-redefs [connections/create-pool (fn [_] (fake-hikari url "writer" new-closed?))]
-          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"already in use"
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"already registered"
                                 (connections/add-connection-pool {:host "user-test"}))))
 
         (is (not @old-closed?) "credentials differing must not silently take over the existing pool")
         (is @new-closed? "the rejected pool must be closed, not leaked")
         (finally
-          (swap! connections/pools dissoc "user-test:5432"))))))
+          (swap! connections/pools dissoc "user-test:5432:app"))))))
 
 (deftest test-jdbc-url
   (testing "Postgres: dbtype defaults, port defaults to 5432"
