@@ -145,7 +145,13 @@
     (is (= [{:type :where, :value [(dt/aliased-column "x" "name") "=" (dt/aliased-column "x" "first_name")]}] (p "x.name = x.first_name"))))
 
   (testing "Parse `where` `or` expressions"
-    (is (= [{:type :where, :value [(dt/column "name") "=" (dt/string "John Doe")]}]       (p "w: name='John Doe', age=24 "))))
+    (is (= [{:type :where, :value {:or [[(dt/column "name") "=" (dt/string "John Doe")]
+                                        [(dt/column "age") "=" (dt/number "24")]]}}]
+           (p "w: name='John Doe', age=24 ")))
+    (is (= [{:type :where, :value {:or [[(dt/column "id") "=" (dt/number "1")]
+                                        [(dt/column "id") "=" (dt/number "2")]
+                                        [(dt/column "id") "=" (dt/number "3")]]}}]
+           (p "w: id = 1, id = 2, id = 3"))))
 
   ;; in progress - the case isn't being processed at the moment
   (testing "Parse `where` expressions with type hinting"

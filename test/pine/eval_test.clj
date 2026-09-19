@@ -129,6 +129,17 @@
             :params (map dt/string ["PK", "DK"])}
            (generate "company | where: country in ('PK' 'DK')"))))
 
+  (testing "Condition : OR (comma-separated conditions inside one where: segment)"
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE (\"c_0\".\"id\" = ? OR \"c_0\".\"id\" = ?) LIMIT 250",
+            :params (map dt/number ["1", "2"])}
+           (generate "company | where: id = 1, id = 2")))
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE (\"c_0\".\"id\" = ? OR \"c_0\".\"id\" = ? OR \"c_0\".\"id\" = ?) LIMIT 250",
+            :params (map dt/number ["1", "2", "3"])}
+           (generate "company | where: id = 1, id = 2, id = 3")))
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"country\" = ? AND (\"c_0\".\"id\" = ? OR \"c_0\".\"id\" = ?) LIMIT 250",
+            :params (concat (map dt/string ["PK"]) (map dt/number ["1", "2"]))}
+           (generate "company | where: country = 'PK' | id = 1, id = 2"))))
+
   (testing "Condition : columns"
     (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" = \"country\" LIMIT 250",
             :params nil}

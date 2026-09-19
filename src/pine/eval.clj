@@ -220,19 +220,43 @@
                  (q alias column)))
              group)))))
 
+(defn- render-condition [[alias col cast operator value]]
+  (if (or (= operator "IN") (= operator "NOT IN"))
+    (str (q alias col) " " (render-operator operator) " (" (s/join ", " (repeat (count value) "?")) ")")
+    (str (column-ref-with-cast alias col cast) " " (render-operator operator) " "
+         (cond
+           (= (:type value) :symbol) (:value value)
+           (= (:type value) :column) (let [[a col] (:value value)] (q a col))
+           ;; Cast the parameter/value, not the column (unless explicit cast)
+           :else (if cast "?" (auto-cast-placeholder (:type value)))))))
+
 (defn- build-where-clause [where]
   (when (not-empty where)
     (str "WHERE "
          (s/join " AND "
-                 (for [[alias col cast operator value] where]
-                   (if (or (= operator "IN") (= operator "NOT IN"))
-                     (str (q alias col) " " (render-operator operator) " (" (s/join ", " (repeat (count value) "?")) ")")
-                     (str (column-ref-with-cast alias col cast) " " (render-operator operator) " "
-                          (cond
-                            (= (:type value) :symbol) (:value value)
-                            (= (:type value) :column) (let [[a col] (:value value)] (q a col))
-                            ;; Cast the parameter/value, not the column (unless explicit cast)
-                            :else (if cast "?" (auto-cast-placeholder (:type value)))))))))))
+                 (for [entry where]
+                   ;; A {:or [...]} entry is the comma-separated conditions from one
+                   ;; where: segment -- render as a single parenthesized OR group.
+                   (if-let [conditions (:or entry)]
+                     (str "(" (s/join " OR " (map render-condition conditions)) ")")
+                     (render-condition entry)))))))
+
+(defn- where-condition-values
+  "Flat [value ...] seq for one :where entry, whether a plain condition or an
+  {:or [...]} group -- each value is still dt-typed (a map or, for IN/NOT IN, a
+  collection of maps), matching what remove-symbols/flatten below expect."
+  [entry]
+  (if-let [conditions (:or entry)]
+    (map #(nth % 4) conditions)
+    [(nth entry 4)]))
+
+(defn- where-params [where]
+  (when (not-empty where)
+    (->> where
+         (mapcat where-condition-values)
+         (map #(if (coll? %) % [%]))
+         remove-symbols
+         flatten)))
 
 (defn- build-bare-select [state]
   (let [{:keys [tables _columns limit where aliases]} state
@@ -246,11 +270,7 @@
         order (build-order-clause state)
         limit (when limit (str "LIMIT " limit))
         query (s/join " " (filter some? [select from join where-clause group order limit]))
-        params (when (not-empty where)
-                 (->> where
-                      (map (fn [[_alias _col _cast _operator value]] (if (coll? value) value [value])))
-                      remove-symbols
-                      flatten))]
+        params (where-params where)]
 
     {:query query :params params}))
 
@@ -389,11 +409,7 @@
         ;; Combine into CTE
         query (str "WITH " cte-prefix (q cte-alias) " AS ( " inner-query " ) " select " " group-by)
         ;; Extract params from WHERE clause
-        params (when (not-empty (:where state))
-                 (->> (:where state)
-                      (map (fn [[_alias _col _cast _operator value]] (if (coll? value) value [value])))
-                      remove-symbols
-                      flatten))]
+        params (where-params (:where state))]
     {:query query :params (seq (concat cte-params params))}))
 
 (defn build-delete-query [state]

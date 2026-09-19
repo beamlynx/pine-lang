@@ -330,7 +330,10 @@
 
 (defmethod -normalize-op :WHERE [[_ payload]]
   (match payload
-    [:conditions & conditions] (first (map parse-condition conditions))
+    [:conditions & conditions]
+    (let [values (mapv (comp :value parse-condition) conditions)]
+      {:type :where
+       :value (if (next values) {:or values} (first values))})
     :else                (throw (ex-info "Unknown WHERE operation"      {:_ payload}))))
 
 (defn- parse-partial-condition [partial-condition]
