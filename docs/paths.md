@@ -66,10 +66,27 @@ current context within the hop cap below, not every table in the schema. It isn'
 paths the moment it's fully typed, so it's excluded from the suggestions too. Once the token names a real
 table, `hints.paths` fills with the search results.
 
+Tables the expression has already joined are left out of these suggestions too, on the same reasoning as the
+Constraints bullet below — offering one would mean offering a name that resolves to zero paths the moment it's
+finished.
+
 ## Constraints
 
 - Only simple paths (no table visited twice) are considered, so `company | ? company` and a self-referential
   FK (e.g. `employee.reports_to`) never produce a path back to the table already in scope.
+- The same rule spans the whole pipe, not just the table the search starts from: a path never re-enters any
+  table the expression has already joined. `? target` asks for a route the expression *doesn't* already have,
+  and a route back through `company` when `company` is already two pipes back isn't a new route — it lands you
+  in a second copy of a table you already have, holding (in almost every case) the row you started from. So
+  `company | employee | document | ? company` returns nothing at all, and `company | employee | ? document`
+  returns only the two direct `employee → document` routes, dropping the one that detours back up through
+  `company`. This can leave a target with no paths at all, which is the intended answer: there is no new way to
+  get there.
+  - A checkpoint (`l:`, `group:`) changes this, because it seals everything before it into a CTE. Those tables
+    are no longer joined by the outer query, so joining one again out there is a genuinely new join —
+    `company | employee | l: 10 | document | ? company` still finds its routes.
+  - A variable is never excluded either, for the same reason: it's a sealed snapshot, and re-joining the real
+    table it was built from is a supported join (see [variables](variables.md)).
 - Ordered by fewest *transitively redundant* hops first, then fewest *direction changes*, then fewest total
   hops as the final tiebreak — not shortest-first alone.
   - A hop is **transitively redundant** if the table it lands on is already reachable another way, through a
@@ -125,6 +142,9 @@ direction-change-count, total-hop-count]`, ascending) rather than level-by-level
 family of algorithm as plain breadth-first search, just generalized from unweighted edges to edges whose cost
 depends on the wider reference graph and the hop before them, rather than being fixed. The search starts from
 `resolve-table` on `:current` — whatever real table or variable the preceding pipe left off at, since the
-`:paths` operation itself adds no table/join of its own (see `ast/main.clj`'s `handle-op`). Each hop keeps the
+`:paths` operation itself adds no table/join of its own (see `ast/main.clj`'s `handle-op`). The tables to skip
+come from `piped-table-names`, which reads `state :tables` (reset by `seal-as-cte`, which is what makes the
+checkpoint case above work) and keeps only real tables, not variables; both `find-table-paths` and
+`reachable-table-names` treat them as visited before the search starts. Each hop keeps the
 same shape a single-hop table hint already has (schema/table/column/related-column/parent/resolution/pine) — a
 path is a subset of that, not a new shape.
