@@ -153,6 +153,15 @@
     (is (= [[nil "name" nil "NOT ILIKE" (dt/string "acme%")]]
            (generate :where "name not ilike 'acme%'"))))
 
+  (testing "Generate ast for `where` `or` conditions (comma inside one where: segment)"
+    (is (= [{:or [["c" "name" nil "=" (dt/string "Acme")]
+                  ["c" "country" nil "=" (dt/string "PK")]]}]
+           (generate :where "company as c | name = 'Acme', country = 'PK'")))
+    (is (= [["c" "name" nil "=" (dt/string "Acme")]
+            {:or [["c" "country" nil "=" (dt/string "PK")]
+                  ["c" "country" nil "=" (dt/string "DK")]]}]
+           (generate :where "company as c | name = 'Acme' | country = 'PK', country = 'DK'"))))
+
   (testing "Generate ast for `where` with dates"
     (is (= [[nil "created_at" nil "=" (dt/date "2025-01-01")]]
            (generate :where "created_at = '2025-01-01'")))

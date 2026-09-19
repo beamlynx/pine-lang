@@ -15,29 +15,36 @@
         (dt/convert-value-to-db-type value db-type))
       value)))
 
-(defn handle [state [column operator value]]
-  (let [a (state :current)
-        ;; A live alias (e.g. re-bound via `as`) always wins over a stale |= snapshot
-        resolve-alias #(if (contains? (:aliases state) %) % (or (get-in state [:pending-assignments % :current]) %))
-        [alias col cast] (:value column)
-        alias (resolve-alias (or alias a))
+(defn- make-resolve-alias [state]
+  #(if (contains? (:aliases state) %) % (or (get-in state [:pending-assignments % :current]) %)))
+
+(defn- resolve-condition
+  "Turn one parsed [column operator value] triple into the flat 5-tuple
+  [alias col cast operator converted-value] stored in state's :where."
+  [state current resolve-alias [column operator value]]
+  (let [[alias col cast] (:value column)
+        alias (resolve-alias (or alias current))
         converted-value (if (and (not= (:type value) :symbol) (not= (:type value) :column))
                           (convert-condition-value value alias col state)
                           value)]
-    (update state :where conj [alias col cast operator converted-value])))
+    [alias col cast operator converted-value]))
+
+(defn handle [state value]
+  (let [current (state :current)
+        resolve-alias (make-resolve-alias state)]
+    (if-let [conditions (:or value)]
+      ;; Comma-separated conditions inside one where: segment combine with OR,
+      ;; stored as a single group so the evaluator can tell them apart from the
+      ;; AND-ed entries produced by separate where: pipe-steps.
+      (update state :where conj {:or (mapv #(resolve-condition state current resolve-alias %) conditions)})
+      (update state :where conj (resolve-condition state current resolve-alias value)))))
 
 (defn handle-partial [state {:keys [complete-conditions partial-condition]}]
   ;; For WHERE-PARTIAL, we only store the complete conditions in :where
   ;; The partial condition is used for hints, not for query generation
-  (let [a (state :current)
-        resolve-alias #(if (contains? (:aliases state) %) % (or (get-in state [:pending-assignments % :current]) %))]
+  (let [current (state :current)
+        resolve-alias (make-resolve-alias state)]
     (reduce (fn [s condition]
-              (let [[column operator value] (:value condition)
-                    [alias col cast] (:value column)
-                    alias (resolve-alias (or alias a))
-                    converted-value (if (and (not= (:type value) :symbol) (not= (:type value) :column))
-                                      (convert-condition-value value alias col s)
-                                      value)]
-                (update s :where conj [alias col cast operator converted-value])))
+              (update s :where conj (resolve-condition s current resolve-alias (:value condition))))
             state
             complete-conditions)))
