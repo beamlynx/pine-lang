@@ -3,6 +3,10 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Added
+- A comment at the top of an expression is now a doc comment: `/api/v1/build` returns its text as `doc` on the response, so a client can render it as prose rather than showing it as grey text in an editor. Either comment style works -- a `/* ... */` block, or a run of `--` lines. The text comes back cleaned up for display: delimiters removed, javadoc-style leading `*` stripped, shared indentation removed. `doc` is the *first* expression's comment, since that is the one describing the whole tab. See `docs/comments.md`.
+- `prettify` (and so the `prettified` field both endpoints return) now keeps a doc comment instead of deleting it. It rebuilds an expression from the parsed operations' own text spans, and a leading comment is outside all of them, so any client that prettifies -- which beamlynx does on every canvas gesture -- used to lose the comment immediately. Comments between operations are still dropped, unchanged.
+
 ### Changed
 - A connection's id now folds in the database name (`host:port:dbname`), not just `host:port` — two different databases on the same server can be registered and connected to at the same time, where previously the second registration was rejected outright. Registering the same database again as a different user is still rejected, same as before.
 
@@ -13,6 +17,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ## [0.44.0] - 2026-09-12
 ### Added
 - MySQL 8.0+ as a second, fully-parallel database backend alongside Postgres — identifier quoting, date bucketing, casts, and update!/delete! all render MySQL-correct SQL, and schema introspection is scoped to the connected database via `DATABASE()`. A query touching a `DATETIME`/`DATE`/`TIME` column correctly returns its value as JSON (MySQL's JDBC driver returns `java.time.LocalDateTime`/`LocalDate`/`LocalTime`, which needed their own Cheshire encoders alongside Postgres's existing ones). MySQL 5.7 isn't supported: Pine emits `WITH` (CTEs) for `count:`, `group:`, every `|=` variable, and auto-checkpoints, and 5.7 has no CTE support. Covered by the same fixture-based test suite Postgres already has (no live database in CI), plus manual verification against a real MySQL server (`dev.docker-compose.yml`).
+
 ### Changed
 - Every request that fails now prints to the server's stdout: a new `wrap-exception-logging` middleware catches anything that escapes every route handler (including a failure while encoding the response itself), and every route's own `catch` blocks now log too. Previously a caught-and-handled failure (a bad connection, an unreachable database) produced a normal error response but printed nothing, making it undebuggable without reproducing by hand outside the server.
 
@@ -33,6 +38,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Fixed
 - A query could hang forever, taking every other database-backed request down with it, if whatever launched the server was not reading the server's own standard output. The server printed the full SQL of every query it ran; once nothing drained that stream, its buffer filled and each print blocked permanently. Endpoints that never touch the database kept working normally, including `/api/v1/build`, which made the server look healthy while every query sat unanswered. Per-query logging is now off unless `PINE_LOG_QUERIES=1` is set. Startup messages, which are few and only appear when a connection is indexed, are unchanged.
 - Registering a connection that was already registered leaked a database connection every time. A connection's id is derived from its own host and port, so re-registering the same database always overwrote the existing entry — but the pool it displaced was never closed, and the pool settings keep one connection open at all times. Each stale pool therefore held a real database connection for the life of the process; 32 of them accumulated in a single desktop session, against a default server limit of 100. Registering the same database as the same user now reuses the existing pool instead of building another one.
+
 
 ### Changed
 - Registering a **different** database or user under a connection id that is already taken now fails with an explanatory error, instead of silently taking that id over. Because a connection id is only a host and port, two databases on the same server share one id and could never both be registered — the old behaviour pointed the existing id at the new database, so queries a caller believed were running against the first database quietly ran against the second. Disconnect the existing connection first to reuse the id. The error names the id and says why.
@@ -97,6 +103,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ## [0.33.0] - 2026-04-20
 ### Added
 - Column hints for the `update!` / `u!` operation. Typing `u!` or `u! col = val,` now suggests remaining assignable columns, excluding those already assigned.
+
 
 ### Changed
 - The `=> count` in the `group` operation is now optional. `count` is used by default when omitted:
@@ -168,6 +175,7 @@ company | /* This is a multi-line block comment */
 ```
 
 ## [0.26.1] - 2025-09-07
+
 ### Changed
 - Using a readonly db user for the playground
 
@@ -285,6 +293,7 @@ email | group: status => count
 tenant as t | company | where: t.id = 'xxx'
 ```
 
+
 ### Changed
 - Default limit is removed for `count:` and `delete:` operations.
 - For `count:` operations, the `with` SQL clause is used to build the nested query e.g.
@@ -350,6 +359,7 @@ employee as e | document as d | s: e.id
 company | s:
 company | s: id,
 ```
+
 
 ### Changed
 - Connection id format is `host`:`port` instead of just the `host`.
@@ -429,10 +439,12 @@ company as c | document | from: c | employee
 ### Breaking
 - State: `joins` is a vector e.g. `[ "x" "y" ["x" "id" :has "y" "x_id"]]`
 
+
 ### Changed
 - State: `join-map` is kept for legacy reasons but it is only used internally.
 
 ## [0.7.2] - 2024-07-26
+
 ### Changed
 - No difference in functionality. Removed a lot of deprecated code - only keeping the code for reborn.
 
@@ -443,6 +455,7 @@ company as c | document | from: c | employee
 ## [0.7.0] - 2024-07-26
 ### Added
 - Support for `in` operator
+
 
 ### Changed
 - Error type is returned. It is either nothing or `parse`.
@@ -469,6 +482,7 @@ employee as e | s: e.name
 - Incorrect schema being returned in hints when joining from child to parent
 
 ## [0.5.2] - 2024-07-14
+
 ### Changed
 - Default `limit` is `250` if not specified
 
@@ -510,6 +524,7 @@ company | w: id='xxx'
 company | id='xxx'
 ```
 
+
 ### Changed
 - Conditions can't be combined with the tables e.g. `company id='xxx'`. Instead compose them using pipes: `company | id='xxx'`
 - Double quotes around strings aren't supported anymore. Use single quotes i.e. instead of `id="xxx"`, use `id='xxx'`
@@ -527,10 +542,12 @@ company | id='xxx'
 - Db host can be configrued using an environment variable: `DB_HOST`
 
 ## [0.4.6] - 2024-06-13
+
 ### Changed
 - The host is returned as the connection id instead of an internal identifier.
 
 ## [0.4.5] - 2024-06-13
+
 ### Changed
 - Updated configuration to require environment variables: `DB_NAME`, `DB_USER`, `DB_PASSWORD`
 
@@ -557,6 +574,7 @@ company | id='xxx'
 ## [0.4.1] - 2023-08-11
 ### Added
 - Better hints i.e. taking into consideration the context e.g. for expression `document | ..`, only tables related to `document` will be suggested. Also only schemas of the related tables will be suggested.
+
 
 ### Changed
 - Reverted the change for getting all the columns. Instead of listing all the columns, we are relying on the `*` again. The change was a remnant of bug related to the ordering of the columns which had to do nothing with explicitly specifying the columns.
