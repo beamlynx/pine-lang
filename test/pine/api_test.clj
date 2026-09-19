@@ -85,3 +85,31 @@
       ;; it since.
       (is (= (get-in single-block [:pending-assignments "x"])
              (get-in chained-blocks [:variables "x"]))))))
+
+(deftest test-api-build-doc
+  (testing "the doc comment at the top of the expression comes back on the response"
+    (let [response (api/api-build ["/* Tenants that never onboarded */ tenant"] nil :test)]
+      (is (nil? (:error response)))
+      (is (= "Tenants that never onboarded" (:doc response)))
+      ;; One field, not two: there is deliberately no per-expression
+      ;; :ast :doc alongside it.
+      (is (nil? (get-in response [:ast :doc])))))
+
+  (testing "no comment means no doc"
+    (let [response (api/api-build ["tenant"] nil :test)]
+      (is (nil? (:doc response)))))
+
+  (testing "the tab's doc is the FIRST block's, not the last block's"
+    ;; The client always sends block 0 through the active block, so the doc a
+    ;; tab was opened with stays resolvable however many blocks get added
+    ;; under it.
+    (let [response (api/api-build ["/* Active tenants */ tenant | limit: 1 |= x"
+                                   "-- second block\nx | count:"]
+                                  nil :test)]
+      (is (nil? (:error response)))
+      (is (= "Active tenants" (:doc response)))))
+
+  (testing "the prettified expression keeps the doc comment"
+    (let [response (api/api-build ["/* Active tenants */ tenant | limit: 1"] nil :test)]
+      (is (= "/* Active tenants */\ntenant\n | limit: 1"
+             (get-in response [:ast :prettified]))))))

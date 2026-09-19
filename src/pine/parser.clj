@@ -552,13 +552,105 @@
 (defn parse-or-fail [expression]
   (-> expression parser normalize-ops))
 
+;; ---------
+;; DOC COMMENT
+;; ---------
+;;
+;; A comment at the very top of an expression documents what the query is
+;; for. The grammar already accepts comments anywhere whitespace is legal
+;; (see pine.bnf's `ws`), but every rule hides `ws`, so the text never
+;; reaches the parse tree - by the time anything downstream sees the
+;; expression, the comment is gone.
+;;
+;; Reading it straight off the raw string rather than adding a DOC rule to
+;; the grammar is deliberate. The grammar is already correct about comments;
+;; it only discards them. A new top-level rule would have to compete with
+;; OPERATION for the same leading position in a grammar that every single
+;; operation depends on, and the whole payoff would be a few characters this
+;; scan reads just as exactly.
+;;
+;; Only the leading comment is a doc. Comments between operations stay
+;; whitespace, as they are today - attaching one to the operation it sits
+;; next to needs an anchor the expression doesn't currently have.
+
+(def ^:private leading-block-comment
+  ;; (?s) so `.` spans newlines; non-greedy so the first `*/` closes it.
+  #"(?s)\A\s*/\*(.*?)\*/")
+
+(def ^:private leading-line-comments
+  ;; A run of consecutive `--` lines. A genuinely blank line ends the run; a
+  ;; bare `--` (the usual way to space out paragraphs) does not.
+  #"\A\s*(?:[ \t]*--[^\r\n]*(?:\r?\n|\z))+")
+
+(defn- strip-marker
+  "Strip a per-line comment marker, plus the single space that conventionally
+  follows it. `--` on every line for a line-comment doc; the optional leading
+  `*` of a javadoc-style block, but only when every non-blank line has one -
+  otherwise a line legitimately starting with `*` would lose a character."
+  [marker lines]
+  (let [re (re-pattern (str "\\A[ \\t]*" marker "[ \\t]?"))
+        marked? (fn [line] (or (s/blank? line) (re-find re line)))]
+    (if (every? marked? lines)
+      (mapv #(s/replace % re "") lines)
+      lines)))
+
+(defn- dedent
+  "Remove the indentation every non-blank line shares."
+  [lines]
+  (let [indents (->> lines
+                     (remove s/blank?)
+                     (map #(count (re-find #"\A[ \t]*" %))))]
+    (if (seq indents)
+      (let [n (apply min indents)]
+        (mapv #(if (s/blank? %) "" (subs % n)) lines))
+      lines)))
+
+(defn- clean-doc [text marker]
+  (->> (s/split-lines text)
+       (mapv s/trimr)
+       (strip-marker marker)
+       dedent
+       (drop-while s/blank?)
+       reverse
+       (drop-while s/blank?)
+       reverse
+       (s/join "\n")))
+
+(defn extract-doc
+  "The doc comment at the top of an expression, or nil when there isn't one.
+
+  A leading `/* ... */` block, or a run of consecutive leading `--` lines.
+  Returns {:text <cleaned for display> :end <offset just past the comment>}.
+  `:end` is what prettify needs to copy the comment through verbatim; `:text`
+  has the delimiters, per-line markers and shared indentation removed, so a
+  caller can render it as prose. A comment with nothing but whitespace in it
+  is not a doc."
+  [expression]
+  (when (string? expression)
+    (let [[matched text marker]
+          (if-let [[m inner] (re-find leading-block-comment expression)]
+            [m inner "\\*"]
+            (when-let [m (re-find leading-line-comments expression)]
+              [m m "--"]))]
+      (when matched
+        (let [cleaned (clean-doc text marker)]
+          (when-not (s/blank? cleaned)
+            {:text cleaned :end (count matched)}))))))
+
 (defn prettify
   "Prettify a Pine expression by formatting each operation on its own line.
    Uses the parser to correctly handle pipes inside string values.
    Returns {:error ...} on parse failure so the caller can keep the original string.
    On success returns {:result <prettified string>
                        :operations [{:text <op text> :start <n> :end <n>} ...]}
-   where :start/:end are character offsets in the original expression."
+   where :start/:end are character offsets in the original expression.
+
+   A doc comment at the top is copied through verbatim onto its own lines.
+   It has to be: prettify rebuilds the expression out of the operations'
+   own spans, and a leading comment is in none of them - so without this it
+   is deleted the first time anything prettifies, which in canvas mode is
+   the very next gesture. Comments between operations are still dropped,
+   same as before."
   [expression]
   (let [result (parser expression)]
     (if (insta/failure? result)
@@ -570,6 +662,10 @@
                                {:expression expr
                                 :start start
                                 :end end}))
-                           operations)]
-        {:result (s/join "\n | " (map :expression op-infos))
+                           operations)
+            body (s/join "\n | " (map :expression op-infos))
+            doc (extract-doc expression)]
+        {:result (if doc
+                   (str (s/trim (subs expression 0 (:end doc))) "\n" body)
+                   body)
          :operations op-infos}))))

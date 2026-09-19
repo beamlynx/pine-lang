@@ -164,6 +164,13 @@
                  {:connection-id connection-name :error build-error}
                  {:connection-id connection-name
                   :version version
+                  ;; The doc comment for this tab, which lives at the top of
+                  ;; the FIRST expression. Deliberately not also exposed per
+                  ;; expression on :ast - a tab has one description, and a
+                  ;; second field of the same name meaning "the last
+                  ;; expression's" was only ever confusing. The client always
+                  ;; sends block 0, so this is always resolvable.
+                  :doc (some-> exprs first parser/extract-doc :text)
                   :query (-> last-expr trim-pipes (generate-state nil conn-id variables access-policy) :result eval/build-query eval/formatted-query)
                   :ast (prune-ast state)})))))
        (catch Exception e

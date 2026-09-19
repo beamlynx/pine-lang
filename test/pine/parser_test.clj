@@ -1,6 +1,6 @@
 (ns pine.parser-test
   (:require [clojure.test :refer [deftest is testing]]
-            [pine.parser :refer [parse parse-or-fail prettify]]
+            [pine.parser :refer [extract-doc parse parse-or-fail prettify]]
             [pine.data-types :as dt]))
 
 (defn- p [e]
@@ -463,3 +463,108 @@
     (is (= [{:type :paths :value {:table "employee"}}]
            (p "? employee")))))
 
+(deftest test-extract-doc
+
+  (testing "No comment at the top"
+    (is (nil? (extract-doc "company")))
+    (is (nil? (extract-doc "")))
+    (is (nil? (extract-doc nil))))
+
+  (testing "A comment that is not at the top is not a doc"
+    (is (nil? (extract-doc "company -- the companies table")))
+    (is (nil? (extract-doc "company | /* only active */ where: active = true"))))
+
+  (testing "Single-line block comment"
+    (is (= {:text "Active companies" :end 22}
+           (extract-doc "/* Active companies */ company"))))
+
+  (testing "Multi-line block comment keeps its line breaks"
+    (is (= "Active companies.\n\nExcludes the internal test tenant."
+           (:text (extract-doc (str "/*\n"
+                                    "   Active companies.\n"
+                                    "\n"
+                                    "   Excludes the internal test tenant.\n"
+                                    "*/\n"
+                                    "company"))))))
+
+  (testing "Javadoc-style leading asterisks are stripped"
+    (is (= "Active companies.\nOne row per tenant."
+           (:text (extract-doc (str "/*\n"
+                                    " * Active companies.\n"
+                                    " * One row per tenant.\n"
+                                    " */\n"
+                                    "company"))))))
+
+  (testing "An asterisk on only some lines is left alone"
+    (is (= "Active companies.\n* and a literal bullet"
+           (:text (extract-doc (str "/*\n"
+                                    "Active companies.\n"
+                                    "* and a literal bullet\n"
+                                    "*/\n"
+                                    "company"))))))
+
+  (testing "A run of line comments"
+    (is (= "Active companies.\nOne row per tenant."
+           (:text (extract-doc (str "-- Active companies.\n"
+                                    "-- One row per tenant.\n"
+                                    "company"))))))
+
+  (testing "A bare -- spaces out paragraphs without ending the run"
+    (is (= "First paragraph.\n\nSecond paragraph."
+           (:text (extract-doc (str "-- First paragraph.\n"
+                                    "--\n"
+                                    "-- Second paragraph.\n"
+                                    "company"))))))
+
+  (testing "A blank line ends the run of line comments"
+    (is (= "First paragraph."
+           (:text (extract-doc (str "-- First paragraph.\n"
+                                    "\n"
+                                    "-- Not part of the doc\n"
+                                    "company"))))))
+
+  (testing "An empty comment is not a doc"
+    (is (nil? (extract-doc "/*   */ company")))
+    (is (nil? (extract-doc "--\ncompany"))))
+
+  (testing ":end points just past the comment"
+    (let [expression "/* Active companies */ company"
+          {:keys [end]} (extract-doc expression)]
+      (is (= "/* Active companies */" (subs expression 0 end)))))
+
+  (testing "An unterminated block comment is not a doc"
+    (is (nil? (extract-doc "/* never closed\ncompany")))))
+
+(deftest test-prettify-doc-comment
+
+  (testing "A block doc survives prettify verbatim"
+    (is (= "/* Active companies */\ncompany\n | where: active = true"
+           (:result (prettify "/* Active companies */ company | where: active = true")))))
+
+  (testing "A multi-line block doc keeps its own formatting"
+    (is (= "/*\n * Active companies.\n * One row per tenant.\n */\ncompany"
+           (:result (prettify "/*\n * Active companies.\n * One row per tenant.\n */\ncompany")))))
+
+  (testing "A line-comment doc survives prettify"
+    (is (= "-- Active companies\ncompany\n | count:"
+           (:result (prettify "-- Active companies\ncompany | count:")))))
+
+  (testing "Prettify is idempotent with a doc comment"
+    (doseq [expression ["/* Active companies */ company | where: active = true"
+                        "-- Active companies\ncompany | count:"
+                        "/*\n * Two lines.\n * Here.\n */\ncompany | limit: 5"]]
+      (let [once (:result (prettify expression))]
+        (is (= once (:result (prettify once)))
+            (str "not idempotent for: " (pr-str expression))))))
+
+  (testing "Operation offsets still index the original expression"
+    (let [expression "/* Active companies */ company | count:"
+          {:keys [operations]} (prettify expression)]
+      (is (= ["company" "count:"] (mapv :expression operations)))
+      (is (= "company" (subs expression
+                             (:start (first operations))
+                             (:end (first operations)))))))
+
+  (testing "A comment between operations is still dropped"
+    (is (= "company\n | count:"
+           (:result (prettify "company | /* mid-pipe */ count:"))))))
