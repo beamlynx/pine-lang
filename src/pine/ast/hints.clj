@@ -354,6 +354,32 @@
                    count)]
     [redundant turns (count hops)]))
 
+(defn- piped-table-names
+  "Every real table the expression has already joined - the set both halves
+  of generate-path-hints treat as already visited before a path search even
+  starts. `? target` asks for a route the expression does not already have,
+  so a route that re-enters one of these is not a new route at all: it lands
+  the user in a second copy of a table they already joined, almost always
+  holding the row they started from, just under a second alias. Those
+  suggestions do evaluate (Pine auto-aliases the second occurrence), they
+  are simply not answers to the question asked - and in a hub-and-spoke
+  schema, where the hub is usually the first thing in the pipe, they crowd
+  out the real ones.
+
+  Read off `:tables`, not `:aliases`: a checkpoint (`l:`/`group:`) seals
+  everything before it into a CTE and resets `:tables`, which is exactly
+  right here - a table sealed inside a CTE is no longer joined by the outer
+  query, so joining it out there is a genuinely new join (see
+  ast/main.clj's seal-as-cte).
+
+  Variables are skipped (`:ast` entries, including the synthetic CTE one a
+  checkpoint injects): a variable is a sealed snapshot, and re-joining the
+  real table it was built from is a meaningful, supported join - Pine has a
+  synthetic same-source join for precisely that (see docs/variables.md).
+  Bare table names, matching what find-table-paths's own `visited` holds."
+  [state]
+  (into #{} (comp (remove :ast) (map :table)) (:tables state)))
+
 (defn- find-table-paths
   "All simple paths from each of `sources` to `target-table` (optionally
   narrowed to `target-schema`), walking the same FK/heuristic graph
@@ -363,7 +389,15 @@
   used earlier in a given path is never revisited (simple paths only) -
   this is also why searching a table against itself (`company | ? company`)
   comes back empty with no special-casing: the source is in its own path's
-  visited set from the start.
+  visited set from the start. `excluded` (piped-table-names) extends that
+  same mechanism from the source alone to every table the expression has
+  already joined, so no path re-enters one - same reasoning, one table or
+  all of them. A target that is ITSELF excluded short-circuits to empty
+  rather than searching: no hop into it is ever created, so nothing can
+  ever match, and without the short-circuit that provably-empty case would
+  run the search to exhaustion or the deadline below - the most expensive
+  outcome there is, for the answer that is now the most common one (`t1 |
+  t2 | ? t1`).
 
   A path is only ever tested against the target when it's POPPED off the
   queue (in priority order), never at the moment it's created - since
@@ -418,38 +452,40 @@
   millis, checked once per pop) bounds that directly: once time is up,
   return whatever's been found so far, the same 'bounded, not necessarily
   exhaustive' guarantee max-path-depth and max-paths already make."
-  [state sources target-table target-schema]
-  (let [target? (fn [hop]
-                  (and (= (:table hop) target-table)
-                       (or (nil? target-schema) (= (:schema hop) target-schema))))
-        relation-lookup (memoize (fn [table] (real-relation-hints state table {})))
-        redundant? (memoize (fn [from to parent?] (redundant-hop? relation-lookup from to parent?)))
-        hints-for (fn [table rename] (if (seq rename) (real-relation-hints state table rename) (relation-lookup table)))
-        next-seq (let [counter (atom -1)] (fn [] (swap! counter inc)))
-        make-entry (fn [visited hops table rename origin]
-                     {:visited visited :hops hops :table table :rename rename :origin origin
-                      :priority (path-priority redundant? origin hops)
-                      :seq (next-seq)})
-        queue (java.util.PriorityQueue.
-               (reify java.util.Comparator
-                 (compare [_ a b]
-                   (compare [(:priority a) (:seq a)] [(:priority b) (:seq b)]))))]
-    (doseq [{:keys [table rename]} sources]
-      (.add queue (make-entry #{table} [] table rename table)))
-    (let [deadline (+ (System/nanoTime) (* max-search-millis 1000000))]
-      (loop [found []]
-        (if (or (.isEmpty queue) (>= (count found) max-paths) (> (System/nanoTime) deadline))
-          found
-          (let [{:keys [visited hops table rename origin]} (.poll queue)]
-            (if (and (seq hops) (target? (last hops)))
-              (recur (conj found hops))
-              (do
-                (when (< (count hops) max-path-depth)
-                  (doseq [hop (->> (hints-for table rename)
-                                   (remove #(contains? visited (:table %))))]
-                    (.add queue (make-entry (conj visited (:table hop)) (conj hops hop)
-                                            (:table hop) {} origin))))
-                (recur found)))))))))
+  [state sources target-table target-schema excluded]
+  (if (contains? excluded target-table)
+    []
+    (let [target? (fn [hop]
+                    (and (= (:table hop) target-table)
+                         (or (nil? target-schema) (= (:schema hop) target-schema))))
+          relation-lookup (memoize (fn [table] (real-relation-hints state table {})))
+          redundant? (memoize (fn [from to parent?] (redundant-hop? relation-lookup from to parent?)))
+          hints-for (fn [table rename] (if (seq rename) (real-relation-hints state table rename) (relation-lookup table)))
+          next-seq (let [counter (atom -1)] (fn [] (swap! counter inc)))
+          make-entry (fn [visited hops table rename origin]
+                       {:visited visited :hops hops :table table :rename rename :origin origin
+                        :priority (path-priority redundant? origin hops)
+                        :seq (next-seq)})
+          queue (java.util.PriorityQueue.
+                 (reify java.util.Comparator
+                   (compare [_ a b]
+                     (compare [(:priority a) (:seq a)] [(:priority b) (:seq b)]))))]
+      (doseq [{:keys [table rename]} sources]
+        (.add queue (make-entry (conj excluded table) [] table rename table)))
+      (let [deadline (+ (System/nanoTime) (* max-search-millis 1000000))]
+        (loop [found []]
+          (if (or (.isEmpty queue) (>= (count found) max-paths) (> (System/nanoTime) deadline))
+            found
+            (let [{:keys [visited hops table rename origin]} (.poll queue)]
+              (if (and (seq hops) (target? (last hops)))
+                (recur (conj found hops))
+                (do
+                  (when (< (count hops) max-path-depth)
+                    (doseq [hop (->> (hints-for table rename)
+                                     (remove #(contains? visited (:table %))))]
+                      (.add queue (make-entry (conj visited (:table hop)) (conj hops hop)
+                                              (:table hop) {} origin))))
+                  (recur found))))))))))
 
 (defn- reachable-table-names
   "Every real table name reachable from `sources` within max-path-depth hops
@@ -460,14 +496,21 @@
   doesn't include is guaranteed to come back with zero paths once fully
   named anyway. A source table itself is never included - it's excluded
   from its own reachable set from the start, the same reason
-  find-table-paths always returns empty for `t | ? t`."
-  [state sources]
-  (let [source-tables (into #{} (map :table sources))]
+  find-table-paths always returns empty for `t | ? t`.
+
+  `excluded` (piped-table-names) is blocked the same way, and for the same
+  reason it is in find-table-paths - but it has to be blocked HERE too, not
+  just there: this is what answers 'is this a valid destination' while the
+  target is still being typed, and a table it offers that the path search
+  would then refuse is exactly the zero-paths-once-fully-typed case
+  docs/paths.md promises can't happen."
+  [state sources excluded]
+  (let [blocked (into (into #{} (map :table sources)) excluded)]
     (loop [frontier (for [{:keys [table rename]} sources] {:table table :rename rename})
-           seen source-tables
+           seen blocked
            depth 0]
       (if (or (empty? frontier) (>= depth max-path-depth))
-        (set/difference seen source-tables)
+        (set/difference seen blocked)
         (let [next (->> frontier
                         (mapcat (fn [{:keys [table rename]}] (real-relation-hints state table rename)))
                         (remove #(contains? seen (:table %)))
@@ -496,15 +539,17 @@
   context, but it IS limited to tables a path could actually reach, since
   anything outside that set is guaranteed to resolve to zero paths the
   moment it's fully typed. Only once `token` names a real table does this
-  run the actual path search (:paths bucket)."
+  run the actual path search (:paths bucket). Both buckets exclude the
+  tables the expression has already joined (piped-table-names)."
   [state]
   (let [{token :table target-schema :schema} (-> state :operation :value)
         current-entry (-> state :aliases (get (state :current)))
-        sources (when current-entry (table/resolve-table current-entry))]
+        sources (when current-entry (table/resolve-table current-entry))
+        excluded (piped-table-names state)]
     (if (and (seq token) (contains? (-> state :references :table) token))
-      (let [paths (find-table-paths state sources token target-schema)]
+      (let [paths (find-table-paths state sources token target-schema excluded)]
         {:key :paths :hints (map path->hint paths)})
-      (let [reachable (reachable-table-names state sources)]
+      (let [reachable (reachable-table-names state sources excluded)]
         {:key :table
          :hints (->> (table-hints state token)
                      (filter #(contains? reachable (:table %)))

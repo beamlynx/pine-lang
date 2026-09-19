@@ -414,6 +414,59 @@
     ;; document.
     (is (= "y.employee .company_id" (:pine (first (-> "company | ? employee" gen :paths))))))
 
+  (testing "Generate `paths` hints - tables the expression already joined are never routed back through"
+    ;; `? target` asks for a route the expression does NOT already have. A
+    ;; route that re-enters an already-joined table isn't a new route - it
+    ;; lands you in a second copy of a table you already have (Pine
+    ;; auto-aliases it, so these DO evaluate; they're just not answers to
+    ;; the question). Only the last table in the pipe used to be excluded.
+
+    ;; The target itself is already in the pipe - every route back to it
+    ;; re-enters it, so there's no answer left. Same outcome as
+    ;; `company | ? company`, now for the whole pipe rather than just the
+    ;; table the search starts from.
+    (is (= [] (-> "company | employee | document | ? company" gen :paths)))
+
+    ;; Excluded for passing THROUGH a piped table, not only for ending at
+    ;; one: searching employee -> document from `company | employee` used to
+    ;; also return `x.company .company_id :parent | z.document .company_id`,
+    ;; a detour back up through the company already joined. The two direct
+    ;; routes stay.
+    (is (= ["z.document .employee_id" "z.document .created_by"]
+           (->> (-> "company | employee | ? document" gen :paths) (map :pine))))
+
+    ;; A checkpoint seals everything before it into a CTE, so those tables
+    ;; are no longer joined by the OUTER query - joining one again out there
+    ;; is a genuinely new join, not a duplicate. The exclusion set is read
+    ;; off :tables (which seal-as-cte resets) rather than :aliases (which
+    ;; keeps every alias ever created) precisely so this keeps working:
+    ;; company is inside the CTE here, and all three routes to it survive.
+    (is (= 3 (count (-> "company | employee | l: 10 | document | ? company" gen :paths))))
+
+    ;; `from:` needs no special case - it only moves where the search
+    ;; STARTS. employee and document are still in :tables, so they're still
+    ;; excluded, and every route from company back to employee has to go
+    ;; through one of them.
+    (is (= [] (-> "company | employee | document | from: c_0 | ? employee" gen :paths)))
+
+    ;; A variable is never excluded, and neither is the real table it
+    ;; resolves to. `x` here wraps `company | employee`, so it resolves to
+    ;; employee - but employee itself was never joined by THIS expression,
+    ;; and re-joining it alongside the CTE is a supported join (the
+    ;; synthetic same-source one, docs/variables.md). Only `document`, the
+    ;; one real table actually in this pipe, is excluded.
+    ;;
+    ;; This pins the `(remove :ast)` in piped-table-names: resolving
+    ;; variables through table/resolve-table instead would make both of
+    ;; these come back empty, silently breaking what docs/paths.md promises.
+    (is (= ["y.employee .employee_id :parent"
+            "y.employee .created_by :parent"
+            "x.company .company_id :parent | y.employee .company_id"]
+           (->> (gen-with-variables ["company as c | employee |= x" "x | document | ? employee"])
+                :paths (map :pine))))
+    (is (= 3 (count (:paths (gen-with-variables
+                             ["company as c | employee |= x" "x | document | ? company"]))))))
+
   (testing "`? token` falls back to table-name suggestions until the token names a real table -
             but only ones actually reachable from the current context, not every table in the
             schema, since anything else is guaranteed to resolve to zero paths once fully typed"
@@ -429,6 +482,16 @@
     ;; `customer` have no path to/from company and are correctly excluded.
     (is (= #{"employee" "document"}
            (->> (-> "company | ? " gen :table) (map :table) set)))
+
+    ;; A table already joined by the expression is dropped from the
+    ;; typeahead too, not just from the path results - otherwise `? comp`
+    ;; would offer `company`, and fully typing it would then come back with
+    ;; zero paths, the exact thing this branch exists to prevent.
+    (is (= [{:schema "x" :table "company" :pine "x.company"}]
+           (-> "employee | ? comp" gen :table)))       ;; company reachable, not piped - offered
+    (is (= [] (-> "company | employee | ? comp" gen :table)))  ;; same token, company now piped
+    (is (= [{:schema "z" :table "document" :pine "z.document"}]
+           (-> "company | employee | ? " gen :table)))
 
     ;; No preceding table at all - nothing reachable, so nothing suggested.
     (is (= [] (-> "? doc" gen :table)))))
