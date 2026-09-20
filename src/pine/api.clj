@@ -13,6 +13,7 @@
    [compojure.core :refer [defroutes DELETE GET POST]]
    [compojure.route :as route]
    [pine.access-policy :as access-policy]
+   [pine.ast.effects :as effects]
    [pine.ast.main :as ast]
    [pine.db.connections :as connections] ;; Encode arrays and json results in API responses
    [pine.db.main :as db]
@@ -202,6 +203,12 @@
   ([expressions connection-id]
    (api-eval expressions connection-id []))
   ([expressions connection-id access-policy]
+   (api-eval expressions connection-id access-policy true))
+  ;; allow-writes false refuses to execute an expression that changes data,
+  ;; before it runs. Absent (and so true) for every existing caller: the
+  ;; human's own UI runs delete!/update! on purpose. The MCP relay is the one
+  ;; caller that passes false, unconditionally.
+  ([expressions connection-id access-policy allow-writes]
    (let [conn-id (or connection-id @db/connection-id)
          connection-name (connections/get-connection-name conn-id)]
      (try
@@ -217,29 +224,43 @@
                (let [{last-state :result build-error :error} (generate-state trimmed nil conn-id variables access-policy)]
                  (if build-error
                    {:connection-id connection-name :error build-error}
-                   (let [query (-> last-state eval/build-query eval/formatted-query)]
-                     (try
-                       (let [rows    (eval/run-query last-state)
-                             op-type (get-in last-state [:operation :type])
-                             columns (if (contains? #{:update-action :delete-action} op-type)
-                                       (get-columns rows)
-                                       (get-columns last-state rows))]
-                         {:connection-id connection-name
-                          :version version
-                          :result rows
-                          :columns columns
-                          ;; Already computed as part of generate-state's shared
-                          ;; post-handle pipeline (ast/main.clj's add-prettify runs
-                          ;; on every build or eval alike) - free to expose here
-                          ;; without a second /api/v1/build round trip, unlike
-                          ;; client.ts's prettify() which pays for one on purpose.
-                          :prettified (:prettified last-state)})
-                       (catch Exception e
-                         (log-exception "api-eval" e)
-                         {:connection-id connection-name
-                          :error (.getMessage e)
-                          :query query
-                          :prettified (:prettified last-state)})))))))))
+                   (let [query  (-> last-state eval/build-query eval/formatted-query)
+                         writes (effects/any-writes? (:operation-types last-state))]
+                     (if (and (false? allow-writes) writes)
+                       {:connection-id connection-name
+                        :error-type "write-refused"
+                        :error (str "Refusing to run an expression that changes data: "
+                                    (str/join ", " (map name (filter effects/writes?
+                                                                     (:operation-types last-state))))
+                                    ". This caller asked for read-only evaluation.")
+                        :writes true}
+                       (try
+                         (let [rows    (eval/run-query last-state)
+                               op-type (get-in last-state [:operation :type])
+                               columns (if (effects/writes? op-type)
+                                         (get-columns rows)
+                                         (get-columns last-state rows))]
+                           {:connection-id connection-name
+                            :version version
+                            :result rows
+                            :columns columns
+                            ;; Whether this expression changes data. Reported on
+                            ;; every eval, not only a refused one, so a caller
+                            ;; can tell what it just ran.
+                            :writes writes
+                            ;; Already computed as part of generate-state's shared
+                            ;; post-handle pipeline (ast/main.clj's add-prettify runs
+                            ;; on every build or eval alike) - free to expose here
+                            ;; without a second /api/v1/build round trip, unlike
+                            ;; client.ts's prettify() which pays for one on purpose.
+                            :prettified (:prettified last-state)})
+                         (catch Exception e
+                           (log-exception "api-eval" e)
+                           {:connection-id connection-name
+                            :error (.getMessage e)
+                            :query query
+                            :writes writes
+                            :prettified (:prettified last-state)}))))))))))
        (catch Exception e
          (log-exception "api-eval" e)
          {:connection-id connection-name
@@ -399,8 +420,12 @@
   (POST "/api/v1/eval" {params :params}
     (let [{:keys [expressions expression connection-id]} params
           exprs (or expressions (when expression [expression]))
-          rules (access-policy/sanitize-rules (:access-policy params))]
-      (->> (api-eval exprs connection-id rules) response)))
+          rules (access-policy/sanitize-rules (:access-policy params))
+          ;; Only an explicit false turns writes off - a missing or malformed
+          ;; value must never read as "allowed to write" by accident, and must
+          ;; never read as "refuse everything" for the callers that don't send it.
+          allow-writes (not (false? (:allow-writes params)))]
+      (->> (api-eval exprs connection-id rules allow-writes) response)))
 
   ;; raw SQL execution
   (POST "/api/v1/sql" {params :params}

@@ -380,5 +380,11 @@
                         (handle-ops parse-tree))
          truncated-state (when (and cursor expression)
                            (generate-truncated-state expression cursor connection-id variables))]
-     (post-handle full-state truncated-state))))
+     (-> (post-handle full-state truncated-state)
+         ;; Every operation's type, in order - not just the terminal one that
+         ;; :operation holds and that build-query dispatches on. Callers that
+         ;; need to know whether an expression writes (pine.ast.effects) have
+         ;; to see all of them. Internal: prune-ast (api.clj) does not pass
+         ;; this through to the client's :ast.
+         (assoc :operation-types (mapv :type parse-tree))))))
 
