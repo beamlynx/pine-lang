@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Changed
+- **Breaking:** a join in the AST (`joins`, returned by `/api/v1/build` and `/api/v1/eval`) is now a map instead of a positional array inside another positional array. It was `["c_0", "e_1", ["c_0", "id", "has", "c_1", "company_id", "fk", false], null]` -- nothing in that said what any slot meant, both ends had to count positions, and the two aliases were stored twice. It is now `{"from": "c_0", "to": "e_1", "columns": [{"from": "id", "to": "company_id"}], "parent": "from", "resolution": "fk", "type": null, "cast": null}`. `parent` (`"from"` or `"to"`) replaces the `"has"`/`"of"` tag and says the same thing in words. `type` is the `LEFT`/`RIGHT` modifier, `cast` replaces the trailing `needs-cast?` flag. See `docs/joins.md`.
+- **Breaking:** an unresolved join -- two tables nothing connects, or a `.hint_col` matching no relation -- now has one spelling instead of two. It used to be either a missing relation or a present one with every column nil; it is now always a join map with `resolution: null` and no column pairs, and renders with no `ON` clause instead of comparing two zero-length identifiers. A client checks `resolution` and nothing else.
+- A join's `ON` clause is now built from a *list* of column pairs rather than a single pair. Every column pair is rendered and ANDed together. The list always holds exactly one pair for now -- nothing that reads the schema produces more yet -- but nothing downstream assumes that, which is what makes joining on all the columns of a composite foreign key a change in one place rather than everywhere.
+
 ### Removed
 - **Breaking:** the `delete:` operation (and its `d:` short form). It parsed into an operation that built no SQL at all -- it existed purely as a marker for a client to notice and run its own recursive-delete routine against. That routine lives in beamlynx, and it is built from operations that already exist (`count:`, a join, `delete!`), so there was nothing left for the marker to mark. An expression containing `delete:` is now a parse error. `delete!`, which does the actual deleting, is untouched.
 

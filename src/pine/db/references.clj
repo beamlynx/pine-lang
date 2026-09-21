@@ -4,32 +4,68 @@
   query into) into the :table/:schema index the rest of pine reads from.
   Nothing here knows which database produced the tuples.")
 
+(defn- relation
+  "One relation between two tables, as every part of pine reads it.
+
+  Written ONCE per foreign key and then indexed under both directions,
+  rather than written out twice with the two sides swapped. Which side is
+  the child and which is the parent is a property of the relation itself,
+  so it lives in the value; which direction a caller is travelling in is a
+  property of the lookup, so it stays in the index path
+  ([:table X :referred-by Y] vs [:table X :refers-to Y]) and every caller
+  already knows which of the two it asked for.
+
+  :columns is a list of pairs, one per column of the key, each labelled by
+  the side that owns it. Today it always holds exactly one pair -- the
+  extraction queries hand over one column pair at a time -- but nothing
+  downstream may assume that. A foreign key made of several columns is
+  simply a longer list, and reaching that point is meant to be a change
+  here and nowhere else."
+  [resolution child-schema child-table parent-schema parent-table pairs]
+  {:child      {:schema child-schema  :table child-table}
+   :parent     {:schema parent-schema :table parent-table}
+   :columns    pairs
+   :resolution resolution})
+
+(defn- index-relation
+  "File one relation under every way of reaching it: by bare table name in
+  both directions (a list, since the same table name can exist in several
+  schemas) and by schema-qualified name in both directions (a single
+  entry). `col` is the key it is filed under -- the child's own column,
+  which is what a user names in a `.hint_col`."
+  [acc {{child-schema :schema child :table} :child
+        {parent-schema :schema parent :table} :parent
+        :as rel}
+   col]
+  (-> acc
+      ;; Case: Ambiguity / Schema not specified
+      ;;
+      ;; Relations between tables (in case of ambiguity)
+      ;; - Value is multiple relations
+      ;; - Even if the column to join on is not known,
+      ;;   we get a list of relations to choose from.
+      ;;
+      ;; This shouldn't be needed as we should be able to
+      ;; figure out which schema is being used and that value can be
+      ;; stored in the context. For now, this is convenient. For
+      ;; consider the 'No ambiguity' approach below
+      ;;
+      (update-in [:table parent :referred-by child :via col] conj rel)
+      (update-in [:table child  :refers-to parent :via col] conj rel)
+      ;;
+      ;; Case: No Ambiguity / Schema specified
+      ;;
+      ;; - Value is a single relation
+      ;;
+      (assoc-in [:table parent :in parent-schema :referred-by child :in child-schema :via col] rel)
+      (assoc-in [:table child  :in child-schema  :refers-to parent :in parent-schema :via col] rel)))
+
 (defn- index-foreign-keys [foreign-keys]
   (reduce (fn [acc [schema table col f-schema f-table f-col]]
-            (let [has [f-schema f-table f-col :referred-by   schema   table   col :foreign-key]
-                  of  [schema     table   col :refers-to   f-schema f-table f-col :foreign-key]]
-              (-> acc
-                  ;; Case: Ambiguity / Schema not specified
-                  ;;
-                  ;; Relations between tables (in case of ambiguity)
-                  ;; - Value is multiple join vectors
-                  ;; - Even if the column to join on is not known,
-                  ;;   we get a list of join vectors to choose from.
-                  ;;
-                  ;; This shouldn't be needed as we should be able to
-                  ;; figure out which schema is being used and that value can be
-                  ;; stored in the context. For now, this is convenient. For
-                  ;; consider the 'No ambiguity' approach below
-                  ;;
-                  (update-in [:table  f-table :referred-by table :via col] conj has)
-                  (update-in [:table  table   :refers-to f-table :via col] conj of)
-                  ;;
-                  ;; Case: No Ambiguity / Schema specified
-                  ;;
-                  ;; - Value is a single a join vector
-                  ;;
-                  (assoc-in [:table  f-table  :in  f-schema :referred-by table :in schema :via col] has)
-                  (assoc-in [:table  table    :in  schema   :refers-to f-table :in f-schema :via col] of))))
+            (index-relation acc
+                            (relation :foreign-key schema table f-schema f-table
+                                      [{:child col :parent f-col}])
+                            col))
           {}
           foreign-keys))
 
@@ -118,17 +154,14 @@
   (mapcat #(get table-lookup %) name-forms))
 
 (defn- add-heuristic-relation
-  "Add a heuristic relation to the accumulator"
+  "Add a heuristic relation to the accumulator. A naming convention names
+  one column at a time, so a heuristic relation always has exactly one
+  column pair - unlike a foreign key, which can have several."
   [acc schema table col f-schema f-table]
-  (let [has [f-schema f-table "id" :referred-by schema table col :heuristic]
-        of  [schema table col :refers-to f-schema f-table "id" :heuristic]]
-    (-> acc
-        ;; Ambiguous case (no schema specified)
-        (update-in [:table f-table :referred-by table :via col] conj has)
-        (update-in [:table table :refers-to f-table :via col] conj of)
-        ;; Non-ambiguous case (schema specified)
-        (assoc-in [:table f-table :in f-schema :referred-by table :in schema :via col] has)
-        (assoc-in [:table table :in schema :refers-to f-table :in f-schema :via col] of))))
+  (index-relation acc
+                  (relation :heuristic schema table f-schema f-table
+                            [{:child col :parent "id"}])
+                  col))
 
 (defn- index-heuristic-relations
   "Detect relations heuristically based on column naming conventions.
@@ -158,8 +191,8 @@
   "Finding forward and inverse relations for the table Example: A 'user' has
   'document' i.e. the document has a `user_id` column that points to
   `user`.`id`. Alternatively, 'document' of 'user'. When we find a foreign key,
-  then we index create both forward and inverse relations i.e. `:has` and `:of`
-  relations / or `:refered-by` and `:refers-to` relations.
+  then we index the same relation under both directions i.e. `:referred-by`
+  (reached from the parent) and `:refers-to` (reached from the child).
 
   Heuristic relations are also detected based on column naming conventions
   (e.g., tenant_id -> tenant table) for tables without explicit foreign keys."

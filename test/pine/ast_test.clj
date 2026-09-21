@@ -172,76 +172,120 @@
     (is (= [[nil "created_at" nil "<" (dt/date "2025-01-01")]]
            (generate :where "created_at < '2025-01-01'"))))
 
+  ;; A join is a map, not a positional tuple: :from/:to are the two aliases
+  ;; in pipeline order, :parent says which of the two owns the key being
+  ;; pointed at, and :columns is the list of column pairs the ON clause is
+  ;; built from - each already labelled by the side it belongs to. The list
+  ;; holds one pair today, but nothing reading it may assume that.
   (testing "Generate ast for `join` where there is no relation"
-    (is (= [["a_0" "b_1" nil nil]]
+    ;; Nothing connects these two tables, so the join is unresolved - which
+    ;; it says with a nil :resolution and no column pairs, rather than by
+    ;; being absent. One spelling for unresolved, so a client checks once.
+    (is (= [{:from "a_0" :to "b_1" :parent "from" :columns []
+             :resolution nil :cast nil :type nil}]
            (generate :joins "a | b")))
-    (is (= [["a_0" "b_1" nil nil]]
+    (is (= [{:from "a_0" :to "b_1" :parent "from" :columns []
+             :resolution nil :cast nil :type nil}]
            (generate :joins "a | b .a_id")))
 
     ;; Explicit join columns
-    (is (= [["a_0" "b_1" ["a_0" "id" :has "b_1" "a_id" "manual"] nil]]
+    (is (= [{:from "a_0" :to "b_1" :parent "from"
+             :columns [{:from "id" :to "a_id"}]
+             :resolution "manual" :cast nil :type nil}]
            (generate :joins "a | b .a_id = .id"))))
 
   (testing "Generate ast for `join` where there is a relation"
-    (is (= [["c_0" "e_1" ["c_0" "id" :has "e_1" "company_id" "fk" false] nil]]
+    (is (= [{:from "c_0" :to "e_1" :parent "from"
+             :columns [{:from "id" :to "company_id"}]
+             :resolution "fk" :cast nil :type nil}]
            (generate :joins "company | employee")))
-    (is (= [["c_0" "e_1" ["c_0" "id" :has "e_1" "company_id" "fk" false] nil]]
+    (is (= [{:from "c_0" :to "e_1" :parent "from"
+             :columns [{:from "id" :to "company_id"}]
+             :resolution "fk" :cast nil :type nil}]
            (generate :joins "company | employee .company_id")))
-    (is (= [["c_0" "e_1" ["c_0" nil :has "e_1" nil nil false] nil]]
-           (generate :joins "company | employee .employee_id"))) ;; trying with incorrect id
-    )
+    ;; Trying with an incorrect id: no relation matches that column, so this
+    ;; is unresolved in exactly the same way as two unrelated tables above.
+    (is (= [{:from "c_0" :to "e_1" :parent "from" :columns []
+             :resolution nil :cast nil :type nil}]
+           (generate :joins "company | employee .employee_id"))))
+
   (testing "Generate ast for `join` where there is ambiguity"
-    (is (= [["e_0" "d_1" ["e_0" "id" :has "d_1" "created_by" "fk" false] nil]]
+    (is (= [{:from "e_0" :to "d_1" :parent "from"
+             :columns [{:from "id" :to "created_by"}]
+             :resolution "fk" :cast nil :type nil}]
            (generate :joins "employee | document .created_by")))
-    (is (= [["e_0" "d_1" ["e_0" "id" :has "d_1" "employee_id" "fk" false] nil]]
+    (is (= [{:from "e_0" :to "d_1" :parent "from"
+             :columns [{:from "id" :to "employee_id"}]
+             :resolution "fk" :cast nil :type nil}]
            (generate :joins "employee | document .employee_id"))))
 
   (testing "Generate ast for `join` where a heuristic relation's two sides have different DB types"
     ;; `order` has no real FK to `customer` (see fixtures.clj) - the relation
     ;; is only found heuristically, and order.customer_id (varchar) doesn't
-    ;; match customer.id (integer). needs-cast? (last element) is true here,
-    ;; but false for every real FK relation above, since a FK guarantees the
-    ;; two columns already share a compatible type.
-    (is (= [["c_0" "o_1" ["c_0" "id" :has "o_1" "customer_id" "heuristic" true] nil]]
+    ;; match customer.id (integer). :cast is "text" here, but nil for every
+    ;; real FK relation above, since a FK guarantees the two columns already
+    ;; share a compatible type.
+    (is (= [{:from "c_0" :to "o_1" :parent "from"
+             :columns [{:from "id" :to "customer_id"}]
+             :resolution "heuristic" :cast "text" :type nil}]
            (generate :joins "customer | order"))))
 
   (testing "Generate ast for `join` where a heuristic relation's two sides are different spellings of the same type family"
     ;; order.user_id is bigint against user.id's integer - a different type
     ;; string, but already comparable with a plain `=` since both are
-    ;; numeric. needs-cast? must stay false here, unlike the varchar/integer
-    ;; case above - otherwise every heuristic join between, say, int and
-    ;; bigint id columns would get an unnecessary (and index-defeating) cast.
-    (is (= [["u_0" "o_1" ["u_0" "id" :has "o_1" "user_id" "heuristic" false] nil]]
+    ;; numeric. :cast must stay nil here, unlike the varchar/integer case
+    ;; above - otherwise every heuristic join between, say, int and bigint id
+    ;; columns would get an unnecessary (and index-defeating) cast.
+    (is (= [{:from "u_0" :to "o_1" :parent "from"
+             :columns [{:from "id" :to "user_id"}]
+             :resolution "heuristic" :cast nil :type nil}]
            (generate :joins "user | order"))))
 
   (testing "Generate ast for `join` using self join"
     ;; By default, we narrow the results
     ;; i.e. we join with the child
-    (is (= [["e_0" "e_1" ["e_0" "id" :has "e_1" "reports_to" "fk" false] nil]]
+    (is (= [{:from "e_0" :to "e_1" :parent "from"
+             :columns [{:from "id" :to "reports_to"}]
+             :resolution "fk" :cast nil :type nil}]
            (generate :joins "employee | employee")))
-    (is (= [["e_0" "e_1" ["e_0" "id" :has "e_1" "reports_to" "fk" false] nil]]
+    (is (= [{:from "e_0" :to "e_1" :parent "from"
+             :columns [{:from "id" :to "reports_to"}]
+             :resolution "fk" :cast nil :type nil}]
            (generate :joins "employee | employee .reports_to")))
 
     ;; However, we can exlicitly saw that the table is a parent using the `^` character
-    (is (= [["e_0" "e_1" ["e_0" "reports_to" :of "e_1" "id" "fk" false] nil]]
+    ;; - and then it is the `to` side that owns the key.
+    (is (= [{:from "e_0" :to "e_1" :parent "to"
+             :columns [{:from "reports_to" :to "id"}]
+             :resolution "fk" :cast nil :type nil}]
            (generate :joins "employee | employee :parent")))
-    (is (= [["e_0" "e_1" ["e_0" "reports_to" :of "e_1" "id" "fk" false] nil]]
+    (is (= [{:from "e_0" :to "e_1" :parent "to"
+             :columns [{:from "reports_to" :to "id"}]
+             :resolution "fk" :cast nil :type nil}]
            (generate :joins "employee | employee :parent .reports_to"))))
 
   (testing "Generate ast for `join` with explicit columns"
     ;; Basic explicit columns with real tables
-    (is (= [["c_0" "e_1" ["c_0" "id" :has "e_1" "company_id" "manual"] nil]]
+    (is (= [{:from "c_0" :to "e_1" :parent "from"
+             :columns [{:from "id" :to "company_id"}]
+             :resolution "manual" :cast nil :type nil}]
            (generate :joins "company | employee .company_id = .id")))
 
     ;; Explicit columns with different column names
-    (is (= [["a_0" "b_1" ["a_0" "custom_id" :has "b_1" "foreign_id" "manual"] nil]]
+    (is (= [{:from "a_0" :to "b_1" :parent "from"
+             :columns [{:from "custom_id" :to "foreign_id"}]
+             :resolution "manual" :cast nil :type nil}]
            (generate :joins "a | b .foreign_id = .custom_id")))
 
     ;; Explicit columns with join type
-    (is (= [["c_0" "e_1" ["c_0" "id" :has "e_1" "company_id" "manual"] "LEFT"]]
+    (is (= [{:from "c_0" :to "e_1" :parent "from"
+             :columns [{:from "id" :to "company_id"}]
+             :resolution "manual" :cast nil :type "LEFT"}]
            (generate :joins "company | employee .company_id = .id :left")))
 
-    (is (= [["c_0" "e_1" ["c_0" "id" :has "e_1" "company_id" "manual"] "RIGHT"]]
+    (is (= [{:from "c_0" :to "e_1" :parent "from"
+             :columns [{:from "id" :to "company_id"}]
+             :resolution "manual" :cast nil :type "RIGHT"}]
            (generate :joins "company | employee .company_id = .id :right"))))
 
   (testing "Generate ast for `count`"

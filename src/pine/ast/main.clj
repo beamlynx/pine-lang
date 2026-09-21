@@ -55,7 +55,9 @@
             :columns         []           ;; e.g. [{ :alias "u" :column "name"  }]
             :limit           nil          ;; number ;; nilable
             :aliases         {}           ;; e.g. [{ :schema "public" :table "user" }] ;; schema is nilable
-            :joins           []           ;; Vector of joins e.g. [ "u" "c" ".. relation .."]
+            :joins           []           ;; e.g. [{:from "u_0" :to "c_1" :parent "to"
+                                          ;;         :columns [{:from "company_id" :to "id"}]
+                                          ;;         :resolution "fk" :cast nil :type nil}]
             :where           []           ;; e.g. [ "name" "=" "john" ]
             :order           []           ;; e.g. [{ :alias "u" :column "name" :direction "DESC" }]
             :group           []           ;; e.g. [{ :alias "u" :column "name" }]

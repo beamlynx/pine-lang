@@ -88,17 +88,17 @@ Bypasses the reference map. `company_id` is on `document` (right table); `id` is
    **references map** used for every subsequent join resolution.
 2. When the parser sees `table_a | table_b`, it emits two consecutive `:table` operations.
 3. `table/handle` in `ast/table.clj` calls `update-joins`, which calls `join-tables`, which calls `join-helper`.
-4. `join-helper` looks up the resolved join vector from the references map and records it on the AST
+4. `join-helper` looks up the relation in the references map and records a **join map** on the AST
    state's `:joins` vector.
 5. `eval/build-join-clause` turns each entry in `:joins` into a SQL `JOIN … ON …` fragment.
 
 ## Constraints
 
 - Circular joins are not detected — the query will compile but the SQL may be nonsensical.
-- A foreign key made of several columns reaches Pine as one relation per column pair, not as a single
-  multi-column join. Each pair is offered as its own join, and joining on one of them leaves the others out
-  of the `ON` clause. Pick the pair you want with `.column`; there is no syntax yet for "join on all the
-  columns of this key".
+- A foreign key made of several columns still reaches Pine as one relation per column pair, so joining on
+  one of them leaves the others out of the `ON` clause. Pick the pair you want with `.column`. The join
+  itself is already built from a *list* of column pairs (see below) - it is the extraction and indexing
+  that has yet to group a key's columns together.
 - Heuristic joins are only inferred when no FK already covers the same pair.
 - Self-referential heuristic joins are suppressed. Real self-referential FKs (e.g.
   `employee.reports_to → employee.id`) are supported.
@@ -115,11 +115,21 @@ Bypasses the reference map. `company_id` is on `document` (right table); `id` is
    - `refs[:table f-table :referred-by table :via col]` — child direction ("who points at me")
    - `refs[:table table :refers-to f-table :via col]` — parent direction ("who I point at")
 
-   Each entry is a list of **join vectors**:
+   Both point at the **same relation map**, written once:
+   ```clojure
+   {:child      {:schema "z" :table "document"}
+    :parent     {:schema "y" :table "employee"}
+    :columns    [{:child "employee_id" :parent "id"}]
+    :resolution :foreign-key}
    ```
-   [f-schema f-table f-col :referred-by schema table col :foreign-key]
-   [schema table col :refers-to f-schema f-table f-col :foreign-key]
-   ```
+
+   Which side is the child and which is the parent belongs to the relation, so it lives in the value.
+   Which direction a caller is travelling in belongs to the lookup, so it stays in the path - and every
+   caller already knows which of the two it asked for. Nothing has to be mirrored.
+
+   `:columns` is a **list of pairs**, one per column of the key, each labelled by the side that owns it.
+   Today it always holds exactly one pair, but nothing reading it assumes that: every consumer maps over
+   the list. A key made of several columns is simply a longer list.
 
 2. **`index-columns`** — adds column metadata to each table entry. Needed before the next pass.
 
@@ -130,17 +140,18 @@ Bypasses the reference map. `company_id` is on `document` (right table); `id` is
    - Skips if the candidate table has no `id` column, if the FK already exists, or if it would be a
      self-referential heuristic.
    - Adds the same two-direction index entries as FK detection, tagged `:heuristic` instead of `:foreign-key`.
+   - A naming convention names one column at a time, so a heuristic relation always has exactly one pair.
 
-The same map structure is used for both FK and heuristic entries; the only difference is the tag in position 7
-of the join vector. Callers can inspect it if they want to surface confidence level — see "Hint-facing
-resolution" below for where that actually surfaces.
+The same map structure is used for both FK and heuristic entries; the only difference is `:resolution`.
+Callers can inspect it if they want to surface confidence level — see "Hint-facing resolution" below for
+where that actually surfaces.
 
 ### Hint-facing resolution (`ast/hints.clj`)
 
 Every table hint (`ast.hints.table[]`, the autocomplete suggestions for what to pipe in next) carries a
 `:resolution` field, so a client can distinguish a confirmed relationship from a guessed one:
 
-- **`"fk"`** — a real foreign key. Read straight from the join vector's position-7 tag (`:foreign-key`, see
+- **`"fk"`** — a real foreign key. Read straight from the relation's `:resolution` (`:foreign-key`, see
   above) by `resolution-of`.
 - **`"heuristic"`** — a naming-convention guess (`company_id` → `company`), no FK constraint behind it. Same
   tag mechanism, `:heuristic` instead.
@@ -161,9 +172,13 @@ suggest there, so the backend never actually emits it.
 `join-tables` tries two strategies in order:
 
 1. **`:has`** — `join-helper` looks up `refs[:table t1 :referred-by t2]`. This succeeds when `t2` has a
-   FK (or heuristic) pointing at `t1`. Returns `[a1 col :has a2 f-col]`.
+   FK (or heuristic) pointing at `t1`. The `from` side is the parent, so the join map says `:parent "from"`.
 2. **`:of`** — arguments swapped: `join-helper` looks up `refs[:table t2 :referred-by t1]`.
-   Returns `[a2 f-col :of a1 col]`.
+   The `to` side is the parent, so the join map says `:parent "to"`.
+
+Either way the lookup is `:referred-by`, so `t1` is always the parent and `t2` always the child - which is
+how `join-helper` knows which side of the relation each of its own arguments is, without the relation
+carrying a direction.
 
 `:has` is tried first unless the `:parent` modifier is set, in which case only `:of` is attempted.
 
@@ -185,10 +200,35 @@ explicit-columns := hint-column <ws*> <"="> <ws*> hint-column
 
 ### SQL generation (`eval.clj`)
 
-`build-join-clause` maps each `[from-alias to-alias relation join-type]` entry in `:joins` to:
+Each entry in `:joins` is one map — the shape a client reads too, since `:joins` is returned on both
+`/api/v1/build` and `/api/v1/eval`:
 
-```sql
-[LEFT|RIGHT] JOIN "schema"."table" AS "alias" ON "a1"."col1" = "a2"."col2"
+```json
+{
+  "from": "c_0",
+  "to": "e_1",
+  "columns": [{ "from": "id", "to": "company_id" }],
+  "parent": "from",
+  "resolution": "fk",
+  "type": null,
+  "cast": null
+}
 ```
 
-The `ON` columns are positions 1 and 4 of the relation vector: `[a1 col _ a2 f-col]`.
+- `from`/`to` — the two aliases, in pipeline order (the order the user typed them). Stored once.
+- `columns` — the column pairs the `ON` clause is built from, each labelled by the side that owns it.
+  `build-join-clause` renders every pair and joins them with `AND`, so a longer list needs nothing new.
+- `parent` — `"from"` or `"to"`: which side owns the key being pointed at.
+- `resolution` — `"fk" | "heuristic" | "synthetic" | "manual"`, or `null`.
+- `type` — `"LEFT" | "RIGHT"`, or `null` for an inner join.
+- `cast` — `"text"` when a heuristic join's two columns have different types, otherwise `null`. A property
+  of the join rather than of a pair: only a heuristic guess is ever cast, and a heuristic relation always
+  has exactly one pair.
+
+```sql
+[LEFT|RIGHT] JOIN "schema"."table" AS "alias" ON "from"."col" = "to"."col" [AND …]
+```
+
+**Unresolved joins.** Nothing connects the two tables, or an explicit `.hint_col` matched no relation: the
+join is still recorded, with `resolution: null` and no column pairs, and renders with no `ON` clause at all.
+There is one spelling for "unresolved", so a client checks one thing.

@@ -1,6 +1,7 @@
 (ns pine.eval-test
   (:require [clojure.test :refer [deftest is testing]]
             [pine.ast.main :as ast]
+            [pine.db.main :as db]
             [pine.parser :as parser]
             [pine.eval :as eval]
             [pine.data-types :as dt]))
@@ -557,9 +558,12 @@
     (is (clojure.string/includes?
          (:query (generate-expressions ["company | s: id as c_id |= x" "x | employee"]))
          "\"x\".\"c_id\" = \"e_1\".\"company_id\""))
+    ;; An unresolved join renders with no ON clause at all - there are no
+    ;; column pairs to render. (It used to compare two zero-length
+    ;; identifiers, which was no more runnable.)
     (is (clojure.string/includes?
          (:query (generate-expressions ["employee | s: id as tmp_id |= x" "x | company"]))
-         "ON \"\" = \"\"")))
+         "JOIN \"company\" AS \"c_1\" LIMIT")))
 
   (testing "Mid-pipeline assign: expression continues after |="
     ;; The assign snapshots the state at that point; subsequent ops still apply
@@ -633,14 +637,15 @@
     ;; But two RAW references to the same table still don't resolve - Pine has
     ;; no way yet to distinguish which occurrence is which (no `t | t as t2`
     ;; self-aliasing), so this stays unsupported (see docs/variables.md).
-    (is (clojure.string/includes? (:query (generate "company | company")) "ON \"\" = \"\"")))
+    (is (clojure.string/includes? (:query (generate "company | company"))
+                                  "JOIN \"company\" AS \"c_1\" LIMIT")))
 
   (testing "A table is a join source through a variable only if its id is present"
     ;; `s: name` alone has no id anywhere in x's snapshot — Pine doesn't add
     ;; one, so company is not a valid join source.
     (is (clojure.string/includes?
          (:query (generate-expressions ["company as c | s: name |= x" "x | employee"]))
-         "ON \"\" = \"\""))
+         "JOIN \"employee\" AS \"e_1\" LIMIT"))
 
     ;; `s: id, name` includes it explicitly, so the join resolves.
     (is (clojure.string/includes?
@@ -651,7 +656,7 @@
     ;; company is not a valid join source.
     (is (clojure.string/includes?
          (:query (generate-expressions ["company as c | employee .company_id | group: c.name |= x" "x | employee"]))
-         "ON \"\" = \"\"")))
+         "JOIN \"employee\" AS \"e_1\" LIMIT")))
 
   (testing "WHERE value coercion through a variable resolves the real column's type"
     ;; A variable's pre-seeded column list never carried type information, so
@@ -1004,3 +1009,96 @@
                        :query "UPDATE `customer` SET `data` = CAST(? AS JSON) WHERE id IN ( SELECT * FROM ( SELECT `c_0`.`id` FROM `customer` AS `c_0` WHERE `c_0`.`id` = ? ) AS `pine_sub` )"
                        :params (list (dt/jsonb "{\"test\": 1}") (dt/number "1"))}]}
            (generate-mysql "customer | where: id = 1 | update! data = '{\"test\": 1}'")))))
+;; ---------------------------------------------------------------------------
+;; A relation with more than one column pair
+;; ---------------------------------------------------------------------------
+
+(def ^:private composite-connection
+  "A connection id of its own, so the doctored index below can't leak into
+  any other test through pine.db.main's memoization."
+  ::composite)
+
+(defn- with-composite-key
+  "The fixture index, with document -> employee turned into a two-column
+  key: document (employee_id, company_id) -> employee (id, company_id).
+
+  Hand-built on purpose. No extraction query produces a relation with more
+  than one column pair yet - that comes next - but everything downstream of
+  the index is already written for a list of pairs rather than one pair, and
+  this is what proves it. Filed under both of the key's columns, the way a
+  real composite key will be: naming any column of a key means joining on
+  the whole key."
+  [references]
+  (let [rel (-> references
+                (get-in [:table "employee" :referred-by "document" :via "employee_id"])
+                reverse first
+                (assoc :columns [{:child "employee_id" :parent "id"}
+                                 {:child "company_id" :parent "company_id"}]))]
+    (reduce (fn [acc [path single?]]
+              (if single? (assoc-in acc path rel) (assoc-in acc path (list rel))))
+            references
+            [[[:table "employee" :referred-by "document" :via "employee_id"] false]
+             [[:table "employee" :referred-by "document" :via "company_id"] false]
+             [[:table "document" :refers-to "employee" :via "employee_id"] false]
+             [[:table "document" :refers-to "employee" :via "company_id"] false]
+             [[:table "employee" :in "y" :referred-by "document" :in "z" :via "employee_id"] true]
+             [[:table "employee" :in "y" :referred-by "document" :in "z" :via "company_id"] true]
+             [[:table "document" :in "z" :refers-to "employee" :in "y" :via "employee_id"] true]
+             [[:table "document" :in "z" :refers-to "employee" :in "y" :via "company_id"] true]])))
+
+(defn- composite-sql
+  [expression-or-expressions]
+  (let [expressions (if (string? expression-or-expressions)
+                      [expression-or-expressions]
+                      expression-or-expressions)]
+    (swap! db/references assoc composite-connection
+           (with-composite-key (db/get-indexed-references :test)))
+    (let [{:keys [last-state]}
+          (reduce (fn [{:keys [variables]} expr]
+                    (let [{:keys [result]} (parser/parse expr)
+                          state (ast/generate result composite-connection nil nil variables [])]
+                      {:variables (merge variables (:pending-assignments state))
+                       :last-state state}))
+                  {:variables {} :last-state nil}
+                  expressions)]
+      (:query (eval/build-query last-state)))))
+
+(deftest test-multi-column-relation
+  (testing "Every column pair of the relation lands in the ON clause"
+    (is (clojure.string/includes?
+         (composite-sql "employee | document")
+         "ON \"e_0\".\"id\" = \"d_1\".\"employee_id\" AND \"e_0\".\"company_id\" = \"d_1\".\"company_id\"")))
+
+  (testing "Naming any column of the key joins on the whole key"
+    (is (= (composite-sql "employee | document .employee_id")
+           (composite-sql "employee | document .company_id")
+           (composite-sql "employee | document"))))
+
+  (testing "Both pipe orders qualify each column with the alias that owns it"
+    ;; The parent-first order is asserted above. Child-first swaps which
+    ;; alias is `from`, and every pair has to swap with it - a mirrored
+    ;; splice that puts a parent column on the child's alias is the failure
+    ;; this catches, and it fails loudly (no such column) rather than
+    ;; silently.
+    (is (clojure.string/includes?
+         (composite-sql "document | employee :parent")
+         "ON \"d_0\".\"employee_id\" = \"e_1\".\"id\" AND \"d_0\".\"company_id\" = \"e_1\".\"company_id\"")))
+
+  (testing "A write scopes its subquery with every pair"
+    (is (clojure.string/includes?
+         (composite-sql "employee | document | delete! .id")
+         "ON \"e_0\".\"id\" = \"d_1\".\"employee_id\" AND \"e_0\".\"company_id\" = \"d_1\".\"company_id\"")))
+
+  (testing "A variable exposing only some of the key's columns can't serve the join"
+    ;; x exposes employee.id and nothing else, so the second pair has no
+    ;; column to translate to - the whole relation is unreachable through the
+    ;; CTE, exactly as one unexposed column already rejects a single-pair
+    ;; join. The join is left unresolved (no ON clause at all).
+    (is (clojure.string/includes?
+         (composite-sql ["employee | s: id |= x" "x | document"])
+         "JOIN \"document\" AS \"d_1\" LIMIT"))
+
+    ;; Exposing both does serve it.
+    (is (clojure.string/includes?
+         (composite-sql ["employee | s: id, company_id |= x" "x | document"])
+         "ON \"x\".\"id\" = \"d_1\".\"employee_id\" AND \"x\".\"company_id\" = \"d_1\".\"company_id\""))))

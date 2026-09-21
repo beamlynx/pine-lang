@@ -118,19 +118,34 @@
   different DB types - e.g. one side stored as varchar, the other as uuid.
   Real FK joins are never cast: the constraint already guarantees the types
   line up, so casting would just throw away index usage."
-  [needs-cast? alias column]
+  [cast alias column]
   (let [ref (q alias column)]
-    (if needs-cast? (render-cast ref "text") ref)))
+    (if cast (render-cast ref cast) ref)))
+
+(defn- build-on-clause
+  "The ON condition of one join: every column pair the relation carries,
+  ANDed together. A key made of several columns is simply a longer list
+  here - this does not care how many there are.
+
+  An unresolved join (nothing connects the two tables, so :columns is
+  empty) renders no condition at all. That query is broken either way; it
+  used to compare two zero-length identifiers instead. Rejecting it
+  outright, with an error naming the tables, is a separate change."
+  [{:keys [from to columns cast]}]
+  (when (seq columns)
+    (str " ON " (s/join " AND "
+                        (map (fn [{from-column :from to-column :to}]
+                               (str (join-column-ref cast from from-column)
+                                    " = " (join-column-ref cast to to-column)))
+                             columns)))))
 
 (defn- build-join-clause [{:keys [tables joins aliases]}]
   (when (not-empty (rest tables))
-    (let [join-statements (map (fn [[_from-alias to-alias relation join]]
-                                 (let [[a1 t1 _ a2 t2 _resolution needs-cast?] relation
-                                       {to-table :table to-schema :schema} (get aliases to-alias)
-                                       join-keyword (if join (str join " JOIN") "JOIN")]
-                                   (str join-keyword " " (q to-schema to-table) " AS " (q to-alias)
-                                        " ON " (join-column-ref needs-cast? a1 t1)
-                                        " = " (join-column-ref needs-cast? a2 t2))))
+    (let [join-statements (map (fn [{:keys [to type] :as join}]
+                                 (let [{to-table :table to-schema :schema} (get aliases to)
+                                       join-keyword (if type (str type " JOIN") "JOIN")]
+                                   (str join-keyword " " (q to-schema to-table) " AS " (q to)
+                                        (build-on-clause join))))
                                ;; (reverse joins)
                                joins)]
       (s/join " " join-statements))))
