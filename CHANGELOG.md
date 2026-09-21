@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Added
+- `/api/v1/eval` now reports whether an expression changes data, as a `writes` field on every response. An operation that writes is one the grammar marks with `!` -- `delete!`/`d!` and `update!`/`u!`. Previously a client that needed to know had to match the expression text itself.
+- `/api/v1/eval` accepts `allow-writes: false` and refuses to run an expression that changes data, before it runs. The error comes back with `error-type: "write-refused"` and names the operations it refused. Leaving the field out means writes are allowed, so every existing caller is unaffected. This is for a caller that must not change data -- an AI agent, for instance -- and it replaces having each client keep its own list of which operations write. See `docs/side-effects.md`.
+
+### Fixed
+- Evaluating a partially-typed `update!` returned the wrong column headers. The result rows already had the `Table`/`Rows updated` shape every other write produces, but the response described them with the expression's own columns instead. Complete `update!` and `delete!` were always correct.
 
 ## [0.45.0] - 2026-09-20
 ### Added
