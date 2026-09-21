@@ -525,13 +525,6 @@
   {:type :assign :value varname})
 
 ;; -----
-;; NO-OP
-;; -----
-
-(defmethod -normalize-op :DELETE [_]
-  {:type :delete :value nil})
-
-;; -----
 
 (def ^:private parser
   (let [grammar (-> "pine/pine.bnf" io/resource slurp)]

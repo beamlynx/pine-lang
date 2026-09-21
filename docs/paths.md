@@ -21,7 +21,7 @@ table_a | table_b | ? table_c
 can follow an arbitrary Pine expression, not just a bare table name. It has no table-mods of its own (no
 `as alias`, no `.hint_col`, no `:parent`): the named table is a search destination, not something being
 joined directly, so there's nothing to disambiguate. It's also terminal — nothing meaningful follows it in the
-same pipe, though the grammar doesn't specifically forbid it, the same as `count:`/`delete:` today.
+same pipe, though the grammar doesn't specifically forbid it, the same as `count:` today.
 
 ## Examples
 
@@ -117,8 +117,8 @@ finished.
   per-step cost. None of this guarantees every existing path is found — only that the search stays bounded, and
   that whichever paths it does return are the best-ordered ones (see above), not an arbitrary depth-level
   slice or a race against the clock.
-- `? table` never produces SQL. Evaluating a pine expression that ends in one is a no-op (same as bare
-  `delete:`) — pick one of the returned paths and build *that* expression instead.
+- `? table` never produces SQL. Evaluating a pine expression that ends in one is a no-op — pick one of the
+  returned paths and build *that* expression instead.
 
 ## Implementation
 

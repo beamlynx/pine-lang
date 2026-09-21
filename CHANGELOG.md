@@ -3,6 +3,9 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Removed
+- **Breaking:** the `delete:` operation (and its `d:` short form). It parsed into an operation that built no SQL at all -- it existed purely as a marker for a client to notice and run its own recursive-delete routine against. That routine lives in beamlynx, and it is built from operations that already exist (`count:`, a join, `delete!`), so there was nothing left for the marker to mark. An expression containing `delete:` is now a parse error. `delete!`, which does the actual deleting, is untouched.
+
 ### Added
 - `/api/v1/eval` now reports whether an expression changes data, as a `writes` field on every response. An operation that writes is one the grammar marks with `!` -- `delete!`/`d!` and `update!`/`u!`. Previously a client that needed to know had to match the expression text itself.
 - `/api/v1/eval` accepts `allow-writes: false` and refuses to run an expression that changes data, before it runs. The error comes back with `error-type: "write-refused"` and names the operations it refused. Leaving the field out means writes are allowed, so every existing caller is unaffected. This is for a caller that must not change data -- an AI agent, for instance -- and it replaces having each client keep its own list of which operations write. See `docs/side-effects.md`.

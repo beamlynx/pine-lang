@@ -30,9 +30,8 @@ That is the whole list. Everything else — `select:`, `where:`, `order:`,
 assignment — only reads.
 
 `delete!` and `update!` are the operations that carry a `!`, and that is not a
-coincidence: the mark and the meaning are the same fact. `delete:` — no `!` — is
-not on the list and never wrote anything: it builds no SQL at all, and exists
-only as a marker a client can act on.
+coincidence: the mark and the meaning are the same fact. If an operation writes,
+it has a `!`; if it has a `!`, it writes.
 
 ## Finding out: `writes`
 
