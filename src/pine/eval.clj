@@ -105,8 +105,9 @@
   from the update/delete target in its own subquery - and error 1235,
   LIMIT isn't allowed inside an IN subquery (reachable whenever a user
   writes `| limit: N | delete!`). Wrapping the inner SELECT in a derived
-  table sidesteps both. Identity for Postgres. Both inner selects are
-  already single-column by construction, so SELECT * here is safe."
+  table sidesteps both. Identity for Postgres. The inner select holds
+  exactly the columns being matched - one, or the several of a composite
+  key - and nothing else, so SELECT * here passes them straight through."
   [sql]
   (case *dialect*
     :mysql (str "SELECT * FROM ( " sql " ) AS " (q "pine_sub"))
@@ -427,13 +428,26 @@
         params (where-params (:where state))]
     {:query query :params (seq (concat cte-params params))}))
 
-(defn build-delete-query [state]
+(defn build-delete-query
+  "`delete!` names the columns that identify the rows to remove, and the
+  DELETE matches them against those same columns as selected by the
+  expression it is piped onto.
+
+  More than one column is matched as a row: `WHERE (a, b) IN ( SELECT a, b
+  ... )`. A table whose key is composite has no single column that picks
+  out a row on its own, so deleting on one of them at a time would take
+  rows belonging to other records with it."
+  [state]
   (let [{:keys [delete current aliases]} state
         {table :table schema :schema}     (get aliases current)
-        {:keys [column]}                  delete
-        state                             (assoc state :columns [{:column column :alias current}])
-        {:keys [query params]}            (build-select-query state)]
-    {:query (str "DELETE FROM " (q schema table) " WHERE " (q column) " IN ( "  (in-subquery query) " )")
+        {:keys [columns]}                 delete
+        state                             (assoc state :columns
+                                                 (mapv (fn [column] {:column column :alias current}) columns))
+        {:keys [query params]}            (build-select-query state)
+        target                            (if (next columns)
+                                            (str "(" (s/join ", " (map q columns)) ")")
+                                            (q (first columns)))]
+    {:query (str "DELETE FROM " (q schema table) " WHERE " target " IN ( "  (in-subquery query) " )")
      :params params}))
 
 (defn- build-single-update-query [state update-alias assignments]

@@ -104,6 +104,12 @@
   to build it), so suggesting it would offer something that then doesn't
   resolve.
 
+  A key of more than one column also carries :columns, every pair of it.
+  Something that has to name the whole key rather than join on it - a
+  DELETE scoped to the rows this relation reaches, for instance - needs
+  them all. It is left off a single-column key, where it would just repeat
+  :column/:related-column on every one of what can be thousands of hints.
+
   resolution-of (table/resolution-of - shared with ast/table.clj, which
   tags committed joins the same way) only ever sees :foreign-key/
   :heuristic here - a real relation from the index. \"synthetic\" (the
@@ -120,12 +126,16 @@
                   related (map #(table/translate-column context-rename (get % context-side))
                                (:columns rel))]
               (when (and (seq columns) (every? some? columns) (every? some? related))
-                {:schema (get-in rel [target-side :schema])
-                 :table table
-                 :column (first columns)
-                 :related-column (first related)
-                 :parent parent?
-                 :resolution (table/resolution-of rel)})))
+                (cond-> {:schema (get-in rel [target-side :schema])
+                         :table table
+                         :column (first columns)
+                         :related-column (first related)
+                         :parent parent?
+                         :resolution (table/resolution-of rel)}
+                  (next columns)
+                  (assoc :columns (mapv (fn [column related-column]
+                                          {:column column :related-column related-column})
+                                        columns related))))))
           relations)))
 
 (defn- variables-resolving-to

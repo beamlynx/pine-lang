@@ -432,10 +432,18 @@
 ;; DELETE
 ;; -----
 
-(defmethod -normalize-op :DELETE-ACTION [[_ [_ payload]]]
-  (match payload
-    [:symbol c] {:type :delete-action :value {:column c}}
-    :else (throw (ex-info "Unknown DELETE operation" {:_ payload}))))
+(defmethod -normalize-op :DELETE-ACTION [[_ & hint-columns]]
+  ;; One column or several: `delete! .id`, `delete! .case_id, .search_id`.
+  ;; Several are needed when the rows to remove are identified by more than
+  ;; one column - a table whose key is composite has no single column that
+  ;; picks out a row on its own, and deleting on one of them at a time takes
+  ;; rows belonging to other records with it.
+  {:type :delete-action
+   :value {:columns (mapv (fn [hint-column]
+                            (match hint-column
+                              [:hint-column [:symbol c]] c
+                              :else (throw (ex-info "Unknown DELETE operation" {:_ hint-column}))))
+                          hint-columns)}})
 
 ;; -----
 ;; UPDATE

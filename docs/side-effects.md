@@ -33,6 +33,60 @@ assignment — only reads.
 coincidence: the mark and the meaning are the same fact. If an operation writes,
 it has a `!`; if it has a `!`, it writes.
 
+### Which rows `delete!` removes
+
+`delete!` names the column (or columns) that identify the rows to remove, and
+the DELETE matches them against the same columns selected by the expression it
+is piped onto:
+
+```
+company | where: id = 1 | employee | delete! .id
+```
+
+```sql
+DELETE FROM "employee" WHERE "id" IN (
+  SELECT "e_1"."id" FROM "company" AS "c_0"
+    JOIN "employee" AS "e_1" ON "c_0"."id" = "e_1"."company_id"
+  WHERE "c_0"."id" = ? )
+```
+
+Name several columns, comma-separated, and they are matched as a row:
+
+```
+k.case | where: id = 1 | k.case_ref | delete! .case_id, .search_id
+```
+
+```sql
+DELETE FROM "k"."case_ref" WHERE ("case_id", "search_id") IN (
+  SELECT "cr_1"."case_id", "cr_1"."search_id" FROM "k"."case" AS "c_0"
+    JOIN "k"."case_ref" AS "cr_1"
+      ON "c_0"."id" = "cr_1"."case_id" AND "c_0"."search_id" = "cr_1"."search_id"
+  WHERE "c_0"."id" = ? )
+```
+
+This is what a table with a composite key needs. `case_ref` has no single
+column that picks out one of its rows: `case_id` alone matches every reference
+belonging to that case, and `search_id` alone matches references belonging to
+*other* cases entirely. Either one deletes rows nobody asked to delete, and says
+nothing about it. Naming both columns deletes exactly the rows the expression
+selected.
+
+At least one column is required — a bare `delete!` has nothing to match on and
+does not parse.
+
+### Which rows `update!` changes
+
+`update!` has no equivalent. It always scopes by a single `id` column:
+
+```sql
+UPDATE "employee" SET "name" = ? WHERE id IN ( SELECT "e_1"."id" FROM ... )
+```
+
+So a table whose primary key is not a column called `id` — including one keyed
+on several columns — cannot be updated through Pine. This is a separate
+limitation from the one `delete!` just lost, and it is about the target's own
+primary key rather than the foreign key it was reached by.
+
 ## Finding out: `writes`
 
 Every `/api/v1/eval` response carries a `writes` boolean.

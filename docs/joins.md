@@ -267,6 +267,12 @@ the same rows as matching on both. The other is not: `case.search_id` is not uni
 `case_ref` rows belonging to *other* cases that happened to share a search id. It returned plausible rows
 and said nothing.
 
-The table hints list such a key **once**, named by its first column. A variable (see
-[variables.md](variables.md)) that exposes only some of a key's columns can't serve the join at all, so
-neither the join nor the hint is offered — the same rule a single unexposed column already followed.
+The table hints list such a key **once**, named by its first column. That hint also carries a `columns`
+array holding every pair of the key, for a client that has to name the whole key rather than join on it —
+scoping a `delete!` to the rows the relation reaches, for instance (see
+[side-effects.md](side-effects.md#which-rows-delete-removes)). It is left off a single-column key, where it
+would only repeat `column`/`related-column` across what can be thousands of hints.
+
+A variable (see [variables.md](variables.md)) that exposes only some of a key's columns can't serve the
+join at all, so neither the join nor the hint is offered — the same rule a single unexposed column already
+followed.

@@ -503,12 +503,20 @@
     ;; nothing to say which to pick, and picking the second silently returned
     ;; rows belonging to other cases. There is one relation now, named by the
     ;; first column of the key.
+    ;; :columns carries every pair, for anything that has to name the whole
+    ;; key rather than join on it. It is absent on a single-column key -
+    ;; every other hint assertion in this file is one, and none of them
+    ;; carry it.
     (is (= [{:schema "k" :table "case_ref" :column "case_id" :related-column "id"
+             :columns [{:column "case_id" :related-column "id"}
+                       {:column "search_id" :related-column "search_id"}]
              :parent false :resolution "fk" :pine "k.case_ref .case_id"}]
            (-> "k.case | " gen :table)))
 
     ;; Same relation from the child's side.
     (is (= [{:schema "k" :table "case" :column "id" :related-column "case_id"
+             :columns [{:column "id" :related-column "case_id"}
+                       {:column "search_id" :related-column "search_id"}]
              :parent true :resolution "fk" :pine "k.case .case_id :parent"}]
            (-> "k.case_ref | " gen :table))))
 

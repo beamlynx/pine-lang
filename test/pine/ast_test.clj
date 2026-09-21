@@ -292,7 +292,9 @@
     (is (= {:column "*"} (generate :count "company | count:"))))
 
   (testing "Generate ast for `delete`"
-    (is (= {:column "id"} (generate :delete "company | delete! .id"))))
+    (is (= {:columns ["id"]} (generate :delete "company | delete! .id")))
+    (is (= {:columns ["case_id" "search_id"]}
+           (generate :delete "k.case_ref | delete! .case_id, .search_id"))))
 
   (testing "Generate ast for `update`"
     (is (= {:assignments [{:column {:alias nil :column "name"} :value (dt/string "John Doe")}]}

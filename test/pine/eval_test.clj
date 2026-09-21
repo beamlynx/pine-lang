@@ -1065,6 +1065,32 @@
          (:query (generate-expressions ["k.case | s: id, search_id |= x" "x | k.case_ref"]))
          "ON \"x\".\"id\" = \"cr_1\".\"case_id\" AND \"x\".\"search_id\" = \"cr_1\".\"search_id\"")))
 
+  (testing "A delete can be scoped by every column of the key it was reached by"
+    ;; Deleting on one column of a composite key at a time over-matches, and
+    ;; the over-match is silent: `WHERE search_id IN (...)` alone also takes
+    ;; out case_ref rows belonging to a different case that happens to share
+    ;; a search id. Naming both columns matches them as a row.
+    (is (= {:query (str "DELETE FROM \"k\".\"case_ref\" WHERE (\"case_id\", \"search_id\") IN ( "
+                        "SELECT \"cr_1\".\"case_id\", \"cr_1\".\"search_id\" "
+                        "FROM \"k\".\"case\" AS \"c_0\" "
+                        "JOIN \"k\".\"case_ref\" AS \"cr_1\" "
+                        "ON \"c_0\".\"id\" = \"cr_1\".\"case_id\" "
+                        "AND \"c_0\".\"search_id\" = \"cr_1\".\"search_id\" "
+                        "WHERE \"c_0\".\"id\" = ? )")
+            :params (list (dt/number "1"))}
+           (generate "k.case | where: id = 1 | k.case_ref | delete! .case_id, .search_id")))
+
+    ;; MySQL wraps the inner SELECT in a derived table (error 1093/1235). The
+    ;; wrap has to pass both columns through for the row comparison to work.
+    (is (= {:query (str "DELETE FROM `k`.`case_ref` WHERE (`case_id`, `search_id`) IN ( "
+                        "SELECT * FROM ( SELECT `cr_1`.`case_id`, `cr_1`.`search_id` "
+                        "FROM `k`.`case` AS `c_0` "
+                        "JOIN `k`.`case_ref` AS `cr_1` "
+                        "ON `c_0`.`id` = `cr_1`.`case_id` "
+                        "AND `c_0`.`search_id` = `cr_1`.`search_id` ) AS `pine_sub` )")
+            :params nil}
+           (generate-mysql "k.case | k.case_ref | delete! .case_id, .search_id"))))
+
   (testing "A foreign key with no constraint name is still its own relation"
     ;; w.department.lead_worker_id has no constraint name in the fixtures - a
     ;; dialect that doesn't report one must keep indexing row by row rather
