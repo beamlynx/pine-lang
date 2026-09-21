@@ -4,7 +4,28 @@
             [pine.db.exec :as exec]))
 
 (defn- get-foreign-keys
-  "Get the foreign keys from the database."
+  "Get the foreign keys from the database.
+
+  A constraint's local columns live in `con.conkey` and the columns they
+  point at in `con.confkey`, as two arrays that line up position by
+  position. They have to be paired by position, which is what the two
+  `unnest(...) WITH ORDINALITY` joins below do.
+
+  Matching each array with `= ANY(...)` instead - as this query used to -
+  pairs every local column with every foreign column. A single-column
+  constraint survives that (one times one is still one row), but a
+  two-column one turns into four rows: the two real pairs, plus two
+  inventions. Those inventions are indistinguishable from real foreign
+  keys downstream, so pine offered them as joins and built SQL comparing
+  columns that were never meant to be compared - e.g. a `uuid` id against
+  a `varchar` reference, which Postgres rejects with \"operator does not
+  exist: uuid = character varying\".
+
+  Each column pair is still returned as its own row, so a composite
+  constraint reaches the reference index as several independent
+  single-column relations. That matches the shape the index has always
+  had; pine does not yet build one join from all columns of a composite
+  key at once."
   [pool]
   (prn (format "Loading all references..."))
   (let [opts {:as-arrays? true}
@@ -18,10 +39,12 @@
 FROM pg_constraint con
 JOIN pg_class c ON c.oid = con.conrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
-JOIN pg_attribute a ON a.attnum = ANY(con.conkey) AND a.attrelid = c.oid
 JOIN pg_class f ON f.oid = con.confrelid
 JOIN pg_namespace fn ON fn.oid = f.relnamespace
-JOIN pg_attribute fa ON fa.attnum = ANY(con.confkey) AND fa.attrelid = f.oid
+JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) ON true
+JOIN LATERAL unnest(con.confkey) WITH ORDINALITY AS fk(attnum, ord) ON fk.ord = k.ord
+JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+JOIN pg_attribute fa ON fa.attrelid = f.oid AND fa.attnum = fk.attnum
 WHERE con.contype = 'f'
 "]
     (with-open [conn (.getConnection pool)]

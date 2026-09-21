@@ -137,8 +137,15 @@
     (let [get-col-fn            (if c (fn [_] c) (fn [xs] (if xs (first xs) nil)))
           col-key               (-> refs keys get-col-fn)
           join                  (-> (get-in refs [col-key]) reverse first)
-                                ;; Normally there is only one foreign key but if there
-                                ;; multiple, then we use the last one which is `id`
+                                ;; A column usually carries one relation. It carries
+                                ;; more when the same table name exists in several
+                                ;; schemas: this lookup is by bare table name, so every
+                                ;; schema's copy of the relation lands under one key.
+                                ;; Entries are conj'd onto a list, so `reverse first`
+                                ;; takes the one indexed earliest. A foreign key and a
+                                ;; heuristic never share a key - db/references.clj only
+                                ;; adds a heuristic where no foreign key already
+                                ;; connects that same table pair and column.
 
           [_ _ raw-col _ _ _ raw-f-col] join ;; [ schema table col r f-schema f-table f-col ]
           col                   (translate-column rename1 raw-col)
