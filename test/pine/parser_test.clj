@@ -256,8 +256,15 @@
                                           :partial-column {:alias "e" :column ""}}}
            (-> "employee as e | company | u! id = '1', e." p last))))
 
-  (testing "Parse No Operation expressions"
-    (is (= [{:value {:table "company"}, :type :table} {:type :delete, :value nil}] (p "company | d:"))))
+  (testing "delete: is no longer an operation"
+    ;; It parsed into an op that built no SQL, purely as a marker a client
+    ;; could act on. Traversal is a client-side action now, built from
+    ;; operations that already exist, so there is nothing left to mark.
+    (doseq [expression ["company | delete:" "company | d:"]]
+      (is (:error (parse expression))
+          (str expression " must no longer parse")))
+    (is (nil? (:error (parse "company | where: id = 1 | delete! .id")))
+        "delete! must still parse"))
 
   (testing "Parse `group` expressions"
     (is (= [{:type :group, :value {:columns [{:column "status"}], :functions ["count"]}}]

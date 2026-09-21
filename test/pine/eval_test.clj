@@ -393,15 +393,23 @@
       (is (= 2 (count (:queries result))))
       (is (= #{"company" "document"} (set (map :table (:queries result)))))))
 
-  (testing "delete"
-    (is (= {:query " /* No SQL. Evaluate the pine expression for results */ "}
-           (generate "company | delete:"))))
-
   (testing "paths"
     ;; :paths only generates candidate pine expressions (hints.paths) - it
-    ;; never builds a runnable query of its own, same as bare `delete:` above.
+    ;; never builds a runnable query of its own.
     (is (= {:query " /* No SQL. Pick a path from hints.paths and build that expression instead */ "}
-           (generate "company | ? document")))))
+           (generate "company | ? document"))))
+
+  (testing "delete: is gone"
+    ;; It parsed into an operation that built no SQL, purely so a client could
+    ;; see the marker and run its own recursive-delete routine. That routine is
+    ;; a client-side traversal now (beamlynx-ui), and it composes operations
+    ;; that already exist - count:, a join, delete! - so there is nothing left
+    ;; for the marker to mark. `delete!` is untouched.
+    (doseq [expression ["company | delete:" "company | d:"]]
+      (is (:error (parser/parse expression))
+          (str expression " must no longer parse")))
+    (is (nil? (:error (parser/parse "company | where: id = 1 | delete! .id")))
+        "delete! must still parse")))
 
 (deftest test-action-operations
   (testing "Action operations should use different query execution path"

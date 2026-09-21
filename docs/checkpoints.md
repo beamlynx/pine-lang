@@ -115,7 +115,7 @@ The same applies to `select:`/`where:`, and to their `-partial` forms (e.g. `o: 
 company | limit: 100 | count:
 ```
 
-`count:` (like `delete:`/`update:`) builds its own wrapper query generically regardless of what came before it, so it doesn't need the checkpoint sealed first — no checkpoint fires, and the pipeline remains a single query with COUNT wrapping it normally:
+`count:` (like `delete!`/`update!`) builds its own wrapper query generically regardless of what came before it, so it doesn't need the checkpoint sealed first — no checkpoint fires, and the pipeline remains a single query with COUNT wrapping it normally:
 
 ```sql
 WITH x AS ( SELECT "c_0".* FROM "company" AS "c_0" LIMIT 100 )
@@ -127,13 +127,13 @@ SELECT COUNT(*) FROM x
 - **Detection**: after processing a GROUP or LIMIT op, `handle-ops` sets `:pending-checkpoint {:needs-assign true}` on the state.
 - **Fire on table, checkpoint, or checkpoint-consuming op**: at the start of each `handle-ops` iteration, `flush-checkpoint` checks whether a checkpoint is pending and whether the incoming op is a TABLE op, another checkpoint op (GROUP or LIMIT), or a checkpoint-*consuming* op (`select`/`select-partial`/`where`/`where-partial`/`order`/`order-partial`). If so, the current state is snapshotted into `:pending-assignments` under an auto-generated name (`__pine_0__`, `__pine_1__`, ...), the references map is seeded for that name (same FK propagation used by variables), and the state is reset. The CTE name is then injected as the first table so subsequent ops compose on top of it. A LIMIT following a GROUP therefore fires the GROUP checkpoint, then applies the limit to the outer query.
 - **User-named CTE**: if an `|= name` op appears between the checkpoint op and the following op, `flush-checkpoint` records the name and waits. `assign/handle` stores the snapshot under `name` as normal. When the next firing op arrives, `seal-as-cte` activates it.
-- **Hold for non-triggering ops**: if the op after GROUP/LIMIT is something that has its own query-building path — `count:`, `delete:`, `update:` — the checkpoint stays pending and that op is processed without firing the checkpoint.
+- **Hold for non-triggering ops**: if the op after GROUP/LIMIT is something that has its own query-building path — `count:`, `delete!`, `update!` — the checkpoint stays pending and that op is processed without firing the checkpoint.
 - **SQL generation**: because the CTE table has an `:ast` entry in `:aliases`, `collect-ctes` automatically picks it up and emits the `WITH` clause. No changes to `eval.clj` were needed.
 
 ## Constraints
 
 - Checkpoint op types (what *creates* a pending checkpoint) are GROUP and LIMIT.
-- Checkpoint-consuming op types (what *fires*/seals an already-pending checkpoint, alongside TABLE) are `select`/`select-partial`/`where`/`where-partial`/`order`/`order-partial`. `count:`/`delete:`/`update:` deliberately do not fire — see above.
+- Checkpoint-consuming op types (what *fires*/seals an already-pending checkpoint, alongside TABLE) are `select`/`select-partial`/`where`/`where-partial`/`order`/`order-partial`. `count:`/`delete!`/`update!` deliberately do not fire — see above.
 - Only one table-level composition step is supported per checkpoint; chaining `l: 10 | employee | document` creates one CTE for `l: 10` and then navigates normally through employee to document.
 - Auto-generated CTE names (`__pine_0__`, etc.) are numbered per expression and are not exposed to the user.
 - Checkpoint CTEs do not receive Pine's auto-id columns; those are suppressed for all CTE-backed tables.

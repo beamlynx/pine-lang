@@ -1,7 +1,7 @@
 OPERATIONS := <ws*> OPERATION <ws*> (<"|"> <ws*> OPERATION <ws*>)*
 ASSIGN     := <"="> <ws*> symbol
 
-OPERATION    := SELECT-PARTIAL | SELECT | WHERE-PARTIAL | WHERE | LIMIT | FROM | ORDER-PARTIAL | ORDER | COUNT | DELETE-ACTION | DELETE | UPDATE-PARTIAL | UPDATE-ACTION | GROUP | ASSIGN | PATHS | TABLE
+OPERATION    := SELECT-PARTIAL | SELECT | WHERE-PARTIAL | WHERE | LIMIT | FROM | ORDER-PARTIAL | ORDER | COUNT | DELETE-ACTION | UPDATE-PARTIAL | UPDATE-ACTION | GROUP | ASSIGN | PATHS | TABLE
 
 
 TABLE             := table table-mods
@@ -19,7 +19,6 @@ ORDER-PARTIAL     := <order-op> order-columns <","> <ws*> partial-alias | <order
 ORDER             := <order-op>         order-columns
 
 DELETE-ACTION     := <delete-action-op> hint-column
-DELETE            := <delete-op>
 UPDATE-PARTIAL    := <update-action-op> update-assignments <","> <ws*> partial-update-column  |  <update-action-op> partial-update-column  |  <update-action-op> update-assignments? <",">?
 UPDATE-ACTION     := <update-action-op> update-assignments
 COUNT             := <count-op>
@@ -33,7 +32,6 @@ from-op           := (<"from:">   | <"f:">) <ws*>
 order-op          := (<"order:">  | <"o:">) <ws*>
 group-op          := (<"group:">  | <"g:">) <ws*>
 delete-action-op  := (<"delete!"> | <"d!">) <ws*>
-delete-op         := (<"delete:"> | <"d:">) <ws*>
 update-action-op  := (<"update!"> | <"u!">) <ws*>
 count-op          := <"count:">
 
