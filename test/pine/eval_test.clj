@@ -1010,95 +1010,65 @@
                        :params (list (dt/jsonb "{\"test\": 1}") (dt/number "1"))}]}
            (generate-mysql "customer | where: id = 1 | update! data = '{\"test\": 1}'")))))
 ;; ---------------------------------------------------------------------------
-;; A relation with more than one column pair
+;; Composite foreign keys
 ;; ---------------------------------------------------------------------------
 
-(def ^:private composite-connection
-  "A connection id of its own, so the doctored index below can't leak into
-  any other test through pine.db.main's memoization."
-  ::composite)
+;; k.case_ref (case_id, search_id) -> k.case (id, search_id) in fixtures.clj.
+;; Matching on case_id alone happens to be right there (case.id is unique on
+;; its own); matching on search_id alone is not, and used to return rows
+;; belonging to other cases without saying so.
 
-(defn- with-composite-key
-  "The fixture index, with document -> employee turned into a two-column
-  key: document (employee_id, company_id) -> employee (id, company_id).
-
-  Hand-built on purpose. No extraction query produces a relation with more
-  than one column pair yet - that comes next - but everything downstream of
-  the index is already written for a list of pairs rather than one pair, and
-  this is what proves it. Filed under both of the key's columns, the way a
-  real composite key will be: naming any column of a key means joining on
-  the whole key."
-  [references]
-  (let [rel (-> references
-                (get-in [:table "employee" :referred-by "document" :via "employee_id"])
-                reverse first
-                (assoc :columns [{:child "employee_id" :parent "id"}
-                                 {:child "company_id" :parent "company_id"}]))]
-    (reduce (fn [acc [path single?]]
-              (if single? (assoc-in acc path rel) (assoc-in acc path (list rel))))
-            references
-            [[[:table "employee" :referred-by "document" :via "employee_id"] false]
-             [[:table "employee" :referred-by "document" :via "company_id"] false]
-             [[:table "document" :refers-to "employee" :via "employee_id"] false]
-             [[:table "document" :refers-to "employee" :via "company_id"] false]
-             [[:table "employee" :in "y" :referred-by "document" :in "z" :via "employee_id"] true]
-             [[:table "employee" :in "y" :referred-by "document" :in "z" :via "company_id"] true]
-             [[:table "document" :in "z" :refers-to "employee" :in "y" :via "employee_id"] true]
-             [[:table "document" :in "z" :refers-to "employee" :in "y" :via "company_id"] true]])))
-
-(defn- composite-sql
-  [expression-or-expressions]
-  (let [expressions (if (string? expression-or-expressions)
-                      [expression-or-expressions]
-                      expression-or-expressions)]
-    (swap! db/references assoc composite-connection
-           (with-composite-key (db/get-indexed-references :test)))
-    (let [{:keys [last-state]}
-          (reduce (fn [{:keys [variables]} expr]
-                    (let [{:keys [result]} (parser/parse expr)
-                          state (ast/generate result composite-connection nil nil variables [])]
-                      {:variables (merge variables (:pending-assignments state))
-                       :last-state state}))
-                  {:variables {} :last-state nil}
-                  expressions)]
-      (:query (eval/build-query last-state)))))
-
-(deftest test-multi-column-relation
-  (testing "Every column pair of the relation lands in the ON clause"
+(deftest test-composite-foreign-key
+  (testing "Every column of the key lands in the ON clause"
     (is (clojure.string/includes?
-         (composite-sql "employee | document")
-         "ON \"e_0\".\"id\" = \"d_1\".\"employee_id\" AND \"e_0\".\"company_id\" = \"d_1\".\"company_id\"")))
+         (:query (generate "k.case | k.case_ref"))
+         "ON \"c_0\".\"id\" = \"cr_1\".\"case_id\" AND \"c_0\".\"search_id\" = \"cr_1\".\"search_id\"")))
 
   (testing "Naming any column of the key joins on the whole key"
-    (is (= (composite-sql "employee | document .employee_id")
-           (composite-sql "employee | document .company_id")
-           (composite-sql "employee | document"))))
+    ;; Which of the two a user picked out of the hints used to decide whether
+    ;; the query was right. It no longer does - both spell the same join.
+    (is (= (:query (generate "k.case | k.case_ref .case_id"))
+           (:query (generate "k.case | k.case_ref .search_id"))
+           (:query (generate "k.case | k.case_ref")))))
 
   (testing "Both pipe orders qualify each column with the alias that owns it"
-    ;; The parent-first order is asserted above. Child-first swaps which
-    ;; alias is `from`, and every pair has to swap with it - a mirrored
-    ;; splice that puts a parent column on the child's alias is the failure
-    ;; this catches, and it fails loudly (no such column) rather than
-    ;; silently.
+    ;; Child-first swaps which alias is `from`, and every pair has to swap
+    ;; with it. A mirrored splice that leaves a parent column on the child's
+    ;; alias is what this catches.
     (is (clojure.string/includes?
-         (composite-sql "document | employee :parent")
-         "ON \"d_0\".\"employee_id\" = \"e_1\".\"id\" AND \"d_0\".\"company_id\" = \"e_1\".\"company_id\"")))
+         (:query (generate "k.case_ref | k.case :parent"))
+         "ON \"cr_0\".\"case_id\" = \"c_1\".\"id\" AND \"cr_0\".\"search_id\" = \"c_1\".\"search_id\"")))
 
-  (testing "A write scopes its subquery with every pair"
+  (testing "A write scopes its subquery with every column of the key"
+    (is (= {:query (str "DELETE FROM \"k\".\"case_ref\" WHERE \"id\" IN ( "
+                        "SELECT \"cr_1\".\"id\" FROM \"k\".\"case\" AS \"c_0\" "
+                        "JOIN \"k\".\"case_ref\" AS \"cr_1\" "
+                        "ON \"c_0\".\"id\" = \"cr_1\".\"case_id\" "
+                        "AND \"c_0\".\"search_id\" = \"cr_1\".\"search_id\" )")
+            :params nil}
+           (generate "k.case | k.case_ref | delete! .id")))
+
     (is (clojure.string/includes?
-         (composite-sql "employee | document | delete! .id")
-         "ON \"e_0\".\"id\" = \"d_1\".\"employee_id\" AND \"e_0\".\"company_id\" = \"d_1\".\"company_id\"")))
+         (:query (first (:queries (generate "k.case | k.case_ref | update! id = 1"))))
+         "ON \"c_0\".\"id\" = \"cr_1\".\"case_id\" AND \"c_0\".\"search_id\" = \"cr_1\".\"search_id\"")))
 
   (testing "A variable exposing only some of the key's columns can't serve the join"
-    ;; x exposes employee.id and nothing else, so the second pair has no
-    ;; column to translate to - the whole relation is unreachable through the
-    ;; CTE, exactly as one unexposed column already rejects a single-pair
-    ;; join. The join is left unresolved (no ON clause at all).
+    ;; x exposes case.id and nothing else, so the second pair has no column to
+    ;; translate to - the whole relation is unreachable through the CTE,
+    ;; exactly as one unexposed column already rejects a single-pair join.
     (is (clojure.string/includes?
-         (composite-sql ["employee | s: id |= x" "x | document"])
-         "JOIN \"document\" AS \"d_1\" LIMIT"))
+         (:query (generate-expressions ["k.case | s: id |= x" "x | k.case_ref"]))
+         "JOIN \"k\".\"case_ref\" AS \"cr_1\" LIMIT"))
 
     ;; Exposing both does serve it.
     (is (clojure.string/includes?
-         (composite-sql ["employee | s: id, company_id |= x" "x | document"])
-         "ON \"x\".\"id\" = \"d_1\".\"employee_id\" AND \"x\".\"company_id\" = \"d_1\".\"company_id\""))))
+         (:query (generate-expressions ["k.case | s: id, search_id |= x" "x | k.case_ref"]))
+         "ON \"x\".\"id\" = \"cr_1\".\"case_id\" AND \"x\".\"search_id\" = \"cr_1\".\"search_id\"")))
+
+  (testing "A foreign key with no constraint name is still its own relation"
+    ;; w.department.lead_worker_id has no constraint name in the fixtures - a
+    ;; dialect that doesn't report one must keep indexing row by row rather
+    ;; than grouping a table's every key into one invented composite.
+    (is (clojure.string/includes?
+         (:query (generate "w.worker | w.department"))
+         "ON \"w_0\".\"id\" = \"d_1\".\"lead_worker_id\""))))

@@ -98,7 +98,11 @@
 
   A hint names one column pair, the first, which is the one its `pine`
   text tells the user to type. Naming any column of a key joins on the
-  whole key, so a longer key needs no more than this here.
+  whole key, so a longer key needs no more than this to identify itself.
+  Every pair still has to translate, though: a variable that exposes only
+  some of a key's columns can't serve the join at all (join-helper refuses
+  to build it), so suggesting it would offer something that then doesn't
+  resolve.
 
   resolution-of (table/resolution-of - shared with ast/table.clj, which
   tags committed joins the same way) only ever sees :foreign-key/
@@ -111,14 +115,15 @@
         target-side  (if parent? :parent :child)
         context-side (if parent? :child :parent)]
     (keep (fn [rel]
-            (let [pair (first (:columns rel))
-                  column (table/translate-column target-rename (get pair target-side))
-                  related-column (table/translate-column context-rename (get pair context-side))]
-              (when (and column related-column)
+            (let [columns (map #(table/translate-column target-rename (get % target-side))
+                               (:columns rel))
+                  related (map #(table/translate-column context-rename (get % context-side))
+                               (:columns rel))]
+              (when (and (seq columns) (every? some? columns) (every? some? related))
                 {:schema (get-in rel [target-side :schema])
                  :table table
-                 :column column
-                 :related-column related-column
+                 :column (first columns)
+                 :related-column (first related)
                  :parent parent?
                  :resolution (table/resolution-of rel)})))
           relations)))

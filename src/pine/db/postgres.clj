@@ -21,11 +21,12 @@
   a `varchar` reference, which Postgres rejects with \"operator does not
   exist: uuid = character varying\".
 
-  Each column pair is still returned as its own row, so a composite
-  constraint reaches the reference index as several independent
-  single-column relations. That matches the shape the index has always
-  had; pine does not yet build one join from all columns of a composite
-  key at once."
+  Each column pair is returned as its own row, alongside the constraint
+  it belongs to (`conname`) and its position within that constraint
+  (`k.ord`, the ordinality the pairing above already produces).
+  db/references.clj groups the rows back into one relation per
+  constraint, so a composite key becomes a single join on all of its
+  columns."
   [pool]
   (prn (format "Loading all references..."))
   (let [opts {:as-arrays? true}
@@ -35,7 +36,9 @@
   a.attname AS column_name,
   fn.nspname AS foreign_table_schema,
   f.relname AS foreign_table_name,
-  fa.attname AS foreign_column_name
+  fa.attname AS foreign_column_name,
+  con.conname AS constraint_name,
+  k.ord AS ordinal_position
 FROM pg_constraint con
 JOIN pg_class c ON c.oid = con.conrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace

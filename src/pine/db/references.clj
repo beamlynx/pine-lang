@@ -16,16 +16,16 @@
   already knows which of the two it asked for.
 
   :columns is a list of pairs, one per column of the key, each labelled by
-  the side that owns it. Today it always holds exactly one pair -- the
-  extraction queries hand over one column pair at a time -- but nothing
-  downstream may assume that. A foreign key made of several columns is
-  simply a longer list, and reaching that point is meant to be a change
-  here and nowhere else."
-  [resolution child-schema child-table parent-schema parent-table pairs]
+  the side that owns it. A foreign key made of several columns is one
+  relation with a longer list - not several relations, which is what it
+  used to be, and which let a join match on one column of a key and
+  silently return rows belonging to other records."
+  [resolution child-schema child-table parent-schema parent-table pairs constraint]
   {:child      {:schema child-schema  :table child-table}
    :parent     {:schema parent-schema :table parent-table}
    :columns    pairs
-   :resolution resolution})
+   :resolution resolution
+   :constraint constraint})
 
 (defn- index-relation
   "File one relation under every way of reaching it: by bare table name in
@@ -60,14 +60,43 @@
       (assoc-in [:table parent :in parent-schema :referred-by child :in child-schema :via col] rel)
       (assoc-in [:table child  :in child-schema  :refers-to parent :in parent-schema :via col] rel)))
 
+(defn- group-by-constraint
+  "Group the extracted rows into one group per foreign key, in the order
+  they arrived. A key made of several columns arrives as several rows -
+  one column pair each - carrying the name of the constraint they all
+  belong to.
+
+  A row with no constraint name becomes a group of its own. That is
+  exactly how every row behaved before constraints were grouped at all, so
+  a dialect (or fixture) that doesn't report one degrades to the old
+  single-column behaviour rather than collapsing a table's every foreign
+  key into one invented composite key - which would be silent, and would
+  build SQL that looks deliberate.
+
+  Insertion order is kept rather than using group-by's hash order: where
+  two relations end up filed under the same column, the one indexed
+  earliest wins, and that should not depend on hashing."
+  [foreign-keys]
+  (let [{:keys [order groups]}
+        (reduce (fn [{:keys [order groups]} [schema table _col _f-schema _f-table _f-col constraint :as row]]
+                  (let [k (if constraint [schema table constraint] [::unnamed (count order)])]
+                    {:order  (if (contains? groups k) order (conj order k))
+                     :groups (update groups k (fnil conj []) row)}))
+                {:order [] :groups {}}
+                foreign-keys)]
+    (map groups order)))
+
 (defn- index-foreign-keys [foreign-keys]
-  (reduce (fn [acc [schema table col f-schema f-table f-col]]
-            (index-relation acc
-                            (relation :foreign-key schema table f-schema f-table
-                                      [{:child col :parent f-col}])
-                            col))
+  (reduce (fn [acc rows]
+            (let [ordered (sort-by (fn [[_ _ _ _ _ _ _ position]] (or position 0)) rows)
+                  [schema table _ f-schema f-table _ constraint] (first ordered)
+                  pairs (mapv (fn [[_ _ col _ _ f-col]] {:child col :parent f-col}) ordered)
+                  rel (relation :foreign-key schema table f-schema f-table pairs constraint)]
+              ;; Filed under every column of the key, on both sides. Naming
+              ;; any one of them means joining on the whole key.
+              (reduce (fn [acc {:keys [child]}] (index-relation acc rel child)) acc pairs)))
           {}
-          foreign-keys))
+          (group-by-constraint foreign-keys)))
 
 (defn- index-columns
   "Index columns per schema+table and per bare table name. :columns is kept
@@ -160,7 +189,7 @@
   [acc schema table col f-schema f-table]
   (index-relation acc
                   (relation :heuristic schema table f-schema f-table
-                            [{:child col :parent "id"}])
+                            [{:child col :parent "id"}] nil)
                   col))
 
 (defn- index-heuristic-relations

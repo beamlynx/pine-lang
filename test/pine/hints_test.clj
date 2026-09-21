@@ -496,3 +496,27 @@
     ;; No preceding table at all - nothing reachable, so nothing suggested.
     (is (= [] (-> "? doc" gen :table)))))
 
+(deftest test-composite-foreign-key-hints
+  ;; k.case_ref (case_id, search_id) -> k.case (id, search_id) in fixtures.clj.
+  (testing "A composite key is one way to reach the table, not one per column"
+    ;; It used to be offered twice - `.case_id` and `.search_id` - with
+    ;; nothing to say which to pick, and picking the second silently returned
+    ;; rows belonging to other cases. There is one relation now, named by the
+    ;; first column of the key.
+    (is (= [{:schema "k" :table "case_ref" :column "case_id" :related-column "id"
+             :parent false :resolution "fk" :pine "k.case_ref .case_id"}]
+           (-> "k.case | " gen :table)))
+
+    ;; Same relation from the child's side.
+    (is (= [{:schema "k" :table "case" :column "id" :related-column "case_id"
+             :parent true :resolution "fk" :pine "k.case .case_id :parent"}]
+           (-> "k.case_ref | " gen :table))))
+
+  (testing "A variable exposing only some of the key's columns isn't offered the join"
+    ;; join-helper would refuse to build it, so suggesting it would offer
+    ;; something that then doesn't resolve.
+    (is (= [] (->> (gen-with-variables ["k.case | s: id |= x" "x | "]) :table
+                   (filter #(= "case_ref" (:table %))))))
+    (is (= ["case_ref"]
+           (->> (gen-with-variables ["k.case | s: id, search_id |= x" "x | "]) :table
+                (filter #(= "case_ref" (:table %))) (map :table))))))

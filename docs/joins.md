@@ -95,10 +95,10 @@ Bypasses the reference map. `company_id` is on `document` (right table); `id` is
 ## Constraints
 
 - Circular joins are not detected — the query will compile but the SQL may be nonsensical.
-- A foreign key made of several columns still reaches Pine as one relation per column pair, so joining on
-  one of them leaves the others out of the `ON` clause. Pick the pair you want with `.column`. The join
-  itself is already built from a *list* of column pairs (see below) - it is the extraction and indexing
-  that has yet to group a key's columns together.
+- A foreign key made of several columns is one relation, joined on all of its columns at once. Naming any
+  one of them with `.column` selects the whole key, so the `ON` clause is the same whichever you pick.
+  Deliberately joining on *part* of a key needs the explicit `.col1 = .col2` form, which bypasses the
+  reference map.
 - Heuristic joins are only inferred when no FK already covers the same pair.
 - Self-referential heuristic joins are suppressed. Real self-referential FKs (e.g.
   `employee.reports_to → employee.id`) are supported.
@@ -128,8 +128,17 @@ Bypasses the reference map. `company_id` is on `document` (right table); `id` is
    caller already knows which of the two it asked for. Nothing has to be mirrored.
 
    `:columns` is a **list of pairs**, one per column of the key, each labelled by the side that owns it.
-   Today it always holds exactly one pair, but nothing reading it assumes that: every consumer maps over
-   the list. A key made of several columns is simply a longer list.
+   A key made of several columns is one relation with a longer list, not several relations, and every
+   consumer maps over the list rather than reading a first pair.
+
+   The extraction queries return one column pair per row, alongside the constraint it belongs to and its
+   position in that constraint. `group-by-constraint` groups those rows back into one relation before
+   indexing. A row with **no** constraint name becomes a group of its own - the behaviour every row had
+   before grouping existed - so a dialect that doesn't report one degrades to single-column joins rather
+   than collapsing a table's every key into one invented composite.
+
+   The relation is then filed under **every** column of the key, on both sides: `.case_id` and
+   `.search_id` both resolve to the same complete join.
 
 2. **`index-columns`** — adds column metadata to each table entry. Needed before the next pass.
 
@@ -232,3 +241,32 @@ Each entry in `:joins` is one map — the shape a client reads too, since `:join
 **Unresolved joins.** Nothing connects the two tables, or an explicit `.hint_col` matched no relation: the
 join is still recorded, with `resolution: null` and no column pairs, and renders with no `ON` clause at all.
 There is one spelling for "unresolved", so a client checks one thing.
+
+### Composite foreign keys
+
+A key can be made of more than one column:
+
+```
+k.case_ref (case_id, search_id)  ->  k.case (id, search_id)
+```
+
+```
+k.case | k.case_ref
+k.case | k.case_ref .case_id      -- the same join
+k.case | k.case_ref .search_id    -- also the same join
+```
+
+```sql
+JOIN "k"."case_ref" AS "cr_1"
+  ON "c_0"."id" = "cr_1"."case_id" AND "c_0"."search_id" = "cr_1"."search_id"
+```
+
+Pine used to see this as two unrelated single-column relations and join on whichever one the user named.
+One of them is usually right by accident — `case.id` is unique on its own, so matching on it alone selects
+the same rows as matching on both. The other is not: `case.search_id` is not unique, so the join pulled in
+`case_ref` rows belonging to *other* cases that happened to share a search id. It returned plausible rows
+and said nothing.
+
+The table hints list such a key **once**, named by its first column. A variable (see
+[variables.md](variables.md)) that exposes only some of a key's columns can't serve the join at all, so
+neither the join nor the hint is offered — the same rule a single unexposed column already followed.
