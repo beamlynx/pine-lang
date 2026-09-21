@@ -95,6 +95,10 @@ Bypasses the reference map. `company_id` is on `document` (right table); `id` is
 ## Constraints
 
 - Circular joins are not detected — the query will compile but the SQL may be nonsensical.
+- A foreign key made of several columns reaches Pine as one relation per column pair, not as a single
+  multi-column join. Each pair is offered as its own join, and joining on one of them leaves the others out
+  of the `ON` clause. Pick the pair you want with `.column`; there is no syntax yet for "join on all the
+  columns of this key".
 - Heuristic joins are only inferred when no FK already covers the same pair.
 - Self-referential heuristic joins are suppressed. Real self-referential FKs (e.g.
   `employee.reports_to → employee.id`) are supported.
