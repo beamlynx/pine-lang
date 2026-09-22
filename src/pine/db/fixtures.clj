@@ -124,6 +124,17 @@
                    ;; change) or via team/worker (three child hops, zero
                    ;; direction changes) - the longer, direction-pure route
                    ;; should win.
+                   ;; Two keys between the SAME pair of tables that share a
+                   ;; column - ordinary wherever two roles point at the same
+                   ;; table and something like a tenant column is in both
+                   ;; keys. `.note_id` belongs to both, so it names whichever
+                   ;; was indexed first; naming a second column is what gets
+                   ;; at the other one.
+                   ["k"  "note_ref"      "note_id"        "k"  "note"    "id"        "note_ref_primary_fkey" 1]
+                   ["k"  "note_ref"      "search_id"      "k"  "note"    "search_id" "note_ref_primary_fkey" 2]
+                   ["k"  "note_ref"      "note_id"        "k"  "note"    "id"        "note_ref_related_fkey" 1]
+                   ["k"  "note_ref"      "other_id"       "k"  "note"    "other_id"  "note_ref_related_fkey" 2]
+
                    ;;
                    ;; Deliberately left without a constraint name, unlike
                    ;; every row above: a dialect that doesn't report one has
@@ -197,6 +208,16 @@
               ["k"  "case_ref"  "id"          nil  "integer"  nil  nil  nil]
               ["k"  "case_ref"  "case_id"     nil  "integer"  nil  nil  nil]
               ["k"  "case_ref"  "search_id"   nil  "integer"  nil  nil  nil]
+
+              ;; k.note / k.note_ref - two overlapping composite keys, see the
+              ;; foreign-keys comment above.
+              ["k"  "note"      "id"          nil  "integer"  nil  nil  nil]
+              ["k"  "note"      "search_id"   nil  "integer"  nil  nil  nil]
+              ["k"  "note"      "other_id"    nil  "integer"  nil  nil  nil]
+              ["k"  "note_ref"  "id"          nil  "integer"  nil  nil  nil]
+              ["k"  "note_ref"  "note_id"     nil  "integer"  nil  nil  nil]
+              ["k"  "note_ref"  "search_id"   nil  "integer"  nil  nil  nil]
+              ["k"  "note_ref"  "other_id"    nil  "integer"  nil  nil  nil]
 
               ;; `product` exists only to exercise data_types.clj's MySQL
               ;; branches (json/datetime/tinyint) in eval-test's MySQL

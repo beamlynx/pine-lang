@@ -33,23 +33,23 @@
 (deftest test-ast
 
   (testing "Generate ast for `tables`"
-    (is (= [{:schema nil :table "company" :alias "c" :parent nil :join-column nil :join-left-column nil :join-right-column nil :join nil :index 0}]
+    (is (= [{:schema nil :table "company" :alias "c" :parent nil :join-columns nil :join-column-pairs nil :join nil :index 0}]
            (generate :tables "company as c")))
-    (is (= [{:schema nil :table "user" :alias "u_0" :parent nil  :join-column nil :join-left-column nil :join-right-column nil :join nil :index 0}]
+    (is (= [{:schema nil :table "user" :alias "u_0" :parent nil  :join-columns nil :join-column-pairs nil :join nil :index 0}]
            (generate :tables "user")))
-    (is (= [{:schema "public" :table "user" :alias "u_0" :parent nil  :join-column nil :join-left-column nil :join-right-column nil :join nil :index 0}]
+    (is (= [{:schema "public" :table "user" :alias "u_0" :parent nil  :join-columns nil :join-column-pairs nil :join nil :index 0}]
            (generate :tables "public.user")))
-    (is (= [{:schema "public" :table "user" :alias "u_0" :parent true  :join-column nil :join-left-column nil :join-right-column nil :join nil :index 0}]
+    (is (= [{:schema "public" :table "user" :alias "u_0" :parent true  :join-columns nil :join-column-pairs nil :join nil :index 0}]
            (generate :tables "public.user :parent"))))
 
   (testing "Generate ast for `tables` with join types"
-    (is (= [{:schema nil :table "user" :alias "u_0" :parent nil :join-column nil :join-left-column nil :join-right-column nil :join "LEFT" :index 0}]
+    (is (= [{:schema nil :table "user" :alias "u_0" :parent nil :join-columns nil :join-column-pairs nil :join "LEFT" :index 0}]
            (generate :tables "user :left")))
-    (is (= [{:schema nil :table "user" :alias "u_0" :parent nil :join-column nil :join-left-column nil :join-right-column nil :join "RIGHT" :index 0}]
+    (is (= [{:schema nil :table "user" :alias "u_0" :parent nil :join-columns nil :join-column-pairs nil :join "RIGHT" :index 0}]
            (generate :tables "user :right")))
-    (is (= [{:schema "public" :table "user" :alias "u_0" :parent nil :join-column nil :join-left-column nil :join-right-column nil :join "LEFT" :index 0}]
+    (is (= [{:schema "public" :table "user" :alias "u_0" :parent nil :join-columns nil :join-column-pairs nil :join "LEFT" :index 0}]
            (generate :tables "public.user :left")))
-    (is (= [{:schema "public" :table "user" :alias "u_0" :parent nil :join-column nil :join-left-column nil :join-right-column nil :join "RIGHT" :index 0}]
+    (is (= [{:schema "public" :table "user" :alias "u_0" :parent nil :join-columns nil :join-column-pairs nil :join "RIGHT" :index 0}]
            (generate :tables "public.user :right"))))
 
   (testing "Generate ast for `from`"
@@ -421,7 +421,7 @@
         (is (= (:value value) "{\"key\": \"value\"}"))))))
 
 (testing "AST generation with comments"
-  (is (= [{:schema nil :table "company" :alias "c_0" :parent nil :join-column nil :join-left-column nil :join-right-column nil :join nil :index 0}]
+  (is (= [{:schema nil :table "company" :alias "c_0" :parent nil :join-columns nil :join-column-pairs nil :join nil :index 0}]
          (generate :tables "-- get all companies\ncompany")))
   (is (= [[nil "name" nil "=" (dt/string "Acme")]]
          (generate :where "/* filter by name */ name = 'Acme'")))

@@ -15,10 +15,10 @@
     (is (= [{:type :table, :value {:table "user" :schema "public"}}]            (p "public.user")))
     (is (= [{:type :table, :value {:table "user" :alias "u"}}]                  (p "user as u")))
     (is (= [{:type :table, :value {:table "user" :schema "public" :alias "u"}}] (p "public.user as u")))
-    (is (= [{:type :table, :value {:table "user" :join-column "id"}}]           (p "user .id")))
+    (is (= [{:type :table, :value {:table "user" :join-columns ["id"]}}]           (p "user .id")))
     (is (= [{:type :table, :value {:schema "public"
                                    :table "user"
-                                   :join-column "id"}}]                         (p "public.user .id"))))
+                                   :join-columns ["id"]}}]                         (p "public.user .id"))))
 
   (testing "Parse identifiers starting with an underscore -- a leading `_` is a
   common naming convention for internal/prefixed tables and columns (e.g.
@@ -42,16 +42,16 @@
     (is (= [{:type :table, :value {:table "user" :schema "public" :parent true :alias "u"}}]  (p "public.user as u :parent")))
 
     ;; table .column
-    (is (= [{:type :table, :value {:table "user" :parent false :join-column "other_id"}}]     (p "user .other_id :child")))
-    (is (= [{:type :table, :value {:table "user" :parent true :join-column "other_id"}}]      (p "user .other_id :parent")))
+    (is (= [{:type :table, :value {:table "user" :parent false :join-columns ["other_id"]}}]     (p "user .other_id :child")))
+    (is (= [{:type :table, :value {:table "user" :parent true :join-columns ["other_id"]}}]      (p "user .other_id :parent")))
 
     ;; schema.table .column
-    (is (= [{:type :table, :value {:schema "public" :table "user" :join-column "other_id" :parent false}}]           (p "public.user .other_id :child")))
-    (is (= [{:type :table, :value {:schema "public" :table "user" :join-column "other_id" :parent true}}]            (p "public.user .other_id :parent")))
+    (is (= [{:type :table, :value {:schema "public" :table "user" :join-columns ["other_id"] :parent false}}]           (p "public.user .other_id :child")))
+    (is (= [{:type :table, :value {:schema "public" :table "user" :join-columns ["other_id"] :parent true}}]            (p "public.user .other_id :parent")))
 
     ;; schema.table alias .column
-    (is (= [{:type :table, :value {:schema "public" :table "user" :alias "u" :join-column "other_id" :parent false}}] (p "public.user .other_id as u :child")))
-    (is (= [{:type :table, :value {:schema "public" :table "user" :alias "u" :join-column "other_id" :parent true}}]  (p "public.user .other_id as u :parent"))))
+    (is (= [{:type :table, :value {:schema "public" :table "user" :alias "u" :join-columns ["other_id"] :parent false}}] (p "public.user .other_id as u :child")))
+    (is (= [{:type :table, :value {:schema "public" :table "user" :alias "u" :join-columns ["other_id"] :parent true}}]  (p "public.user .other_id as u :parent"))))
 
   (testing "Parse `table` expressions with join types"
     ;; table
@@ -67,35 +67,35 @@
     (is (= [{:type :table, :value {:table "user" :schema "public" :join "RIGHT" :alias "u"}}] (p "public.user as u :right")))
 
     ;; table .column
-    (is (= [{:type :table, :value {:table "user" :join "LEFT" :join-column "other_id"}}]     (p "user .other_id :left")))
-    (is (= [{:type :table, :value {:table "user" :join "RIGHT" :join-column "other_id"}}]    (p "user .other_id :right")))
+    (is (= [{:type :table, :value {:table "user" :join "LEFT" :join-columns ["other_id"]}}]     (p "user .other_id :left")))
+    (is (= [{:type :table, :value {:table "user" :join "RIGHT" :join-columns ["other_id"]}}]    (p "user .other_id :right")))
 
     ;; schema.table .column
-    (is (= [{:type :table, :value {:schema "public" :table "user" :join-column "other_id" :join "LEFT"}}]           (p "public.user .other_id :left")))
-    (is (= [{:type :table, :value {:schema "public" :table "user" :join-column "other_id" :join "RIGHT"}}]          (p "public.user .other_id :right")))
+    (is (= [{:type :table, :value {:schema "public" :table "user" :join-columns ["other_id"] :join "LEFT"}}]           (p "public.user .other_id :left")))
+    (is (= [{:type :table, :value {:schema "public" :table "user" :join-columns ["other_id"] :join "RIGHT"}}]          (p "public.user .other_id :right")))
 
     ;; schema.table alias .column
-    (is (= [{:type :table, :value {:schema "public" :table "user" :alias "u" :join-column "other_id" :join "LEFT"}}] (p "public.user .other_id as u :left")))
-    (is (= [{:type :table, :value {:schema "public" :table "user" :alias "u" :join-column "other_id" :join "RIGHT"}}] (p "public.user .other_id as u :right"))))
+    (is (= [{:type :table, :value {:schema "public" :table "user" :alias "u" :join-columns ["other_id"] :join "LEFT"}}] (p "public.user .other_id as u :left")))
+    (is (= [{:type :table, :value {:schema "public" :table "user" :alias "u" :join-columns ["other_id"] :join "RIGHT"}}] (p "public.user .other_id as u :right"))))
 
   (testing "Parse `table` expressions with explicit join columns"
     ;; Basic explicit columns
-    (is (= [{:type :table, :value {:table "b" :join-left-column "id" :join-right-column "a_id"}}]
+    (is (= [{:type :table, :value {:table "b" :join-column-pairs [{:left "id" :right "a_id"}]}}]
            (p "b .a_id = .id")))
 
     ;; With schema
-    (is (= [{:type :table, :value {:table "user" :schema "public" :join-left-column "id" :join-right-column "user_id"}}]
+    (is (= [{:type :table, :value {:table "user" :schema "public" :join-column-pairs [{:left "id" :right "user_id"}]}}]
            (p "public.user .user_id = .id")))
 
     ;; With alias
-    (is (= [{:type :table, :value {:table "employee" :alias "e" :join-left-column "company_id" :join-right-column "id"}}]
+    (is (= [{:type :table, :value {:table "employee" :alias "e" :join-column-pairs [{:left "company_id" :right "id"}]}}]
            (p "employee as e .id = .company_id")))
 
     ;; Combined with join type
-    (is (= [{:type :table, :value {:table "user" :join "LEFT" :join-left-column "user_id" :join-right-column "id"}}]
+    (is (= [{:type :table, :value {:table "user" :join "LEFT" :join-column-pairs [{:left "user_id" :right "id"}]}}]
            (p "user .id = .user_id :left")))
 
-    (is (= [{:type :table, :value {:table "user" :join "RIGHT" :join-left-column "user_id" :join-right-column "id"}}]
+    (is (= [{:type :table, :value {:table "user" :join "RIGHT" :join-column-pairs [{:left "user_id" :right "id"}]}}]
            (p "user .id = .user_id :right"))))
 
   (testing "Parse `from` expressions"
@@ -370,6 +370,20 @@
            (p "user -- comment at end")))))
 
 (deftest test-prettify
+
+  (testing "A list of join columns survives a round trip"
+    ;; beamlynx rewrites the input with `prettified` on every canvas gesture,
+    ;; and prettify rebuilds each operation from its own parse span - so a
+    ;; span that stopped a character short would silently drop the second
+    ;; column the next time the user clicked anything. No error, no warning.
+    (doseq [expression ["note | note_ref .note_id, .other_id"
+                        "note | note_ref .note_id = .id, .search_id = .other_id"
+                        "note | note_ref .note_id, .other_id as z :left"
+                        "note_ref | note .note_id, .search_id :parent"
+                        "note | note_ref | delete! .note_id, .search_id"]]
+      (is (= (clojure.string/replace expression " | " "\n | ")
+             (:result (prettify expression)))
+          expression)))
 
   (testing "Single operation"
     (is (= {:result "company"

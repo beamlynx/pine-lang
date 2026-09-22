@@ -1098,3 +1098,65 @@
     (is (clojure.string/includes?
          (:query (generate "w.worker | w.department"))
          "ON \"w_0\".\"id\" = \"d_1\".\"lead_worker_id\""))))
+
+;; ---------------------------------------------------------------------------
+;; Naming which relation you mean
+;; ---------------------------------------------------------------------------
+
+;; k.note_ref has two keys to k.note, sharing note_id (fixtures.clj):
+;;   note_ref_primary_fkey (note_id, search_id)
+;;   note_ref_related_fkey (note_id, other_id)
+;;
+;; The columns after a table IDENTIFY a relation - any subset that picks out
+;; one is enough, and the join uses every column of that key regardless of how
+;; many were named.
+
+(defn- join-clause [expression]
+  (second (re-find #"(JOIN .*?)(?: LIMIT|$)" (:query (generate expression)))))
+
+(def ^:private primary
+  (str "JOIN \"k\".\"note_ref\" AS \"nr_1\" "
+       "ON \"n_0\".\"id\" = \"nr_1\".\"note_id\" "
+       "AND \"n_0\".\"search_id\" = \"nr_1\".\"search_id\""))
+
+(def ^:private related
+  (str "JOIN \"k\".\"note_ref\" AS \"nr_1\" "
+       "ON \"n_0\".\"id\" = \"nr_1\".\"note_id\" "
+       "AND \"n_0\".\"other_id\" = \"nr_1\".\"other_id\""))
+
+(deftest test-naming-a-relation
+  (testing "Naming nothing picks the first relation indexed"
+    ;; Pine is terse: you are not made to be explicit, and the canvas is
+    ;; where you see which relation it settled on.
+    (is (= primary (join-clause "k.note | k.note_ref"))))
+
+  (testing "A column shared by two relations still picks the first indexed"
+    (is (= primary (join-clause "k.note | k.note_ref .note_id"))))
+
+  (testing "A second column is how you ask for the other relation"
+    ;; This is the join the language could not express at all before: every
+    ;; spelling reachable with one column resolved to the primary key.
+    (is (= primary (join-clause "k.note | k.note_ref .note_id, .search_id")))
+    (is (= related (join-clause "k.note | k.note_ref .note_id, .other_id"))))
+
+  (testing "Order of the named columns doesn't matter"
+    (is (= related (join-clause "k.note | k.note_ref .other_id, .note_id"))))
+
+  (testing "Columns belonging to different relations name none of them"
+    ;; search_id is only in the primary key and other_id only in the related
+    ;; one, so no single relation holds both. Unresolved, rather than
+    ;; silently picking one.
+    (is (= "JOIN \"k\".\"note_ref\" AS \"nr_1\""
+           (join-clause "k.note | k.note_ref .search_id, .other_id"))))
+
+  (testing "Explicit columns take more than one pair"
+    ;; The only way to write a multi-column join no foreign key describes -
+    ;; and, the other way round, to join on part of a key on purpose.
+    (is (= (str "JOIN \"k\".\"note_ref\" AS \"nr_1\" "
+                "ON \"n_0\".\"id\" = \"nr_1\".\"note_id\" "
+                "AND \"n_0\".\"other_id\" = \"nr_1\".\"search_id\"")
+           (join-clause "k.note | k.note_ref .note_id = .id, .search_id = .other_id")))
+
+    ;; One pair is unchanged, including the deliberately-partial case.
+    (is (= "JOIN \"k\".\"note_ref\" AS \"nr_1\" ON \"n_0\".\"id\" = \"nr_1\".\"note_id\""
+           (join-clause "k.note | k.note_ref .note_id = .id")))))
