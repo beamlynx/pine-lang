@@ -54,15 +54,15 @@
   [rename col]
   (if (empty? rename) col (get rename col)))
 
-;; via-details look like:
-;; ["z"  "document"      "created_by"  :refers-to   "y"  "employee" "id" :foreign-key]
-;;
-;; Only :foreign-key/:heuristic ever reach here as a real reference-map
-;; via-tuple tag (schema-index time, db/postgres.clj) - "synthetic"/"manual"
-;; are never derived from one, since neither corresponds to an actual FK or
-;; heuristic reference at all (see same-source-join and update-joins below).
-(defn resolution-of [vd]
-  (case (last vd)
+(defn resolution-of
+  "The confidence tag a committed join carries, from the relation it was
+  built out of. Only :foreign-key/:heuristic ever reach here - those are
+  the two kinds db/references.clj puts in the index. \"synthetic\" and
+  \"manual\" are set directly wherever such a join is fabricated (see
+  same-source-join and update-joins below), since neither corresponds to a
+  relation in the index at all."
+  [{:keys [resolution]}]
+  (case resolution
     :foreign-key "fk"
     :heuristic   "heuristic"))
 
@@ -116,53 +116,99 @@
               type2 (column-db-type references s2 t2 raw-f-col)]
           (and type1 type2 (not= (type-family type1) (type-family type2)))))))
 
+(defn- select-relation
+  "Pick the relation the user meant, out of everything connecting these two
+  tables, from the columns they named.
+
+  The columns **identify** a relation; they don't specify one. Any subset
+  that picks out a single relation is enough, and the join then uses every
+  column of that key regardless of how many were named. Naming none at all
+  is legal too - Pine is terse, and the canvas is where you see which
+  relation it settled on (docs/joins.md).
+
+  The `:via` map is keyed by the child's own columns, and a key made of
+  several columns is filed under every one of them. So the relations a
+  column could mean are the list under that column, and the relations a
+  *set* of columns could mean are the ones appearing under all of them.
+
+  A column carries more than one relation in two ways. The same table name
+  can exist in several schemas, and this lookup is by bare table name, so
+  every schema's copy lands under one key. And two different keys between
+  the same pair of tables can share a column. Entries are conj'd onto a
+  list, so reversing gives the order they were indexed in, and the first is
+  taken - which is what naming more columns lets you get past. A foreign
+  key and a heuristic never share a key: db/references.clj only adds a
+  heuristic where no foreign key already connects that same table pair and
+  column."
+  [refs columns]
+  (let [ordered (reverse (get refs (if (seq columns) (first columns) (first (keys refs)))))
+        named   (set columns)]
+    (first (filter (fn [rel]
+                     (every? (set (map :child (:columns rel))) named))
+                   ordered))))
+
 (defn- join-helper
-  "Find the references between the tables, get the columns for the first
-  reference and return the pair of alias and columns that will be used for the join.
-  rename1/rename2 translate t1's/t2's own column back through whatever name a
-  variable exposes it under - see translate-column. A restricted candidate
-  (non-empty rename) that fails to translate a *real* column (one the via
-  lookup actually found) rejects the whole join outright - that relation
-  isn't reachable through the CTE. A raw column that was already nil (e.g. an
-  invalid explicit .hint_col against a real table) is left alone, unchanged
-  from the pre-existing behavior of surfacing a hint-less, unresolved join
-  rather than no join at all.
+  "Find the relation between the tables and turn it into the join map the
+  rest of pine reads.
 
-  The returned tuple carries a trailing needs-cast? flag - true only for a
-  heuristic join whose two columns turn out to have different DB types - so
-  eval.clj can cast both sides to text instead of handing Postgres an
-  operator it doesn't have (e.g. `character varying = uuid`)."
-  [references t1 t2 s1 s2 a1 a2 c direction rename1 rename2]
-  (when-let [refs (get-in references [:table t1 :referred-by t2 :via])] ;; get references for the tables
-    (let [get-col-fn            (if c (fn [_] c) (fn [xs] (if xs (first xs) nil)))
-          col-key               (-> refs keys get-col-fn)
-          join                  (-> (get-in refs [col-key]) reverse first)
-                                ;; A column usually carries one relation. It carries
-                                ;; more when the same table name exists in several
-                                ;; schemas: this lookup is by bare table name, so every
-                                ;; schema's copy of the relation lands under one key.
-                                ;; Entries are conj'd onto a list, so `reverse first`
-                                ;; takes the one indexed earliest. A foreign key and a
-                                ;; heuristic never share a key - db/references.clj only
-                                ;; adds a heuristic where no foreign key already
-                                ;; connects that same table pair and column.
+  The lookup is always [:table t1 :referred-by t2], so t1 is the parent
+  and t2 the child, whichever direction the caller is travelling in - that
+  is how this knows which side of the relation each of its own arguments
+  is. rename1/rename2 translate t1's/t2's own column back through whatever
+  name a variable exposes it under - see translate-column. A restricted
+  candidate (non-empty rename) that fails to translate a *real* column (one
+  the relation actually names) rejects the whole join outright - that
+  relation isn't reachable through the CTE. A relation that was never found
+  at all (e.g. an invalid explicit .hint_col against a real table) is left
+  alone, unchanged from the pre-existing behavior of surfacing an
+  unresolved join rather than no join at all - which is also what naming
+  columns belonging to two different relations produces, since no single
+  relation holds them all.
 
-          [_ _ raw-col _ _ _ raw-f-col] join ;; [ schema table col r f-schema f-table f-col ]
-          col                   (translate-column rename1 raw-col)
-          f-col                 (translate-column rename2 raw-f-col)
-          rejected?             (or (and (some? raw-col) (seq rename1) (nil? col))
-                                    (and (some? raw-f-col) (seq rename2) (nil? f-col)))
-                                ;; `join` is nil for an invalid explicit .hint_col (no via
-                                ;; entry matched col-key) - resolution-of throws on a nil/
-                                ;; unmatched tag, so guard it the same way the columns above
-                                ;; already tolerate a nil raw-col/raw-f-col.
-          resolution            (when join (resolution-of join))
-          needs-cast?           (boolean (and resolution
-                                              (mismatched-heuristic-types? resolution s1 t1 raw-col s2 t2 raw-f-col references)))]
+  The returned map's :columns holds one entry per column of the relation,
+  each already labelled by the side it belongs to - :from and :to name the
+  two aliases in pipeline order, so nothing downstream has to work out
+  which end a column came from. Every pair is translated and rendered;
+  nothing here assumes there is exactly one, even though today there
+  always is.
+
+  :cast is \"text\" only for a heuristic join whose two columns turn out to
+  have different DB types - so eval.clj can cast both sides instead of
+  handing Postgres an operator it doesn't have (e.g. `character varying =
+  uuid`). It is a property of the join, not of a pair: a cast only ever
+  applies to a heuristic guess, and a heuristic relation always has
+  exactly one column pair."
+  [references t1 t2 s1 s2 a1 a2 cs direction rename1 rename2]
+  (when-let [refs (get-in references [:table t1 :referred-by t2 :via])] ;; get relations for the tables
+    (let [rel                   (select-relation refs cs)
+
+          ;; t1 is the parent side of the relation, t2 the child side.
+          pairs                 (mapv (fn [{:keys [child parent]}]
+                                        {:raw1 parent :raw2 child
+                                         :col1 (translate-column rename1 parent)
+                                         :col2 (translate-column rename2 child)})
+                                      (:columns rel))
+          rejected?             (boolean
+                                 (some (fn [{:keys [raw1 raw2 col1 col2]}]
+                                         (or (and (some? raw1) (seq rename1) (nil? col1))
+                                             (and (some? raw2) (seq rename2) (nil? col2))))
+                                       pairs))
+                                ;; `rel` is nil when the named columns match no relation -
+                                ;; resolution-of throws on a nil/unmatched tag, so guard it
+                                ;; the same way the pairs above already tolerate being empty.
+          resolution            (when rel (resolution-of rel))
+          {:keys [raw1 raw2]}   (first pairs)
+          cast                  (when (and resolution
+                                           (mismatched-heuristic-types? resolution s1 t1 raw1 s2 t2 raw2 references))
+                                  "text")]
       (when-not rejected?
         (if (= direction :of)
-          [a2 f-col :of a1 col resolution needs-cast?]
-          [a1 col :has a2 f-col resolution needs-cast?])))))
+          {:from a2 :to a1 :parent "to"
+           :columns (mapv (fn [{:keys [col1 col2]}] {:from col2 :to col1}) pairs)
+           :resolution resolution :cast cast}
+          {:from a1 :to a2 :parent "from"
+           :columns (mapv (fn [{:keys [col1 col2]}] {:from col1 :to col2}) pairs)
+           :resolution resolution :cast cast})))))
 
 (defn- has-id-column? [references {:keys [table schema]}]
   (let [columns (if schema
@@ -202,10 +248,12 @@
            :let [id1 (translate-column rename1 "id")
                  id2 (translate-column rename2 "id")]
            :when (and (= t1 t2) (has-id-column? references c1) id1 id2)]
-       [a1 id1 :has a2 id2 "synthetic"]))))
+       {:from a1 :to a2 :parent "from"
+        :columns [{:from id1 :to id2}]
+        :resolution "synthetic" :cast nil}))))
 
 ;; TODO: use spec for the state value i.e. first arg
-(defn- join-tables [{:keys [references aliases]} x y c parent]
+(defn- join-tables [{:keys [references aliases]} x y columns parent]
   (let [a1 (x :alias)
         a2 (y :alias)
         alias1 (aliases a1)
@@ -216,7 +264,7 @@
                         (first
                          (for [{t1 :table s1 :schema rename1 :rename} cs1
                                {t2 :table s2 :schema rename2 :rename} cs2
-                               :let [result (join-helper references t1 t2 s1 s2 aa1 aa2 c direction rename1 rename2)]
+                               :let [result (join-helper references t1 t2 s1 s2 aa1 aa2 columns direction rename1 rename2)]
                                :when result]
                            result)))]
     (or
@@ -232,22 +280,34 @@
 (defn- update-joins
   "Use the tables in the state to create a join between the last 2 tables. The
   reason to get the tables from the state is that they have been assigned an
-  alias. We only use the join column from the current value being processed."
+  alias. We only use the join columns from the current value being processed."
   [state current]
-  (let [{:keys [join-column join-left-column join-right-column parent join]} current
+  (let [{:keys [join-columns join-column-pairs parent join]} current
         from-alias                   (state :context)]
     (cond
       (nil? from-alias) state
-      ;; Explicit columns case: left table's column = right table's column
-      ;; In "a | b .a_id = .id", left-col is "id" (from a), right-col is "a_id" (from b)
-      (and join-left-column join-right-column)
+      ;; Explicit columns case: each pair is left table's column = right
+      ;; table's column. In "a | b .a_id = .id", left is "id" (from a) and
+      ;; right is "a_id" (from b). Several pairs join on all of them, which
+      ;; is the only way to write a multi-column join that no foreign key
+      ;; describes.
+      (seq join-column-pairs)
       (let [x (-> state :aliases (get from-alias))
-            join-result [(x :alias) join-left-column :has (current :alias) join-right-column "manual"]]
-        (update state :joins conj [(x :alias) (current :alias) join-result join]))
+            join-result {:from (x :alias) :to (current :alias) :parent "from"
+                         :columns (mapv (fn [{:keys [left right]}] {:from left :to right})
+                                        join-column-pairs)
+                         :resolution "manual" :cast nil}]
+        (update state :joins conj (assoc join-result :type join)))
 
       :else (let [x (-> state :aliases (get from-alias))
-                  join-result (join-tables state x current join-column parent)]
-              (update state :joins conj [(x :alias) (current :alias) join-result join])))))
+                  ;; Nothing connects these two tables. Still a join - the
+                  ;; user wrote one - but an unresolved one, and it says so
+                  ;; with a nil :resolution rather than by being absent. One
+                  ;; spelling for "unresolved", so a client checks one thing.
+                  join-result (or (join-tables state x current join-columns parent)
+                                  {:from (x :alias) :to (current :alias) :parent "from"
+                                   :columns [] :resolution nil :cast nil})]
+              (update state :joins conj (assoc join-result :type join))))))
 (defn make-alias [s]
   (let [words (if (not-empty s) (s/split s #"_") ["x"])
         initials (map #(subs % 0 1) words)]
@@ -255,11 +315,11 @@
 
 (defn- handle-as-table [state value]
   (let [index (state :index)
-        {:keys [table alias schema parent join-column join-left-column join-right-column join]} value
+        {:keys [table alias schema parent join-columns join-column-pairs join]} value
         a (or alias (str (make-alias table) "_" (state :table-count)))
         current {:schema schema :table table :alias a :parent parent
-                 :join-column join-column :join-left-column join-left-column
-                 :join-right-column join-right-column :join join
+                 :join-columns join-columns :join-column-pairs join-column-pairs
+                 :join join
                  :index index}]
     (-> state
         (assoc  :context (state :current))
@@ -272,11 +332,11 @@
 
 (defn- handle-as-variable [state value var-ast]
   (let [index (state :index)
-        {:keys [table alias join-column join-left-column join-right-column join]} value
+        {:keys [table alias join-columns join-column-pairs join]} value
         a (or alias table)
         current {:schema nil :table table :ast var-ast :alias a
-                 :join-column join-column :join-left-column join-left-column
-                 :join-right-column join-right-column :join join
+                 :join-columns join-columns :join-column-pairs join-column-pairs
+                 :join join
                  :index index}]
     (-> state
         (assoc  :context (state :current))

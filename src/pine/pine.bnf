@@ -18,7 +18,8 @@ FROM              := <from-op>          alias
 ORDER-PARTIAL     := <order-op> order-columns <","> <ws*> partial-alias | <order-op> partial-alias | <order-op> order-columns? <",">?
 ORDER             := <order-op>         order-columns
 
-DELETE-ACTION     := <delete-action-op> hint-column
+DELETE-ACTION     := <delete-action-op> delete-columns
+<delete-columns>  := hint-column (<","> <ws*> hint-column)*
 UPDATE-PARTIAL    := <update-action-op> update-assignments <","> <ws*> partial-update-column  |  <update-action-op> partial-update-column  |  <update-action-op> update-assignments? <",">?
 UPDATE-ACTION     := <update-action-op> update-assignments
 COUNT             := <count-op>
@@ -66,8 +67,10 @@ order-column  := column | column <ws+> ("desc"|"asc")
 
 hint-column     := <"."> symbol
 
-hint-columns      := hint-column | explicit-columns
-explicit-columns  := hint-column <ws*> <"="> <ws*> hint-column
+hint-columns       := hint-column-list | explicit-columns
+<hint-column-list> := hint-column (<","> <ws*> hint-column)*
+explicit-columns   := explicit-pair (<","> <ws*> explicit-pair)*
+explicit-pair      := hint-column <ws*> <"="> <ws*> hint-column
 
 columns            := column (<","> <ws*> column)*
 column             := qualified-symbol <ws*> <"=>"> <ws*> column-function | qualified-symbol

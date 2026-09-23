@@ -1,6 +1,7 @@
 (ns pine.eval-test
   (:require [clojure.test :refer [deftest is testing]]
             [pine.ast.main :as ast]
+            [pine.db.main :as db]
             [pine.parser :as parser]
             [pine.eval :as eval]
             [pine.data-types :as dt]))
@@ -557,9 +558,12 @@
     (is (clojure.string/includes?
          (:query (generate-expressions ["company | s: id as c_id |= x" "x | employee"]))
          "\"x\".\"c_id\" = \"e_1\".\"company_id\""))
+    ;; An unresolved join renders with no ON clause at all - there are no
+    ;; column pairs to render. (It used to compare two zero-length
+    ;; identifiers, which was no more runnable.)
     (is (clojure.string/includes?
          (:query (generate-expressions ["employee | s: id as tmp_id |= x" "x | company"]))
-         "ON \"\" = \"\"")))
+         "JOIN \"company\" AS \"c_1\" LIMIT")))
 
   (testing "Mid-pipeline assign: expression continues after |="
     ;; The assign snapshots the state at that point; subsequent ops still apply
@@ -633,14 +637,15 @@
     ;; But two RAW references to the same table still don't resolve - Pine has
     ;; no way yet to distinguish which occurrence is which (no `t | t as t2`
     ;; self-aliasing), so this stays unsupported (see docs/variables.md).
-    (is (clojure.string/includes? (:query (generate "company | company")) "ON \"\" = \"\"")))
+    (is (clojure.string/includes? (:query (generate "company | company"))
+                                  "JOIN \"company\" AS \"c_1\" LIMIT")))
 
   (testing "A table is a join source through a variable only if its id is present"
     ;; `s: name` alone has no id anywhere in x's snapshot — Pine doesn't add
     ;; one, so company is not a valid join source.
     (is (clojure.string/includes?
          (:query (generate-expressions ["company as c | s: name |= x" "x | employee"]))
-         "ON \"\" = \"\""))
+         "JOIN \"employee\" AS \"e_1\" LIMIT"))
 
     ;; `s: id, name` includes it explicitly, so the join resolves.
     (is (clojure.string/includes?
@@ -651,7 +656,7 @@
     ;; company is not a valid join source.
     (is (clojure.string/includes?
          (:query (generate-expressions ["company as c | employee .company_id | group: c.name |= x" "x | employee"]))
-         "ON \"\" = \"\"")))
+         "JOIN \"employee\" AS \"e_1\" LIMIT")))
 
   (testing "WHERE value coercion through a variable resolves the real column's type"
     ;; A variable's pre-seeded column list never carried type information, so
@@ -1004,3 +1009,154 @@
                        :query "UPDATE `customer` SET `data` = CAST(? AS JSON) WHERE id IN ( SELECT * FROM ( SELECT `c_0`.`id` FROM `customer` AS `c_0` WHERE `c_0`.`id` = ? ) AS `pine_sub` )"
                        :params (list (dt/jsonb "{\"test\": 1}") (dt/number "1"))}]}
            (generate-mysql "customer | where: id = 1 | update! data = '{\"test\": 1}'")))))
+;; ---------------------------------------------------------------------------
+;; Composite foreign keys
+;; ---------------------------------------------------------------------------
+
+;; k.case_ref (case_id, search_id) -> k.case (id, search_id) in fixtures.clj.
+;; Matching on case_id alone happens to be right there (case.id is unique on
+;; its own); matching on search_id alone is not, and used to return rows
+;; belonging to other cases without saying so.
+
+(deftest test-composite-foreign-key
+  (testing "Every column of the key lands in the ON clause"
+    (is (clojure.string/includes?
+         (:query (generate "k.case | k.case_ref"))
+         "ON \"c_0\".\"id\" = \"cr_1\".\"case_id\" AND \"c_0\".\"search_id\" = \"cr_1\".\"search_id\"")))
+
+  (testing "Naming any column of the key joins on the whole key"
+    ;; Which of the two a user picked out of the hints used to decide whether
+    ;; the query was right. It no longer does - both spell the same join.
+    (is (= (:query (generate "k.case | k.case_ref .case_id"))
+           (:query (generate "k.case | k.case_ref .search_id"))
+           (:query (generate "k.case | k.case_ref")))))
+
+  (testing "Both pipe orders qualify each column with the alias that owns it"
+    ;; Child-first swaps which alias is `from`, and every pair has to swap
+    ;; with it. A mirrored splice that leaves a parent column on the child's
+    ;; alias is what this catches.
+    (is (clojure.string/includes?
+         (:query (generate "k.case_ref | k.case :parent"))
+         "ON \"cr_0\".\"case_id\" = \"c_1\".\"id\" AND \"cr_0\".\"search_id\" = \"c_1\".\"search_id\"")))
+
+  (testing "A write scopes its subquery with every column of the key"
+    (is (= {:query (str "DELETE FROM \"k\".\"case_ref\" WHERE \"id\" IN ( "
+                        "SELECT \"cr_1\".\"id\" FROM \"k\".\"case\" AS \"c_0\" "
+                        "JOIN \"k\".\"case_ref\" AS \"cr_1\" "
+                        "ON \"c_0\".\"id\" = \"cr_1\".\"case_id\" "
+                        "AND \"c_0\".\"search_id\" = \"cr_1\".\"search_id\" )")
+            :params nil}
+           (generate "k.case | k.case_ref | delete! .id")))
+
+    (is (clojure.string/includes?
+         (:query (first (:queries (generate "k.case | k.case_ref | update! id = 1"))))
+         "ON \"c_0\".\"id\" = \"cr_1\".\"case_id\" AND \"c_0\".\"search_id\" = \"cr_1\".\"search_id\"")))
+
+  (testing "A variable exposing only some of the key's columns can't serve the join"
+    ;; x exposes case.id and nothing else, so the second pair has no column to
+    ;; translate to - the whole relation is unreachable through the CTE,
+    ;; exactly as one unexposed column already rejects a single-pair join.
+    (is (clojure.string/includes?
+         (:query (generate-expressions ["k.case | s: id |= x" "x | k.case_ref"]))
+         "JOIN \"k\".\"case_ref\" AS \"cr_1\" LIMIT"))
+
+    ;; Exposing both does serve it.
+    (is (clojure.string/includes?
+         (:query (generate-expressions ["k.case | s: id, search_id |= x" "x | k.case_ref"]))
+         "ON \"x\".\"id\" = \"cr_1\".\"case_id\" AND \"x\".\"search_id\" = \"cr_1\".\"search_id\"")))
+
+  (testing "A delete can be scoped by every column of the key it was reached by"
+    ;; Deleting on one column of a composite key at a time over-matches, and
+    ;; the over-match is silent: `WHERE search_id IN (...)` alone also takes
+    ;; out case_ref rows belonging to a different case that happens to share
+    ;; a search id. Naming both columns matches them as a row.
+    (is (= {:query (str "DELETE FROM \"k\".\"case_ref\" WHERE (\"case_id\", \"search_id\") IN ( "
+                        "SELECT \"cr_1\".\"case_id\", \"cr_1\".\"search_id\" "
+                        "FROM \"k\".\"case\" AS \"c_0\" "
+                        "JOIN \"k\".\"case_ref\" AS \"cr_1\" "
+                        "ON \"c_0\".\"id\" = \"cr_1\".\"case_id\" "
+                        "AND \"c_0\".\"search_id\" = \"cr_1\".\"search_id\" "
+                        "WHERE \"c_0\".\"id\" = ? )")
+            :params (list (dt/number "1"))}
+           (generate "k.case | where: id = 1 | k.case_ref | delete! .case_id, .search_id")))
+
+    ;; MySQL wraps the inner SELECT in a derived table (error 1093/1235). The
+    ;; wrap has to pass both columns through for the row comparison to work.
+    (is (= {:query (str "DELETE FROM `k`.`case_ref` WHERE (`case_id`, `search_id`) IN ( "
+                        "SELECT * FROM ( SELECT `cr_1`.`case_id`, `cr_1`.`search_id` "
+                        "FROM `k`.`case` AS `c_0` "
+                        "JOIN `k`.`case_ref` AS `cr_1` "
+                        "ON `c_0`.`id` = `cr_1`.`case_id` "
+                        "AND `c_0`.`search_id` = `cr_1`.`search_id` ) AS `pine_sub` )")
+            :params nil}
+           (generate-mysql "k.case | k.case_ref | delete! .case_id, .search_id"))))
+
+  (testing "A foreign key with no constraint name is still its own relation"
+    ;; w.department.lead_worker_id has no constraint name in the fixtures - a
+    ;; dialect that doesn't report one must keep indexing row by row rather
+    ;; than grouping a table's every key into one invented composite.
+    (is (clojure.string/includes?
+         (:query (generate "w.worker | w.department"))
+         "ON \"w_0\".\"id\" = \"d_1\".\"lead_worker_id\""))))
+
+;; ---------------------------------------------------------------------------
+;; Naming which relation you mean
+;; ---------------------------------------------------------------------------
+
+;; k.note_ref has two keys to k.note, sharing note_id (fixtures.clj):
+;;   note_ref_primary_fkey (note_id, search_id)
+;;   note_ref_related_fkey (note_id, other_id)
+;;
+;; The columns after a table IDENTIFY a relation - any subset that picks out
+;; one is enough, and the join uses every column of that key regardless of how
+;; many were named.
+
+(defn- join-clause [expression]
+  (second (re-find #"(JOIN .*?)(?: LIMIT|$)" (:query (generate expression)))))
+
+(def ^:private primary
+  (str "JOIN \"k\".\"note_ref\" AS \"nr_1\" "
+       "ON \"n_0\".\"id\" = \"nr_1\".\"note_id\" "
+       "AND \"n_0\".\"search_id\" = \"nr_1\".\"search_id\""))
+
+(def ^:private related
+  (str "JOIN \"k\".\"note_ref\" AS \"nr_1\" "
+       "ON \"n_0\".\"id\" = \"nr_1\".\"note_id\" "
+       "AND \"n_0\".\"other_id\" = \"nr_1\".\"other_id\""))
+
+(deftest test-naming-a-relation
+  (testing "Naming nothing picks the first relation indexed"
+    ;; Pine is terse: you are not made to be explicit, and the canvas is
+    ;; where you see which relation it settled on.
+    (is (= primary (join-clause "k.note | k.note_ref"))))
+
+  (testing "A column shared by two relations still picks the first indexed"
+    (is (= primary (join-clause "k.note | k.note_ref .note_id"))))
+
+  (testing "A second column is how you ask for the other relation"
+    ;; This is the join the language could not express at all before: every
+    ;; spelling reachable with one column resolved to the primary key.
+    (is (= primary (join-clause "k.note | k.note_ref .note_id, .search_id")))
+    (is (= related (join-clause "k.note | k.note_ref .note_id, .other_id"))))
+
+  (testing "Order of the named columns doesn't matter"
+    (is (= related (join-clause "k.note | k.note_ref .other_id, .note_id"))))
+
+  (testing "Columns belonging to different relations name none of them"
+    ;; search_id is only in the primary key and other_id only in the related
+    ;; one, so no single relation holds both. Unresolved, rather than
+    ;; silently picking one.
+    (is (= "JOIN \"k\".\"note_ref\" AS \"nr_1\""
+           (join-clause "k.note | k.note_ref .search_id, .other_id"))))
+
+  (testing "Explicit columns take more than one pair"
+    ;; The only way to write a multi-column join no foreign key describes -
+    ;; and, the other way round, to join on part of a key on purpose.
+    (is (= (str "JOIN \"k\".\"note_ref\" AS \"nr_1\" "
+                "ON \"n_0\".\"id\" = \"nr_1\".\"note_id\" "
+                "AND \"n_0\".\"other_id\" = \"nr_1\".\"search_id\"")
+           (join-clause "k.note | k.note_ref .note_id = .id, .search_id = .other_id")))
+
+    ;; One pair is unchanged, including the deliberately-partial case.
+    (is (= "JOIN \"k\".\"note_ref\" AS \"nr_1\" ON \"n_0\".\"id\" = \"nr_1\".\"note_id\""
+           (join-clause "k.note | k.note_ref .note_id = .id")))))

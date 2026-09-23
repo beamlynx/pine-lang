@@ -59,6 +59,16 @@ clj -M:fmt fix
 
 ---
 
+## Landing changes
+
+Every change goes through a pull request, including one that is going to be merged immediately. Never commit to `master` directly.
+
+`master` is protected here, so this is enforced rather than a convention — but it is the convention across every beamlynx repo, including the ones where nothing enforces it. The PR is where the change gets explained; a commit pushed straight to the branch leaves whoever reads it later to reconstruct the reasoning from the diff.
+
+Merge commits, not squash or rebase. `gh pr merge --merge --admin` if the review requirement is in the way.
+
+---
+
 ## Changelog
 
 Every fix/feat PR must add its own entry under `## [Unreleased]` in `CHANGELOG.md` — don't leave it empty and defer the writeup to the later release PR. The release checklist (`RELEASING.md`) only moves an already-written `Unreleased` section into a dated one; it doesn't author the content.

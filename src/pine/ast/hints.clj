@@ -57,55 +57,96 @@
 ;; Relation Hints
 ;; ---------------------------------------------------------------------------
 
-(defn- generate-expression [{:keys [schema table column related-column parent resolution alias]}]
-  ;; The `.hint_col` a user types to disambiguate always names the *child*'s FK
-  ;; column (see docs/joins.md - the via map is keyed by it), which is `column`
-  ;; when this table is the child (parent false) but `related-column` (the
-  ;; context table's own column) when this table is the parent (parent true).
+(defn- generate-expression [{:keys [schema table column related-column columns parent resolution alias]}]
+  ;; The `.hint_col` a user types to name a relation always names the
+  ;; *child*'s columns (see docs/joins.md - the via map is keyed by them),
+  ;; which is `column` when this table is the child (parent false) but
+  ;; `related-column` (the context table's own column) when this table is the
+  ;; parent (parent true). It stays the child's side either way: the columns
+  ;; are a name for the relation, and a relation is named the same from both
+  ;; ends.
+  ;;
+  ;; A key made of several columns names all of them. Naming one is enough
+  ;; when only one relation holds it, but a suggestion that showed only the
+  ;; first could not tell two keys sharing a column apart - both would render
+  ;; as the same text, and picking either would give the same join.
+  ;;
   ;; Skip it entirely for a synthetic join: there's exactly one synthetic
-  ;; id=id entry, never ambiguous, so no disambiguator is needed - keeps
+  ;; id=id entry, never ambiguous, so no name is needed - keeps
   ;; `var_x | var_y` as the canonical form instead of `var_x | var_y .id`.
-  (let [hint-column (when-not (= resolution "synthetic")
-                      (if parent related-column column))]
+  (let [pairs (or columns [{:column column :related-column related-column}])
+        hint-columns (when-not (= resolution "synthetic")
+                       (keep (if parent :related-column :column) pairs))]
     (str (if schema (str schema ".") "") table
          (if alias (str " as " alias) "")
-         (if hint-column (str " ." hint-column) "")
+         (if (seq hint-columns) (str " ." (str/join ", ." hint-columns)) "")
          (if parent " :parent" ""))))
 
-;; via-details look like:
-;; ["z"  "document"      "created_by"  :refers-to   "y"  "employee" "id"]
-;;
-;; Position 1/2 (table/col) is always the context table (the one we're generating
-;; hints from) and position 5/6 (f-table/f-col) is always the suggested table -
-;; regardless of :refers-to vs :referred-by direction - because relation-hints
-;; always looks the via map up keyed by the context table. See docs/joins.md.
-;;
-;; resolution-of (table/resolution-of - shared with ast/table.clj, which tags
-;; committed joins in ast.joins the same way) only ever sees :foreign-key/
-;; :heuristic here - a real reference-map entry, tagged at schema-index time
-;; (db/postgres.clj). "synthetic" (the third :resolution value - see
-;; docs/joins.md) never comes from a via-details tag at all; it's set
-;; directly wherever a same-source join is fabricated on the fly (below),
-;; since nothing in the references map describes it.
-(defn- create-hint-from-relation-array
-  "context-rename/target-rename translate the context's/suggested table's own
-  column back through whatever name a variable exposes it under on that side
-  (see table/translate-column) - dropped entirely when either side's column
-  isn't actually exposed there (a restricted variable that never selected it),
-  since that relation isn't reachable through the CTE at all."
-  [table via-details context-rename target-rename]
-  (keep (fn [vd]
-          (let [direction (nth vd 3)
-                column (table/translate-column target-rename (nth vd 6))
-                related-column (table/translate-column context-rename (nth vd 2))]
-            (when (and column related-column)
-              {:schema (nth vd 4)
-               :table table
-               :column column
-               :related-column related-column
-               :parent (= direction :refers-to)
-               :resolution (table/resolution-of vd)})))
-        via-details))
+(defn- relations-of
+  "Every relation an index entry holds, flattened out of the per-column
+  :via map. The same relation is filed under each of its key's columns, so
+  this can hand back the same relation more than once - the caller
+  dedupes (relation-hints's own `distinct`)."
+  [entry]
+  (distinct (mapcat identity (vals (:via entry)))))
+
+(defn- create-hint-from-relation
+  "Turn the relations reachable from the context table into hints.
+
+  `direction` is the half of the index these came out of, and it is what
+  says which side of each relation is the suggestion: :refers-to means the
+  context is the child and the suggested table is its parent,
+  :referred-by the other way round. The relation itself is stored once and
+  filed under both, so it never carries the direction - the lookup does.
+
+  context-rename/target-rename translate the context's/suggested table's
+  own column back through whatever name a variable exposes it under (see
+  table/translate-column) - the hint is dropped entirely when either
+  side's column isn't actually exposed there (a restricted variable that
+  never selected it), since that relation isn't reachable through the CTE
+  at all.
+
+  A hint names one column pair, the first, which is the one its `pine`
+  text tells the user to type. Naming any column of a key joins on the
+  whole key, so a longer key needs no more than this to identify itself.
+  Every pair still has to translate, though: a variable that exposes only
+  some of a key's columns can't serve the join at all (join-helper refuses
+  to build it), so suggesting it would offer something that then doesn't
+  resolve.
+
+  A key of more than one column also carries :columns, every pair of it.
+  Something that has to name the whole key rather than join on it - a
+  DELETE scoped to the rows this relation reaches, for instance - needs
+  them all. It is left off a single-column key, where it would just repeat
+  :column/:related-column on every one of what can be thousands of hints.
+
+  resolution-of (table/resolution-of - shared with ast/table.clj, which
+  tags committed joins the same way) only ever sees :foreign-key/
+  :heuristic here - a real relation from the index. \"synthetic\" (the
+  third :resolution value - see docs/joins.md) never comes from one at
+  all; it's set directly wherever a same-source join is fabricated on the
+  fly (below), since nothing in the references map describes it."
+  [direction table relations context-rename target-rename]
+  (let [parent?      (= direction :refers-to)
+        target-side  (if parent? :parent :child)
+        context-side (if parent? :child :parent)]
+    (keep (fn [rel]
+            (let [columns (map #(table/translate-column target-rename (get % target-side))
+                               (:columns rel))
+                  related (map #(table/translate-column context-rename (get % context-side))
+                               (:columns rel))]
+              (when (and (seq columns) (every? some? columns) (every? some? related))
+                (cond-> {:schema (get-in rel [target-side :schema])
+                         :table table
+                         :column (first columns)
+                         :related-column (first related)
+                         :parent parent?
+                         :resolution (table/resolution-of rel)}
+                  (next columns)
+                  (assoc :columns (mapv (fn [column related-column]
+                                          {:column column :related-column related-column})
+                                        columns related))))))
+          relations)))
 
 (defn- variables-resolving-to
   "Every known variable that includes real-table among its own resolved
@@ -140,24 +181,27 @@
         hints
         (mapcat
          (fn [{:keys [table schema rename]}]
-           (let [parents    (-> state :references :table (get table) :refers-to)
+           (let [;; Kept apart, not concat'd: which half a relation came out
+                 ;; of is what says whether the suggested table is the
+                 ;; context's parent or its child. The relation itself is
+                 ;; filed under both and doesn't carry the direction.
+                 parents    (-> state :references :table (get table) :refers-to)
                  children   (-> state :references :table (get table) :referred-by)
-                 real-rel   (seq (concat parents children))
+                 real-rel   (seq (concat (for [e parents] [:refers-to e])
+                                         (for [e children] [:referred-by e])))
                  real-hints (mapcat
-                             (fn [[target relation]]
-                               (let [via (get-in relation [:via])
-                                     via-details (mapcat identity (vals via))]
-                                 (create-hint-from-relation-array target via-details rename {})))
+                             (fn [[direction [target relation]]]
+                               (create-hint-from-relation
+                                direction target (relations-of relation) rename {}))
                              real-rel)
                  variable-hints (mapcat
-                                 (fn [[target relation]]
-                                   (let [via (get-in relation [:via])
-                                         via-details (mapcat identity (vals via))]
-                                     (mapcat
-                                      (fn [[vname var-rename]]
-                                        (when (not= vname from-name)
-                                          (create-hint-from-relation-array vname via-details rename var-rename)))
-                                      (variables-resolving-to state target))))
+                                 (fn [[direction [target relation]]]
+                                   (mapcat
+                                    (fn [[vname var-rename]]
+                                      (when (not= vname from-name)
+                                        (create-hint-from-relation
+                                         direction vname (relations-of relation) rename var-rename)))
+                                    (variables-resolving-to state target)))
                                  real-rel)
                  same-source-hints (when (has-id-column? state table)
                                      (keep
@@ -233,10 +277,10 @@
   (let [parents  (-> state :references :table (get table) :refers-to)
         children (-> state :references :table (get table) :referred-by)]
     (mapcat
-     (fn [[target relation]]
-       (create-hint-from-relation-array
-        target (mapcat identity (vals (:via relation))) rename {}))
-     (concat parents children))))
+     (fn [[direction [target relation]]]
+       (create-hint-from-relation direction target (relations-of relation) rename {}))
+     (concat (for [e parents] [:refers-to e])
+             (for [e children] [:referred-by e])))))
 
 (defn- same-direction-hints
   "Single-hop candidates from `table`, restricted to one direction only -

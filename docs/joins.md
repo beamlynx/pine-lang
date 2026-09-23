@@ -14,14 +14,19 @@ heuristic detection based on column naming.
 ```
 table_a | table_b
 table_a | table_b .hint_col
+table_a | table_b .hint_col, .hint_col
 table_a | table_b .left_col = .right_col
+table_a | table_b .left_col = .right_col, .left_col = .right_col
 table_a | table_b :parent
 table_a | table_b :left
 ```
 
-- **No modifier** — Pine picks the join direction automatically.
-- **`.hint_col`** — disambiguate when two tables share more than one FK.
-- **`.col1 = .col2`** — override both sides explicitly; bypasses the reference map entirely.
+- **No modifier** — Pine picks the join direction automatically, and the first relation it indexed.
+- **`.hint_col`** — name which relation you mean, when two tables are connected more than one way.
+  Several, comma-separated, when one column isn't enough to tell them apart. See
+  [Naming a relation](#naming-a-relation).
+- **`.col1 = .col2`** — override both sides explicitly; bypasses the reference map entirely. Several
+  pairs, comma-separated, for a join on more than one column.
 - **`:parent`** — force the join to treat `table_b` as the parent (i.e. the table `table_a` refers to,
   not the table that refers to `table_a`).
 - **`:child`** — inverse of `:parent`; explicit but rarely needed since it is the default.
@@ -88,17 +93,17 @@ Bypasses the reference map. `company_id` is on `document` (right table); `id` is
    **references map** used for every subsequent join resolution.
 2. When the parser sees `table_a | table_b`, it emits two consecutive `:table` operations.
 3. `table/handle` in `ast/table.clj` calls `update-joins`, which calls `join-tables`, which calls `join-helper`.
-4. `join-helper` looks up the resolved join vector from the references map and records it on the AST
+4. `join-helper` looks up the relation in the references map and records a **join map** on the AST
    state's `:joins` vector.
 5. `eval/build-join-clause` turns each entry in `:joins` into a SQL `JOIN … ON …` fragment.
 
 ## Constraints
 
 - Circular joins are not detected — the query will compile but the SQL may be nonsensical.
-- A foreign key made of several columns reaches Pine as one relation per column pair, not as a single
-  multi-column join. Each pair is offered as its own join, and joining on one of them leaves the others out
-  of the `ON` clause. Pick the pair you want with `.column`; there is no syntax yet for "join on all the
-  columns of this key".
+- A foreign key made of several columns is one relation, joined on all of its columns at once. Naming any
+  one of them with `.column` selects the whole key, so the `ON` clause is the same whichever you pick.
+  Deliberately joining on *part* of a key needs the explicit `.col1 = .col2` form, which bypasses the
+  reference map.
 - Heuristic joins are only inferred when no FK already covers the same pair.
 - Self-referential heuristic joins are suppressed. Real self-referential FKs (e.g.
   `employee.reports_to → employee.id`) are supported.
@@ -115,11 +120,30 @@ Bypasses the reference map. `company_id` is on `document` (right table); `id` is
    - `refs[:table f-table :referred-by table :via col]` — child direction ("who points at me")
    - `refs[:table table :refers-to f-table :via col]` — parent direction ("who I point at")
 
-   Each entry is a list of **join vectors**:
+   Both point at the **same relation map**, written once:
+   ```clojure
+   {:child      {:schema "z" :table "document"}
+    :parent     {:schema "y" :table "employee"}
+    :columns    [{:child "employee_id" :parent "id"}]
+    :resolution :foreign-key}
    ```
-   [f-schema f-table f-col :referred-by schema table col :foreign-key]
-   [schema table col :refers-to f-schema f-table f-col :foreign-key]
-   ```
+
+   Which side is the child and which is the parent belongs to the relation, so it lives in the value.
+   Which direction a caller is travelling in belongs to the lookup, so it stays in the path - and every
+   caller already knows which of the two it asked for. Nothing has to be mirrored.
+
+   `:columns` is a **list of pairs**, one per column of the key, each labelled by the side that owns it.
+   A key made of several columns is one relation with a longer list, not several relations, and every
+   consumer maps over the list rather than reading a first pair.
+
+   The extraction queries return one column pair per row, alongside the constraint it belongs to and its
+   position in that constraint. `group-by-constraint` groups those rows back into one relation before
+   indexing. A row with **no** constraint name becomes a group of its own - the behaviour every row had
+   before grouping existed - so a dialect that doesn't report one degrades to single-column joins rather
+   than collapsing a table's every key into one invented composite.
+
+   The relation is then filed under **every** column of the key, on both sides: `.case_id` and
+   `.search_id` both resolve to the same complete join.
 
 2. **`index-columns`** — adds column metadata to each table entry. Needed before the next pass.
 
@@ -130,17 +154,18 @@ Bypasses the reference map. `company_id` is on `document` (right table); `id` is
    - Skips if the candidate table has no `id` column, if the FK already exists, or if it would be a
      self-referential heuristic.
    - Adds the same two-direction index entries as FK detection, tagged `:heuristic` instead of `:foreign-key`.
+   - A naming convention names one column at a time, so a heuristic relation always has exactly one pair.
 
-The same map structure is used for both FK and heuristic entries; the only difference is the tag in position 7
-of the join vector. Callers can inspect it if they want to surface confidence level — see "Hint-facing
-resolution" below for where that actually surfaces.
+The same map structure is used for both FK and heuristic entries; the only difference is `:resolution`.
+Callers can inspect it if they want to surface confidence level — see "Hint-facing resolution" below for
+where that actually surfaces.
 
 ### Hint-facing resolution (`ast/hints.clj`)
 
 Every table hint (`ast.hints.table[]`, the autocomplete suggestions for what to pipe in next) carries a
 `:resolution` field, so a client can distinguish a confirmed relationship from a guessed one:
 
-- **`"fk"`** — a real foreign key. Read straight from the join vector's position-7 tag (`:foreign-key`, see
+- **`"fk"`** — a real foreign key. Read straight from the relation's `:resolution` (`:foreign-key`, see
   above) by `resolution-of`.
 - **`"heuristic"`** — a naming-convention guess (`company_id` → `company`), no FK constraint behind it. Same
   tag mechanism, `:heuristic` instead.
@@ -161,9 +186,13 @@ suggest there, so the backend never actually emits it.
 `join-tables` tries two strategies in order:
 
 1. **`:has`** — `join-helper` looks up `refs[:table t1 :referred-by t2]`. This succeeds when `t2` has a
-   FK (or heuristic) pointing at `t1`. Returns `[a1 col :has a2 f-col]`.
+   FK (or heuristic) pointing at `t1`. The `from` side is the parent, so the join map says `:parent "from"`.
 2. **`:of`** — arguments swapped: `join-helper` looks up `refs[:table t2 :referred-by t1]`.
-   Returns `[a2 f-col :of a1 col]`.
+   The `to` side is the parent, so the join map says `:parent "to"`.
+
+Either way the lookup is `:referred-by`, so `t1` is always the parent and `t2` always the child - which is
+how `join-helper` knows which side of the relation each of its own arguments is, without the relation
+carrying a direction.
 
 `:has` is tried first unless the `:parent` modifier is set, in which case only `:of` is attempted.
 
@@ -185,10 +214,134 @@ explicit-columns := hint-column <ws*> <"="> <ws*> hint-column
 
 ### SQL generation (`eval.clj`)
 
-`build-join-clause` maps each `[from-alias to-alias relation join-type]` entry in `:joins` to:
+Each entry in `:joins` is one map — the shape a client reads too, since `:joins` is returned on both
+`/api/v1/build` and `/api/v1/eval`:
 
-```sql
-[LEFT|RIGHT] JOIN "schema"."table" AS "alias" ON "a1"."col1" = "a2"."col2"
+```json
+{
+  "from": "c_0",
+  "to": "e_1",
+  "columns": [{ "from": "id", "to": "company_id" }],
+  "parent": "from",
+  "resolution": "fk",
+  "type": null,
+  "cast": null
+}
 ```
 
-The `ON` columns are positions 1 and 4 of the relation vector: `[a1 col _ a2 f-col]`.
+- `from`/`to` — the two aliases, in pipeline order (the order the user typed them). Stored once.
+- `columns` — the column pairs the `ON` clause is built from, each labelled by the side that owns it.
+  `build-join-clause` renders every pair and joins them with `AND`, so a longer list needs nothing new.
+- `parent` — `"from"` or `"to"`: which side owns the key being pointed at.
+- `resolution` — `"fk" | "heuristic" | "synthetic" | "manual"`, or `null`.
+- `type` — `"LEFT" | "RIGHT"`, or `null` for an inner join.
+- `cast` — `"text"` when a heuristic join's two columns have different types, otherwise `null`. A property
+  of the join rather than of a pair: only a heuristic guess is ever cast, and a heuristic relation always
+  has exactly one pair.
+
+```sql
+[LEFT|RIGHT] JOIN "schema"."table" AS "alias" ON "from"."col" = "to"."col" [AND …]
+```
+
+**Unresolved joins.** Nothing connects the two tables, or an explicit `.hint_col` matched no relation: the
+join is still recorded, with `resolution: null` and no column pairs, and renders with no `ON` clause at all.
+There is one spelling for "unresolved", so a client checks one thing.
+
+### Naming a relation
+
+The columns after a table **identify** a relation. They don't specify one.
+
+That distinction only started to matter once a foreign key made of several columns became a single
+relation. Before that, a relation *was* a column, so `.created_by` both picked the relationship and
+described the `ON` clause. Now a relation is a key, and a key can have more than one column.
+
+So: name as many columns as it takes to pick one relation out, and Pine joins on the whole key
+whichever you named.
+
+| What you name | What you get |
+|---|---|
+| nothing | the first relation indexed |
+| a column only one relation has | that relation |
+| a column two relations share | the first of them indexed |
+| enough columns to pick one out | that relation |
+| columns no single relation holds | nothing — an unresolved join |
+
+Order doesn't matter, and a subset is enough: `.a, .b` names the key `(a, b, c)`.
+
+This is deliberate. **Pine is terse — it doesn't make you be explicit, it resolves what you left
+out, and it shows you what it resolved.** The showing happens on beamlynx's canvas, which draws the
+relation Pine actually settled on, column handles and all. Being explicit is there when you want it,
+not a toll on every join.
+
+One consequence worth stating: the text you typed is left exactly as you typed it. `prettify` does
+*not* expand `.search_id` into the full key. It rebuilds an expression from the parsed operations'
+own text spans and knows nothing about the schema — and, more to the point, rewriting a terse
+expression into a verbose one takes away the terseness the user chose. The canvas is the feedback
+channel, not the text.
+
+#### Two keys sharing a column
+
+```
+note_ref (note_id, search_id) -> note (id, search_id)
+note_ref (note_id, other_id)  -> note (id, other_id)
+```
+
+`.note_id` belongs to both, so it names whichever was indexed first. The second one is reached by
+naming a column only it has:
+
+```
+note | note_ref .note_id, .other_id
+```
+
+Before column lists, that join could not be asked for at all — every spelling reachable with a
+single column resolved to the same relation. The table hints spell out every column of a key for the
+same reason: two keys sharing a column would otherwise be offered as the same text twice.
+
+### Composite foreign keys
+
+A key can be made of more than one column:
+
+```
+k.case_ref (case_id, search_id)  ->  k.case (id, search_id)
+```
+
+```
+k.case | k.case_ref
+k.case | k.case_ref .case_id      -- the same join
+k.case | k.case_ref .search_id    -- also the same join
+```
+
+```sql
+JOIN "k"."case_ref" AS "cr_1"
+  ON "c_0"."id" = "cr_1"."case_id" AND "c_0"."search_id" = "cr_1"."search_id"
+```
+
+Pine used to see this as two unrelated single-column relations and join on whichever one the user named.
+One of them is usually right by accident — `case.id` is unique on its own, so matching on it alone selects
+the same rows as matching on both. The other is not: `case.search_id` is not unique, so the join pulled in
+`case_ref` rows belonging to *other* cases that happened to share a search id. It returned plausible rows
+and said nothing.
+
+The table hints list such a key **once**, named by its first column. That hint also carries a `columns`
+array holding every pair of the key, for a client that has to name the whole key rather than join on it —
+scoping a `delete!` to the rows the relation reaches, for instance (see
+[side-effects.md](side-effects.md#which-rows-delete-removes)). It is left off a single-column key, where it
+would only repeat `column`/`related-column` across what can be thousands of hints.
+
+A variable (see [variables.md](variables.md)) that exposes only some of a key's columns can't serve the
+join at all, so neither the join nor the hint is offered — the same rule a single unexposed column already
+followed.
+
+### Explicit columns, more than one pair
+
+```
+note | note_ref .note_id = .id, .search_id = .other_id
+```
+
+```sql
+JOIN "k"."note_ref" AS "nr_1"
+  ON "n_0"."id" = "nr_1"."note_id" AND "n_0"."other_id" = "nr_1"."search_id"
+```
+
+Bypasses the reference map entirely, so this is both how you join on columns no foreign key connects
+and how you join on *part* of a key on purpose.
