@@ -105,8 +105,9 @@
   from the update/delete target in its own subquery - and error 1235,
   LIMIT isn't allowed inside an IN subquery (reachable whenever a user
   writes `| limit: N | delete!`). Wrapping the inner SELECT in a derived
-  table sidesteps both. Identity for Postgres. Both inner selects are
-  already single-column by construction, so SELECT * here is safe."
+  table sidesteps both. Identity for Postgres. The inner select holds
+  exactly the columns being matched - one, or the several of a composite
+  key - and nothing else, so SELECT * here passes them straight through."
   [sql]
   (case *dialect*
     :mysql (str "SELECT * FROM ( " sql " ) AS " (q "pine_sub"))
@@ -118,19 +119,34 @@
   different DB types - e.g. one side stored as varchar, the other as uuid.
   Real FK joins are never cast: the constraint already guarantees the types
   line up, so casting would just throw away index usage."
-  [needs-cast? alias column]
+  [cast alias column]
   (let [ref (q alias column)]
-    (if needs-cast? (render-cast ref "text") ref)))
+    (if cast (render-cast ref cast) ref)))
+
+(defn- build-on-clause
+  "The ON condition of one join: every column pair the relation carries,
+  ANDed together. A key made of several columns is simply a longer list
+  here - this does not care how many there are.
+
+  An unresolved join (nothing connects the two tables, so :columns is
+  empty) renders no condition at all. That query is broken either way; it
+  used to compare two zero-length identifiers instead. Rejecting it
+  outright, with an error naming the tables, is a separate change."
+  [{:keys [from to columns cast]}]
+  (when (seq columns)
+    (str " ON " (s/join " AND "
+                        (map (fn [{from-column :from to-column :to}]
+                               (str (join-column-ref cast from from-column)
+                                    " = " (join-column-ref cast to to-column)))
+                             columns)))))
 
 (defn- build-join-clause [{:keys [tables joins aliases]}]
   (when (not-empty (rest tables))
-    (let [join-statements (map (fn [[_from-alias to-alias relation join]]
-                                 (let [[a1 t1 _ a2 t2 _resolution needs-cast?] relation
-                                       {to-table :table to-schema :schema} (get aliases to-alias)
-                                       join-keyword (if join (str join " JOIN") "JOIN")]
-                                   (str join-keyword " " (q to-schema to-table) " AS " (q to-alias)
-                                        " ON " (join-column-ref needs-cast? a1 t1)
-                                        " = " (join-column-ref needs-cast? a2 t2))))
+    (let [join-statements (map (fn [{:keys [to type] :as join}]
+                                 (let [{to-table :table to-schema :schema} (get aliases to)
+                                       join-keyword (if type (str type " JOIN") "JOIN")]
+                                   (str join-keyword " " (q to-schema to-table) " AS " (q to)
+                                        (build-on-clause join))))
                                ;; (reverse joins)
                                joins)]
       (s/join " " join-statements))))
@@ -412,13 +428,26 @@
         params (where-params (:where state))]
     {:query query :params (seq (concat cte-params params))}))
 
-(defn build-delete-query [state]
+(defn build-delete-query
+  "`delete!` names the columns that identify the rows to remove, and the
+  DELETE matches them against those same columns as selected by the
+  expression it is piped onto.
+
+  More than one column is matched as a row: `WHERE (a, b) IN ( SELECT a, b
+  ... )`. A table whose key is composite has no single column that picks
+  out a row on its own, so deleting on one of them at a time would take
+  rows belonging to other records with it."
+  [state]
   (let [{:keys [delete current aliases]} state
         {table :table schema :schema}     (get aliases current)
-        {:keys [column]}                  delete
-        state                             (assoc state :columns [{:column column :alias current}])
-        {:keys [query params]}            (build-select-query state)]
-    {:query (str "DELETE FROM " (q schema table) " WHERE " (q column) " IN ( "  (in-subquery query) " )")
+        {:keys [columns]}                 delete
+        state                             (assoc state :columns
+                                                 (mapv (fn [column] {:column column :alias current}) columns))
+        {:keys [query params]}            (build-select-query state)
+        target                            (if (next columns)
+                                            (str "(" (s/join ", " (map q columns)) ")")
+                                            (q (first columns)))]
+    {:query (str "DELETE FROM " (q schema table) " WHERE " target " IN ( "  (in-subquery query) " )")
      :params params}))
 
 (defn- build-single-update-query [state update-alias assignments]

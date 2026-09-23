@@ -41,7 +41,7 @@ Each pipe segment maps to a typed operation. Operations are applied left to righ
 | `limit` / `l:`   | Records the row limit                                                       |
 | `count:`         | Switches operation mode to COUNT                                            |
 | `update!` / `u!` | Records column assignments for UPDATE                                       |
-| `delete!`        | Marks the operation as DELETE                                               |
+| `delete!`        | Marks the operation as DELETE, keyed on the named column(s)                 |
 | `= name`         | Snapshots the current state into `:pending-assignments`; pipeline continues |
 
 See [pipeline.md](pipeline.md) for how these operations are processed internally.

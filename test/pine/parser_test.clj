@@ -216,7 +216,14 @@
     (is (= [{:type :count, :value {:column "*"}}] (p "count:"))))
 
   (testing "Parse `delete!` expressions"
-    (is (= [{:type :delete-action, :value {:column "id"}}] (p "delete! .id"))))
+    (is (= [{:type :delete-action, :value {:columns ["id"]}}] (p "delete! .id")))
+    (is (= [{:type :delete-action, :value {:columns ["case_id" "search_id"]}}]
+           (p "delete! .case_id, .search_id")))
+    (is (= [{:type :delete-action, :value {:columns ["case_id" "search_id"]}}]
+           (p "d! .case_id, .search_id")))
+    ;; At least one column is still required - a bare `delete!` has nothing to
+    ;; match on, and must not parse into an empty column list.
+    (is (some? (:error (parse "company | delete!")))))
 
   (testing "Parse `update!` expressions"
     (is (= [{:type :update-action, :value {:assignments [{:column {:alias nil :column "name"} :value (dt/string "John Doe")}]}}]
