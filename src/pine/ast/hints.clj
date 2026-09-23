@@ -57,19 +57,29 @@
 ;; Relation Hints
 ;; ---------------------------------------------------------------------------
 
-(defn- generate-expression [{:keys [schema table column related-column parent resolution alias]}]
-  ;; The `.hint_col` a user types to disambiguate always names the *child*'s FK
-  ;; column (see docs/joins.md - the via map is keyed by it), which is `column`
-  ;; when this table is the child (parent false) but `related-column` (the
-  ;; context table's own column) when this table is the parent (parent true).
+(defn- generate-expression [{:keys [schema table column related-column columns parent resolution alias]}]
+  ;; The `.hint_col` a user types to name a relation always names the
+  ;; *child*'s columns (see docs/joins.md - the via map is keyed by them),
+  ;; which is `column` when this table is the child (parent false) but
+  ;; `related-column` (the context table's own column) when this table is the
+  ;; parent (parent true). It stays the child's side either way: the columns
+  ;; are a name for the relation, and a relation is named the same from both
+  ;; ends.
+  ;;
+  ;; A key made of several columns names all of them. Naming one is enough
+  ;; when only one relation holds it, but a suggestion that showed only the
+  ;; first could not tell two keys sharing a column apart - both would render
+  ;; as the same text, and picking either would give the same join.
+  ;;
   ;; Skip it entirely for a synthetic join: there's exactly one synthetic
-  ;; id=id entry, never ambiguous, so no disambiguator is needed - keeps
+  ;; id=id entry, never ambiguous, so no name is needed - keeps
   ;; `var_x | var_y` as the canonical form instead of `var_x | var_y .id`.
-  (let [hint-column (when-not (= resolution "synthetic")
-                      (if parent related-column column))]
+  (let [pairs (or columns [{:column column :related-column related-column}])
+        hint-columns (when-not (= resolution "synthetic")
+                       (keep (if parent :related-column :column) pairs))]
     (str (if schema (str schema ".") "") table
          (if alias (str " as " alias) "")
-         (if hint-column (str " ." hint-column) "")
+         (if (seq hint-columns) (str " ." (str/join ", ." hint-columns)) "")
          (if parent " :parent" ""))))
 
 (defn- relations-of

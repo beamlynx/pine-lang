@@ -67,8 +67,10 @@ order-column  := column | column <ws+> ("desc"|"asc")
 
 hint-column     := <"."> symbol
 
-hint-columns      := hint-column | explicit-columns
-explicit-columns  := hint-column <ws*> <"="> <ws*> hint-column
+hint-columns       := hint-column-list | explicit-columns
+<hint-column-list> := hint-column (<","> <ws*> hint-column)*
+explicit-columns   := explicit-pair (<","> <ws*> explicit-pair)*
+explicit-pair      := hint-column <ws*> <"="> <ws*> hint-column
 
 columns            := column (<","> <ws*> column)*
 column             := qualified-symbol <ws*> <"=>"> <ws*> column-function | qualified-symbol

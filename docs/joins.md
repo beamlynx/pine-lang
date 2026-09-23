@@ -14,14 +14,19 @@ heuristic detection based on column naming.
 ```
 table_a | table_b
 table_a | table_b .hint_col
+table_a | table_b .hint_col, .hint_col
 table_a | table_b .left_col = .right_col
+table_a | table_b .left_col = .right_col, .left_col = .right_col
 table_a | table_b :parent
 table_a | table_b :left
 ```
 
-- **No modifier** — Pine picks the join direction automatically.
-- **`.hint_col`** — disambiguate when two tables share more than one FK.
-- **`.col1 = .col2`** — override both sides explicitly; bypasses the reference map entirely.
+- **No modifier** — Pine picks the join direction automatically, and the first relation it indexed.
+- **`.hint_col`** — name which relation you mean, when two tables are connected more than one way.
+  Several, comma-separated, when one column isn't enough to tell them apart. See
+  [Naming a relation](#naming-a-relation).
+- **`.col1 = .col2`** — override both sides explicitly; bypasses the reference map entirely. Several
+  pairs, comma-separated, for a join on more than one column.
 - **`:parent`** — force the join to treat `table_b` as the parent (i.e. the table `table_a` refers to,
   not the table that refers to `table_a`).
 - **`:child`** — inverse of `:parent`; explicit but rarely needed since it is the default.
@@ -242,6 +247,56 @@ Each entry in `:joins` is one map — the shape a client reads too, since `:join
 join is still recorded, with `resolution: null` and no column pairs, and renders with no `ON` clause at all.
 There is one spelling for "unresolved", so a client checks one thing.
 
+### Naming a relation
+
+The columns after a table **identify** a relation. They don't specify one.
+
+That distinction only started to matter once a foreign key made of several columns became a single
+relation. Before that, a relation *was* a column, so `.created_by` both picked the relationship and
+described the `ON` clause. Now a relation is a key, and a key can have more than one column.
+
+So: name as many columns as it takes to pick one relation out, and Pine joins on the whole key
+whichever you named.
+
+| What you name | What you get |
+|---|---|
+| nothing | the first relation indexed |
+| a column only one relation has | that relation |
+| a column two relations share | the first of them indexed |
+| enough columns to pick one out | that relation |
+| columns no single relation holds | nothing — an unresolved join |
+
+Order doesn't matter, and a subset is enough: `.a, .b` names the key `(a, b, c)`.
+
+This is deliberate. **Pine is terse — it doesn't make you be explicit, it resolves what you left
+out, and it shows you what it resolved.** The showing happens on beamlynx's canvas, which draws the
+relation Pine actually settled on, column handles and all. Being explicit is there when you want it,
+not a toll on every join.
+
+One consequence worth stating: the text you typed is left exactly as you typed it. `prettify` does
+*not* expand `.search_id` into the full key. It rebuilds an expression from the parsed operations'
+own text spans and knows nothing about the schema — and, more to the point, rewriting a terse
+expression into a verbose one takes away the terseness the user chose. The canvas is the feedback
+channel, not the text.
+
+#### Two keys sharing a column
+
+```
+note_ref (note_id, search_id) -> note (id, search_id)
+note_ref (note_id, other_id)  -> note (id, other_id)
+```
+
+`.note_id` belongs to both, so it names whichever was indexed first. The second one is reached by
+naming a column only it has:
+
+```
+note | note_ref .note_id, .other_id
+```
+
+Before column lists, that join could not be asked for at all — every spelling reachable with a
+single column resolved to the same relation. The table hints spell out every column of a key for the
+same reason: two keys sharing a column would otherwise be offered as the same text twice.
+
 ### Composite foreign keys
 
 A key can be made of more than one column:
@@ -276,3 +331,17 @@ would only repeat `column`/`related-column` across what can be thousands of hint
 A variable (see [variables.md](variables.md)) that exposes only some of a key's columns can't serve the
 join at all, so neither the join nor the hint is offered — the same rule a single unexposed column already
 followed.
+
+### Explicit columns, more than one pair
+
+```
+note | note_ref .note_id = .id, .search_id = .other_id
+```
+
+```sql
+JOIN "k"."note_ref" AS "nr_1"
+  ON "n_0"."id" = "nr_1"."note_id" AND "n_0"."other_id" = "nr_1"."search_id"
+```
+
+Bypasses the reference map entirely, so this is both how you join on columns no foreign key connects
+and how you join on *part* of a key on purpose.

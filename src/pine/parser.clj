@@ -39,14 +39,31 @@
               ;; Alias modifier
               [:table-mod [:alias [:symbol alias]]] (assoc acc :alias alias)
 
-              ;; Hint column modifier (single column)
-              [:table-mod [:hint-columns [:hint-column [:symbol column]]]] (assoc acc :join-column column)
+              ;; Explicit columns modifier: one or more `.right = .left` pairs.
+              ;; In "a | b .a_id = .id", the first column of a pair is from the
+              ;; right table (b.a_id) and the second from the left (a.id), so
+              ;; each pair is stored the other way round from how it is typed.
+              [:table-mod [:hint-columns [:explicit-columns & pairs]]]
+              (assoc acc :join-column-pairs
+                     (mapv (fn [pair]
+                             (match pair
+                               [:explicit-pair [:hint-column [:symbol right-col]] [:hint-column [:symbol left-col]]]
+                               {:left left-col :right right-col}
+                               :else (throw (ex-info "Unknown explicit join columns" {:_ pair}))))
+                           pairs))
 
-              ;; Explicit columns modifier (two columns with =)
-              ;; In "a | b .a_id = .id", first column is from right table (b.a_id), second is from left table (a.id)
-              ;; So we swap them: left-column gets the second, right-column gets the first
-              [:table-mod [:hint-columns [:explicit-columns [:hint-column [:symbol right-col]] [:hint-column [:symbol left-col]]]]]
-              (assoc acc :join-left-column left-col :join-right-column right-col)
+              ;; Hint column modifier: one or more columns naming which
+              ;; relation is meant. They identify it rather than specify it -
+              ;; any subset that picks out one relation is enough, and the
+              ;; join still uses every column of whatever key that is. See
+              ;; docs/joins.md.
+              [:table-mod [:hint-columns & hint-columns]]
+              (assoc acc :join-columns
+                     (mapv (fn [hint-column]
+                             (match hint-column
+                               [:hint-column [:symbol column]] column
+                               :else (throw (ex-info "Unknown join column" {:_ hint-column}))))
+                           hint-columns))
 
               ;; Unknown modifier - ignore
               _ acc))
