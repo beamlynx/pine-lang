@@ -15,5 +15,10 @@
   ;; restricts host-side exposure, but the process inside the container
   ;; must still bind its own 0.0.0.0 for that publish to reach it at all --
   ;; so that compose file sets PINE_HOST=0.0.0.0 explicitly.
-  (run-jetty app {:port 33333 :host (or (System/getenv "PINE_HOST") "127.0.0.1") :join? false}))
+  ;;
+  ;; PINE_PORT lets beamlynx-desktop run its dev build next to the installed
+  ;; app, each with its own server.
+  (run-jetty app {:port (Integer/parseInt (or (System/getenv "PINE_PORT") "33333"))
+                  :host (or (System/getenv "PINE_HOST") "127.0.0.1")
+                  :join? false}))
 
