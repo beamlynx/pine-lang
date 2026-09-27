@@ -33,18 +33,23 @@
   (let [current (state :current)
         resolve-alias (make-resolve-alias state)]
     (if-let [conditions (:or value)]
-      ;; Comma-separated conditions inside one where: segment combine with OR,
+      ;; Conditions joined with `or` inside one where: segment combine with OR,
       ;; stored as a single group so the evaluator can tell them apart from the
       ;; AND-ed entries produced by separate where: pipe-steps.
       (update state :where conj {:or (mapv #(resolve-condition state current resolve-alias %) conditions)})
       (update state :where conj (resolve-condition state current resolve-alias value)))))
 
-(defn handle-partial [state {:keys [complete-conditions partial-condition]}]
+(defn handle-partial [state {:keys [complete-conditions]}]
   ;; For WHERE-PARTIAL, we only store the complete conditions in :where
-  ;; The partial condition is used for hints, not for query generation
+  ;; The partial condition is used for hints, not for query generation.
+  ;; The complete conditions are the ones already joined with `or`, so they
+  ;; are stored the way `handle` stores them: one group, not one AND-ed entry
+  ;; each. Otherwise a half-typed `where: a = 1 or b = 2 or c` would filter
+  ;; for both a and b, and finishing it would switch to either.
   (let [current (state :current)
-        resolve-alias (make-resolve-alias state)]
-    (reduce (fn [s condition]
-              (update s :where conj (resolve-condition s current resolve-alias (:value condition))))
-            state
-            complete-conditions)))
+        resolve-alias (make-resolve-alias state)
+        resolved (mapv #(resolve-condition state current resolve-alias (:value %)) complete-conditions)]
+    (case (count resolved)
+      0 state
+      1 (update state :where conj (first resolved))
+      (update state :where conj {:or resolved}))))

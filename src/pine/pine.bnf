@@ -10,7 +10,7 @@ PATHS             := <"?"> <ws*> table
 SELECT-PARTIAL    := <select-op> aliased-columns <","> <ws*> partial-alias | <select-op> partial-alias | <select-op> aliased-columns? <",">?
 SELECT            := <select-op> aliased-columns
 
-WHERE-PARTIAL     := <where-op>         conditions <","> <ws*> partial-condition  |  <where-op> partial-condition  |  <where-op>
+WHERE-PARTIAL     := <where-op>         conditions <or-op> partial-condition  |  <where-op> conditions <ws+> <"or"> <ws*>  |  <where-op> partial-condition  |  <where-op>
 WHERE             := <where-op>         conditions     |     conditions
 LIMIT             := <limit-op>         number         |     number
 FROM              := <from-op>          alias
@@ -48,7 +48,9 @@ update-assignments := update-assignment (<","> <ws*> update-assignment)*
 update-assignment  := column <ws*> <"="> <ws*> (column|string|number|boolean|null|date)
 partial-update-column := partial-alias | column
 
-conditions          := condition (<","> <ws*> condition)*
+conditions          := condition (<or-op> condition)*
+(* Whitespace on both sides, so `color` and `order_id` never read as containing `or`. *)
+<or-op>             := <ws+> <"or"> <ws+>
 condition           := column <ws*> (condition-default|condition-in) (<ws*> cast)?
 
 partial-condition   := partial-alias | column <ws*> operator <ws*> | column

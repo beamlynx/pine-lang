@@ -147,11 +147,31 @@
   (testing "Parse `where` `or` expressions"
     (is (= [{:type :where, :value {:or [[(dt/column "name") "=" (dt/string "John Doe")]
                                         [(dt/column "age") "=" (dt/number "24")]]}}]
-           (p "w: name='John Doe', age=24 ")))
+           (p "w: name='John Doe' or age=24 ")))
     (is (= [{:type :where, :value {:or [[(dt/column "id") "=" (dt/number "1")]
                                         [(dt/column "id") "=" (dt/number "2")]
                                         [(dt/column "id") "=" (dt/number "3")]]}}]
-           (p "w: id = 1, id = 2, id = 3"))))
+           (p "w: id = 1 or id = 2 or id = 3")))
+    ;; Needs whitespace on both sides: a column called `color` or `order_id`
+    ;; is a column, not a condition with `or` in it.
+    (is (= [{:type :where, :value [(dt/column "a") "=" (dt/column "color")]}]
+           (p "w: a = color")))
+    (is (= [{:type :where, :value {:or [[(dt/column "a") "=" (dt/number "1")]
+                                        [(dt/column "order_id") "=" (dt/number "2")]]}}]
+           (p "w: a = 1 or order_id = 2")))
+    ;; A comma or `or` inside a string is part of the string.
+    (is (= [{:type :where, :value {:or [[(dt/column "name") "=" (dt/string "x or y, z")]
+                                        [(dt/column "id") "=" (dt/number "1")]]}}]
+           (p "w: name = 'x or y, z' or id = 1")))
+    ;; The bare form, with no where: in front, takes `or` too.
+    (is (= [{:type :where, :value {:or [[(dt/column "a") "=" (dt/number "1")]
+                                        [(dt/column "b") "=" (dt/number "2")]]}}]
+           (p "a = 1 or b = 2"))))
+
+  (testing "Only `or` joins conditions inside one where:"
+    (is (:error (parse "company | where: a = 1, b = 2")))
+    (is (:error (parse "company | where: a = 1 and b = 2")))
+    (is (:error (parse "company | a = 1, b = 2"))))
 
   ;; in progress - the case isn't being processed at the moment
   (testing "Parse `where` expressions with type hinting"

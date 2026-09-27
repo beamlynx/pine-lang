@@ -174,9 +174,17 @@
     (is (= ["id" "company_id" "reports_to"]
            (->> "x.company as c | y.employee as e | w: e." gen :where (map :column))))
 
-    ;; Complete condition then alias-dot: w: id = 1, e. shows all columns for alias e
+    ;; Complete condition then alias-dot: w: id = 1 or e. shows all columns for alias e
     (is (= ["id" "company_id" "reports_to"]
-           (->> "x.company as c | y.employee as e | w: id = 1, e." gen :where (map :column))))
+           (->> "x.company as c | y.employee as e | w: id = 1 or e." gen :where (map :column))))
+    ;; Right after `or`, with or without the space, every column is a candidate again
+    (is (= [{:column "id" :alias "c_0"} {:column "created_at" :alias "c_0"}] (-> "company | w: id = 1 or "  gen :where)))
+    (is (= [{:column "id" :alias "c_0"} {:column "created_at" :alias "c_0"}] (-> "company | w: id = 1 or"   gen :where)))
+    (is (= [{:column "id" :alias "c_0"}]                                     (-> "company | w: id = 1 or i" gen :where)))
+    ;; The condition being typed after `or` is read, not dropped: e. lists
+    ;; employee's columns even though company is the current table.
+    (is (= ["id" "company_id" "reports_to"]
+           (->> "y.employee as e | x.company as c | w: id = 1 or e." gen :where (map :column))))
 
     ;; How to auto-complete the right hand side? Values or other columns?
     ;; Right now it shows the same hints as the left hand side

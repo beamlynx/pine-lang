@@ -376,28 +376,17 @@
     :else
     (throw (ex-info "Unknown partial condition" {:_ partial-condition}))))
 
-(defmethod -normalize-op :WHERE-PARTIAL [[_ payload]]
-  (if (empty? payload)
-    {:type :where-partial, :value {:complete-conditions [] :partial-condition nil}}
-    (match payload
-      ;; Just a partial condition
-      [:partial-condition & _]
-      {:type :where-partial, :value {:complete-conditions [] :partial-condition (parse-partial-condition payload)}}
-
-      ;; Complete conditions only (this case might happen when the partial condition is missing)
-      [:conditions & conditions]
-      {:type :where-partial, :value {:complete-conditions (mapv parse-condition conditions)
-                                     :partial-condition nil}}
-
-      ;; Complex case: conditions followed by partial condition
-      [conditions-part partial-condition-part]
-      (if (= (first conditions-part) :conditions)
-        {:type :where-partial, :value {:complete-conditions (mapv parse-condition (rest conditions-part))
-                                       :partial-condition (parse-partial-condition partial-condition-part)}}
-        {:type :where-partial, :value {:complete-conditions []
-                                       :partial-condition (parse-partial-condition payload)}})
-
-      :else (throw (ex-info "Unknown WHERE-PARTIAL operation" {:_ payload})))))
+(defmethod -normalize-op :WHERE-PARTIAL [[_ & children]]
+  ;; Up to two children: the complete conditions already joined with `or`,
+  ;; then the one still being typed. Either can be missing. Destructuring
+  ;; only the first child used to drop the one being typed whenever a
+  ;; complete condition came before it.
+  (let [[complete partial] (if (= :conditions (ffirst children))
+                             [(first children) (second children)]
+                             [nil (first children)])]
+    {:type :where-partial
+     :value {:complete-conditions (mapv parse-condition (rest complete))
+             :partial-condition (when partial (parse-partial-condition partial))}}))
 
 ;; -----
 ;; LIMIT
