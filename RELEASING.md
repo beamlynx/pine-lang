@@ -14,6 +14,13 @@ rather than a direct push.
 7. Commit all changed files: `Release X.Y.Z: <short description of the unreleased changes>`.
 8. Push the branch and open a PR against `master`.
 9. Once the PR merges, tag the merge commit on `master` and push the tag: `git tag X.Y.Z && git push origin X.Y.Z`. `beamlynx-desktop`'s `bundled-versions.json` pins a real tag rather than a SHA once one exists for the bundled version — skipping this leaves no tag for it to pin to.
+<!--
+Paused (2026-09-28): the Docker image and the playground deploy are skipped
+for now. Without them the playground server stays on an older version, so a
+beamlynx-ui release that raises RequiredVersion shows playground visitors the
+upgrade-required screen. The desktop app bundles its own server and is not
+affected. Uncomment to resume.
+
 10. Build and push the Docker image: `./build-image.sh`. It reads the version from `src/pine/version.clj`, checks whether `ahmadnazir/pine:X.Y.Z` is already in the registry, and builds and pushes a multi-platform image if it isn't. You need to be logged in to Docker Hub (`docker login`) as the account that owns `ahmadnazir/pine`.
 
     Nothing in CI does this — the image only exists because someone ran this script. Releases 0.39.0 through 0.45.0 were tagged without it, which left `playground.docker-compose.yml` naming image tags that were never published (the newest one in the registry was 0.38.2). Confirm the push landed before moving on:
@@ -29,3 +36,4 @@ rather than a direct push.
     ```
 
     Do this as soon as the image is pushed. `beamlynx-ui`'s `RequiredVersion` (in its `constants.ts`) is often raised to this release in the same pass, and the playground web app deploys straight from `beamlynx-ui`'s `main` — so a UI that demands X.Y.Z can go live while the playground server is still on the old version, and every visitor gets the upgrade-required screen instead of the app.
+-->
