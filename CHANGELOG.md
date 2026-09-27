@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Added
+- Set `PINE_PORT` to run the server on a port other than 33333. beamlynx-desktop uses it so its dev build and the installed app can run at the same time.
 
 ## [0.47.0] - 2026-09-27
 ### Changed
