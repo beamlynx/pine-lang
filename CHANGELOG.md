@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [0.47.0] - 2026-09-27
 ### Changed
 - **Breaking:** conditions inside one `where:` are joined with `or`, not a comma: `where: status = 'blocked' or status = 'active'`. A comma there is now a parse error, and so is `and`. A comma read as AND to anyone used to SQL, while Pine treated it as OR, so the same expression meant different things to the person writing it and to Pine. To require several conditions, chain `where:` steps as before: `where: status = 'active' | where: country = 'SE'`. `or` needs a space on both sides, so a column like `color` or `order_id` is never read as containing it.
 
