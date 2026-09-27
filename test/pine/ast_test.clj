@@ -153,14 +153,14 @@
     (is (= [[nil "name" nil "NOT ILIKE" (dt/string "acme%")]]
            (generate :where "name not ilike 'acme%'"))))
 
-  (testing "Generate ast for `where` `or` conditions (comma inside one where: segment)"
+  (testing "Generate ast for `where` `or` conditions (`or` inside one where: segment)"
     (is (= [{:or [["c" "name" nil "=" (dt/string "Acme")]
                   ["c" "country" nil "=" (dt/string "PK")]]}]
-           (generate :where "company as c | name = 'Acme', country = 'PK'")))
+           (generate :where "company as c | name = 'Acme' or country = 'PK'")))
     (is (= [["c" "name" nil "=" (dt/string "Acme")]
             {:or [["c" "country" nil "=" (dt/string "PK")]
                   ["c" "country" nil "=" (dt/string "DK")]]}]
-           (generate :where "company as c | name = 'Acme' | country = 'PK', country = 'DK'"))))
+           (generate :where "company as c | name = 'Acme' | country = 'PK' or country = 'DK'"))))
 
   (testing "Generate ast for `where` with dates"
     (is (= [[nil "created_at" nil "=" (dt/date "2025-01-01")]]
@@ -385,7 +385,17 @@
 
     (is (= {:type :where-partial
             :value {:complete-conditions [] :partial-condition {:column "name" :operator :like}}}
-           (generate :operation "company | w: name like"))))
+           (generate :operation "company | w: name like")))
+
+    ;; The complete conditions before a half-typed one are stored as one OR
+    ;; group, the same as when the whole where: is complete.
+    (is (= [["c_0" "id" nil "=" (dt/number "1")]]
+           (generate :where "company | w: id = 1 or i")))
+    (is (= [{:or [["c_0" "id" nil "=" (dt/number "1")]
+                  ["c_0" "id" nil "=" (dt/number "2")]]}]
+           (generate :where "company | w: id = 1 or id = 2 or i")))
+    (is (= (generate :where "company | w: id = 1 or id = 2")
+           (generate :where "company | w: id = 1 or id = 2 or "))))
 
   (testing "Schema-based type conversion in UPDATE operations"
     ;; Test that JSONB column gets proper type conversion
