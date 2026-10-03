@@ -171,7 +171,7 @@ Every table hint (`ast.hints.table[]`, the autocomplete suggestions for what to 
   tag mechanism, `:heuristic` instead.
 - **`"synthetic"`** — a made-up `id = id` join with *no* reference-map entry behind it at all, fabricated on
   the fly rather than read from a tag. Currently the only source of this is the same-source join described
-  in [variables.md](variables.md#join-resolution-through-variables) — two references to the same table (at
+  in [named-results.md](named-results.md#join-resolution-through-named-results) — two references to the same table (at
   least one a variable) with no real FK connecting them. The name is deliberately not variable-specific:
   anything Pine ever has to invent a join for, rather than discover one for, gets this tag — a future
   self-join between two real tables (once Pine can tell two occurrences of the same table apart) would use
@@ -328,7 +328,7 @@ scoping a `delete!` to the rows the relation reaches, for instance (see
 [side-effects.md](side-effects.md#which-rows-delete-removes)). It is left off a single-column key, where it
 would only repeat `column`/`related-column` across what can be thousands of hints.
 
-A variable (see [variables.md](variables.md)) that exposes only some of a key's columns can't serve the
+A named result (see [named-results.md](named-results.md)) that exposes only some of a key's columns can't serve the
 join at all, so neither the join nor the hint is offered — the same rule a single unexposed column already
 followed.
 

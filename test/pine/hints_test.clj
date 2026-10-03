@@ -461,7 +461,7 @@
     ;; resolves to. `x` here wraps `company | employee`, so it resolves to
     ;; employee - but employee itself was never joined by THIS expression,
     ;; and re-joining it alongside the CTE is a supported join (the
-    ;; synthetic same-source one, docs/variables.md). Only `document`, the
+    ;; synthetic same-source one, docs/named-results.md). Only `document`, the
     ;; one real table actually in this pipe, is excluded.
     ;;
     ;; This pins the `(remove :ast)` in piped-table-names: resolving

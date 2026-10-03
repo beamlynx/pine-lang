@@ -19,6 +19,7 @@
    [pine.db.main :as db]
    [pine.eval :as eval]
    [pine.parser :as parser]
+   [pine.variables :as variables]
    [pine.version :as v]
    [ring.middleware.cors :refer [wrap-cors]]
    [ring.middleware.defaults :refer [api-defaults wrap-defaults]]
@@ -75,7 +76,11 @@
    (let [{:keys [result error]} (->> expression parser/parse)
          conn-id (or connection-id @db/connection-id)]
      (if result
-       {:result (ast/generate result conn-id expression cursor variables access-policy)}
+       ;; `$name`s with a value in this request become ordinary literals here,
+       ;; before the AST sees them (pine.variables). This function's own
+       ;; `variables` argument is the named results (`|=`) of earlier blocks,
+       ;; a different thing.
+       {:result (ast/generate (variables/bind result) conn-id expression cursor variables access-policy)}
        {:error-type "parse"
         :error error}))))
 
@@ -173,6 +178,10 @@
                   ;; sends block 0, so this is always resolvable.
                   :doc (some-> exprs first parser/extract-doc :text)
                   :query (-> last-expr trim-pipes (generate-state nil conn-id variables access-policy) :result eval/build-query eval/formatted-query)
+                  ;; Every $variable the expressions use, and those with no
+                  ;; value in this request. Never an error here: a template
+                  ;; keeps its hints. /eval is the one that refuses.
+                  :variables (variables/report exprs variables/*bindings*)
                   :ast (prune-ast state)})))))
        (catch Exception e
          (log-exception "api-build" e)
@@ -391,6 +400,18 @@
          :headers {"Content-Type" "application/json"}
          :body (json/generate-string {:error (or (.getMessage t) (.getName (class t)))})}))))
 
+;; The request's `$variable` values (its `variables` param), checked and bound
+;; for the duration of f (see pine.variables). A malformed map is reported, not
+;; thrown.
+(defn- with-variables [params f]
+  (try
+    (binding [variables/*bindings* (variables/normalize (:variables params))]
+      (f))
+    (catch clojure.lang.ExceptionInfo e
+      (if (= "variables" (:error-type (ex-data e)))
+        {:error-type "variables" :error (.getMessage e)}
+        (throw e)))))
+
 ;; TODO: POST method should return 401
 
 (defroutes app-routes
@@ -416,7 +437,9 @@
     (let [{:keys [expressions expression cursor connection-id]} params
           exprs (or expressions (when expression [expression]))
           rules (access-policy/sanitize-rules (:access-policy params))]
-      (->> (api-build exprs cursor connection-id rules) response)))
+      (response
+       (with-variables params
+         #(api-build exprs cursor connection-id rules)))))
   (POST "/api/v1/eval" {params :params}
     (let [{:keys [expressions expression connection-id]} params
           exprs (or expressions (when expression [expression]))
@@ -425,7 +448,15 @@
           ;; value must never read as "allowed to write" by accident, and must
           ;; never read as "refuse everything" for the callers that don't send it.
           allow-writes (not (false? (:allow-writes params)))]
-      (->> (api-eval exprs connection-id rules allow-writes) response)))
+      (response
+       (with-variables params
+         (fn []
+           ;; Every $variable must have a value before anything runs.
+           (if-let [unbound (seq (:unbound (variables/report exprs variables/*bindings*)))]
+             {:error-type "unbound-variable"
+              :error (variables/missing-message unbound)
+              :unbound (vec unbound)}
+             (api-eval exprs connection-id rules allow-writes)))))))
 
   ;; raw SQL execution
   (POST "/api/v1/sql" {params :params}

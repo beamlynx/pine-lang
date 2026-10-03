@@ -138,7 +138,7 @@ SELECT COUNT(*) FROM x
 - Auto-generated CTE names (`__pine_0__`, etc.) are numbered per expression and are not exposed to the user.
 - Checkpoint CTEs do not receive Pine's auto-id columns; those are suppressed for all CTE-backed tables.
 
-See also: [variables.md](variables.md) for cross-expression named CTEs.
+See also: [named-results.md](named-results.md) for cross-expression named CTEs.
 
 ---
 

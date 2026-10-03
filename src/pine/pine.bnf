@@ -45,7 +45,7 @@ aggregate-functions := aggregate-function (<","> <ws*> aggregate-function)*
 aggregate-function  := "count" | "string_agg" | "sum" | "avg" | "min" | "max"
 
 update-assignments := update-assignment (<","> <ws*> update-assignment)*
-update-assignment  := column <ws*> <"="> <ws*> (column|string|number|boolean|null|date)
+update-assignment  := column <ws*> <"="> <ws*> (column|string|number|boolean|null|date|variable)
 partial-update-column := partial-alias | column
 
 conditions          := condition (<or-op> condition)*
@@ -53,10 +53,11 @@ conditions          := condition (<or-op> condition)*
 <or-op>             := <ws+> <"or"> <ws+>
 condition           := column <ws*> (condition-default|condition-in) (<ws*> cast)?
 
-partial-condition   := partial-alias | column <ws*> operator <ws*> | column
+(* `name = $` while the variable's name is still being typed reads as `name =`. *)
+partial-condition   := partial-alias | column <ws*> operator <ws*> <"$">? | column
 partial-alias       := alias <".">
-<condition-default> := operator <ws*> (column|string|number|boolean|null|date)
-<condition-in>      := (in  | not-in) <ws*>  <"("> strings* <")">
+<condition-default> := operator <ws*> (column|string|number|boolean|null|date|variable)
+<condition-in>      := (in  | not-in) <ws*>  (<"("> strings* <")"> | variable)
 cast                := <"::"> ("text"|"uuid")
 <strings>           := <ws*> string <ws*> <",">?
 
@@ -82,6 +83,8 @@ column-function    := "minute" | "hour" | "day" | "week" | "month" | "year"
 alias    := symbol
 
 symbol   := #"[A-Za-z_][A-Za-z0-9_-]*"
+(* A value supplied with the request, not written in the expression: see docs/variables.md. *)
+variable := <"$"> #"[A-Za-z_][A-Za-z0-9_]*"
 string   := <"'"> char* <"'">
 date     := <"'"> #"[0-9]{4}-[0-9]{2}-[0-9]{2}" <"'">
 number   := #"[0-9]+"

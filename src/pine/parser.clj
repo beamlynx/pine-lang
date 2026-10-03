@@ -213,8 +213,33 @@
                    rhs)]
     {:type :where :value [column-dt operator value-dt]}))
 
+(def ^:private variable-operators
+  "SQL operator for each operator a `$variable` may follow. Not `is`/`is not`:
+  those only take null, which a variable can't be."
+  {:equals "=" :does-not-equal "!=" :like "LIKE" :not-like "NOT LIKE" :ilike "ILIKE"
+   :not-ilike "NOT ILIKE" :greater-than ">" :less-than "<" :greater-than-equal ">="
+   :less-than-equal "<="})
+
+(defn- variable-operator [op]
+  (or (variable-operators op)
+      (throw (ex-info (str "A $variable can't follow `" (name op) "`.") {:operator op}))))
+
 (defn- parse-condition [condition]
   (match condition
+    ;; $variables first: the generic `rhs` clauses below would otherwise take
+    ;; [:variable ...] for a column, and `& strings` for an `in` list.
+    [:condition column-pattern [:in] [:variable n]]
+    (make-condition column-pattern "IN" (dt/variable n true))
+
+    [:condition column-pattern [:not-in] [:variable n]]
+    (make-condition column-pattern "NOT IN" (dt/variable n true))
+
+    [:condition column-pattern [op] [:variable n]]
+    (make-condition column-pattern (variable-operator op) (dt/variable n))
+
+    [:condition column-pattern [op] [:variable n] [:cast cast-type]]
+    (make-condition column-pattern (variable-operator op) (dt/variable n) cast-type)
+
     ;; Equals operations
     [:condition column-pattern [:equals] [:number value]]
     (make-condition column-pattern "=" (dt/number value))
@@ -471,6 +496,9 @@
 
     [:update-assignment column-pattern [:date value]]
     {:column (extract-column-info column-pattern) :value (dt/date value)}
+
+    [:update-assignment column-pattern [:variable n]]
+    {:column (extract-column-info column-pattern) :value (dt/variable n)}
 
     ;; Column-to-column assignment
     [:update-assignment column-pattern rhs]

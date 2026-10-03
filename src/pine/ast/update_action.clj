@@ -9,7 +9,8 @@
         current-alias (or alias (:current state))
         table-info (get (:aliases state) current-alias)
         db-type (dt/get-column-type (:references state) current-alias column table-info)]
-    (if db-type
+    ;; An unbound $variable keeps its name; see where.clj's resolve-condition.
+    (if (and db-type (not= (:type value) :variable))
       (assoc assignment :value (dt/convert-value-to-db-type value db-type))
       assignment)))
 
