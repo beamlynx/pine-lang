@@ -86,7 +86,7 @@ finished.
     are no longer joined by the outer query, so joining one again out there is a genuinely new join —
     `company | employee | l: 10 | document | ? company` still finds its routes.
   - A variable is never excluded either, for the same reason: it's a sealed snapshot, and re-joining the real
-    table it was built from is a supported join (see [variables](variables.md)).
+    table it was built from is a supported join (see [named results](named-results.md)).
 - Ordered by fewest *transitively redundant* hops first, then fewest *direction changes*, then fewest total
   hops as the final tiebreak — not shortest-first alone.
   - A hop is **transitively redundant** if the table it lands on is already reachable another way, through a

@@ -24,7 +24,11 @@
   [state current resolve-alias [column operator value]]
   (let [[alias col cast] (:value column)
         alias (resolve-alias (or alias current))
-        converted-value (if (and (not= (:type value) :symbol) (not= (:type value) :column))
+        ;; A $variable still here has no value in this request (pine.variables
+        ;; replaced every bound one with its literal). Typing it by its column
+        ;; would turn its name into a string, so it stays as it is: /build
+        ;; shows it, /eval refuses to run it.
+        converted-value (if (not (#{:symbol :column :variable} (:type value)))
                           (convert-condition-value value alias col state)
                           value)]
     [alias col cast operator converted-value]))

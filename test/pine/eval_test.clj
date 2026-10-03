@@ -636,7 +636,7 @@
                                   "x | company"])))
     ;; But two RAW references to the same table still don't resolve - Pine has
     ;; no way yet to distinguish which occurrence is which (no `t | t as t2`
-    ;; self-aliasing), so this stays unsupported (see docs/variables.md).
+    ;; self-aliasing), so this stays unsupported (see docs/named-results.md).
     (is (clojure.string/includes? (:query (generate "company | company"))
                                   "JOIN \"company\" AS \"c_1\" LIMIT")))
 

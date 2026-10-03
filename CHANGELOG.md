@@ -5,6 +5,13 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ## [Unreleased]
 ### Added
 - Set `PINE_PORT` to run the server on a port other than 33333. beamlynx-desktop uses it so its dev build and the installed app can run at the same time.
+- **Variables:** `$name` in an expression, with its value sent in the request's `variables` field instead of written into the query: `company | where: name = $company_name` with `{"company_name": {"value": "Acme"}}`. A value is a string, number or boolean, or a list of them for `in $name`. It's typed by its column and bound as a SQL parameter, like a literal. It works after any comparison, with a cast, as the list for `in` and `not in`, and in `update!`. `/build` still builds a query with a missing value, so a template keeps its hints, and reports `variables: {used, unbound}`. `/eval` refuses to run with a value missing (`error-type: "unbound-variable"`) and names each one. See `docs/variables.md`.
+
+### Changed
+- What `docs/variables.md` described (`expr |= name`) is now called a **named result**, in `docs/named-results.md`. The syntax is unchanged. "Variable" now means a `$name`.
+
+### Fixed
+- The SQL preview from `/build` threw on any string literal containing `$`, such as `'price $5'`, because the value was inserted with a regex replacement that read `$` as a group reference.
 
 ## [0.47.0] - 2026-09-27
 ### Changed

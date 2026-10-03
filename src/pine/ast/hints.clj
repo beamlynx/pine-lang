@@ -167,7 +167,7 @@
   real table), so the same schema-derived relationships used for real joins
   drive hints too - then layers in cases the plain schema can't express on
   its own, all variants of the same same-source synthetic join (see
-  docs/variables.md): another variable standing in for a real target (mirrors
+  docs/named-results.md): another variable standing in for a real target (mirrors
   seeding a real relationship onto a variable), two variables sharing the
   same source with no real FK between them, and - symmetrically - the source
   table itself, when the context is a variable that only restrictedly
@@ -419,7 +419,7 @@
   Variables are skipped (`:ast` entries, including the synthetic CTE one a
   checkpoint injects): a variable is a sealed snapshot, and re-joining the
   real table it was built from is a meaningful, supported join - Pine has a
-  synthetic same-source join for precisely that (see docs/variables.md).
+  synthetic same-source join for precisely that (see docs/named-results.md).
   Bare table names, matching what find-table-paths's own `visited` holds."
   [state]
   (into #{} (comp (remove :ast) (map :table)) (:tables state)))

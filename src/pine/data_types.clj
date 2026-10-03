@@ -13,6 +13,12 @@
   {:type :date
    :value (java.sql.Date/valueOf x)})
 
+(defn variable
+  "A `$name` in the expression: a value supplied with the request (see
+  pine.variables). list? marks one used with `in`, which needs a list."
+  ([x] {:type :variable :value x})
+  ([x list?] (cond-> {:type :variable :value x} list? (assoc :list true))))
+
 (defn pine-symbol [x]
   {:type :symbol
    :value x})

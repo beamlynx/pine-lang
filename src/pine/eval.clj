@@ -238,7 +238,10 @@
 
 (defn- render-condition [[alias col cast operator value]]
   (if (or (= operator "IN") (= operator "NOT IN"))
-    (str (q alias col) " " (render-operator operator) " (" (s/join ", " (repeat (count value) "?")) ")")
+    ;; A map here is an unbound `in $variable` (pine.variables): one `?`
+    ;; standing for the list, shown as `$name` by formatted-query.
+    (str (q alias col) " " (render-operator operator) " ("
+         (if (map? value) "?" (s/join ", " (repeat (count value) "?"))) ")")
     (str (column-ref-with-cast alias col cast) " " (render-operator operator) " "
          (cond
            (= (:type value) :symbol) (:value value)
@@ -504,10 +507,15 @@
 (defn formatted-query [build-result]
   (let [replacer (fn [s param]
                    (let [v (:value param)
-                         param-str (if (= (:type param) :boolean)
-                                     (str v)
+                         param-str (case (:type param)
+                                     :boolean (str v)
+                                     ;; Not run, only shown: a $variable with no value yet.
+                                     :variable (str "$" v)
                                      (str "'" v "'"))]
-                     (clojure.string/replace-first s #"\?" param-str)))]
+                     ;; quoteReplacement: a `$` in the value (a $variable, or
+                     ;; any literal like 'price $5') is otherwise read as a
+                     ;; regex group reference and throws.
+                     (clojure.string/replace-first s #"\?" (java.util.regex.Matcher/quoteReplacement param-str))))]
     (if-let [queries (:queries build-result)]
       ;; Multiple update queries
       (s/join "\n" (map (fn [{:keys [query params]}]

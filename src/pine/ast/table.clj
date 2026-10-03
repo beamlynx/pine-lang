@@ -234,7 +234,7 @@
   named snapshot - so the same-source join is only actually meaningless when
   NEITHER side has that identity. Also never fires for a variable joined to
   itself (same identity on both sides) - matching Pine's general lack of
-  self-join support (see docs/variables.md).
+  self-join support (see docs/named-results.md).
 
   Each side's `id` must also actually survive translation - a restricted
   variable that never selected `id` doesn't expose it, so translate-column
