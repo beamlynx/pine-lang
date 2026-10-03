@@ -81,11 +81,11 @@ acme | employee
 ## What comes back
 
 - **`/build` never fails because a value is missing.** A query that's still a template keeps its hints and its SQL
-  preview, which shows `$name` where the value goes. The response says which variables are used and which have no
-  value:
+  preview, which shows `$name` where the value goes. The response says which variables are used, which have no
+  value, and which are used with `in` and so take a list:
 
   ```json
-  "variables": {"used": ["company_name", "status"], "unbound": ["status"]}
+  "variables": {"used": ["company_name", "tenant_ids"], "unbound": ["tenant_ids"], "lists": ["tenant_ids"]}
   ```
 
 - **`/eval` refuses to run with a value missing**, before anything reaches the database:

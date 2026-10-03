@@ -114,28 +114,41 @@
      ops
      (walk/prewalk #(if (variable? %) (bind-one % bindings) %) ops))))
 
+(defn- occurrences
+  "Every `$variable` in a parsed expression, in order, each as its
+  {:type :variable :value name} map (with :list true after `in`)."
+  [ops]
+  (let [found (atom [])]
+    (walk/postwalk #(do (when (variable? %) (swap! found conj %)) %) ops)
+    @found))
+
 (defn used
   "The names of the `$variables` in a parsed expression, in order of first use."
   [ops]
-  (let [found (atom [])]
-    (walk/postwalk #(do (when (variable? %) (swap! found conj (:value %))) %) ops)
-    (distinct @found)))
+  (distinct (map :value (occurrences ops))))
+
+(defn- occurrences-in-expressions
+  [expressions]
+  ;; parse can throw instead of returning {:error} (an unknown condition,
+  ;; `is $x`). That error belongs to /build or /eval, which report it the
+  ;; usual way, so here it just means no variables.
+  (mapcat #(try (some-> % parser/parse :result occurrences) (catch Exception _ nil)) expressions))
 
 (defn used-in-expressions
   "The `$variables` across a request's expressions. An expression that doesn't
   parse contributes none; its parse error is reported elsewhere."
   [expressions]
-  ;; parse can throw instead of returning {:error} (an unknown condition,
-  ;; `is $x`). That error belongs to /build or /eval, which report it the
-  ;; usual way, so here it just means no variables.
-  (distinct (mapcat #(try (some-> % parser/parse :result used) (catch Exception _ nil)) expressions)))
+  (distinct (map :value (occurrences-in-expressions expressions))))
 
 (defn report
-  "What /build tells the client: every variable used, and those with no value."
+  "What /build tells the client: every variable used, those with no value,
+  and those used with `in`, which take a list."
   [expressions bindings]
-  (let [names (vec (used-in-expressions expressions))]
+  (let [found (occurrences-in-expressions expressions)
+        names (vec (distinct (map :value found)))]
     {:used names
-     :unbound (vec (remove #(contains? bindings %) names))}))
+     :unbound (vec (remove #(contains? bindings %) names))
+     :lists (vec (distinct (map :value (filter :list found))))}))
 
 (defn missing-message [names]
   (str "No value for " (str/join ", " (map #(str "$" %) names)) "."))
