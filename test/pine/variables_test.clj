@@ -1,7 +1,6 @@
 (ns pine.variables-test
   "$variables: values supplied with the request (pine.variables)."
-  (:require [cheshire.core :as json]
-            [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing]]
             [pine.api :as api]
             [pine.ast.main :as ast]
             [pine.data-types :as dt]
@@ -117,35 +116,68 @@
         (is (nil? (:error response)))
         (is (= {:used ["n"] :unbound []} (:variables response)))))))
 
-(defn- post [uri body]
-  (let [response (api/app {:request-method :post
-                           :uri uri
-                           :headers {"content-type" "application/json"}
-                           :body (java.io.ByteArrayInputStream. (.getBytes (json/generate-string body) "UTF-8"))})]
-    (json/parse-string (:body response) true)))
+(defn- post
+  "Call a route with already-parsed params, as wrap-json-params would hand
+  them over. Calling app-routes directly (not app) is what lets the
+  connection be the :test fixture keyword, which a JSON body can't carry."
+  [uri params]
+  (:body (api/app-routes {:request-method :post :uri uri :params params})))
 
 (deftest test-eval-route
   (testing "/eval refuses to run with a variable that has no value, naming each one"
     (let [response (post "/api/v1/eval" {:expressions ["company | where: name = $n | where: id = $id"]
-                                         :connection-id "test"
+                                         :connection-id :test
                                          :variables {:n {:value "Acme"}}})]
       (is (= "unbound-variable" (:error-type response)))
       (is (= ["id"] (:unbound response)))
       (is (= "No value for $id." (:error response)))))
 
   (testing "with every value, it gets as far as running"
-    ;; The test connection has no pool, so a query that reaches the database
-    ;; fails with "Connection not found". That's the point: it got past every
-    ;; variable check.
+    ;; The :test fixture has a schema but no connection pool, so a query
+    ;; that reaches the database fails with "Connection not found". That's
+    ;; the point: it got past every variable check first.
     (let [response (post "/api/v1/eval" {:expressions ["company | where: name = $n"]
-                                         :connection-id "test"
+                                         :connection-id :test
                                          :variables {:n {:value "Acme"}}})]
       (is (nil? (:error-type response)))
       (is (re-find #"(?i)connection" (str (:error response))))))
 
   (testing "a malformed variables map is reported, not thrown"
     (let [response (post "/api/v1/build" {:expressions ["company"]
-                                          :connection-id "test"
+                                          :connection-id :test
                                           :variables {:n {:value nil}}})]
       (is (= "variables" (:error-type response)))
       (is (re-find #"can't be null" (:error response))))))
+
+(deftest test-eval-route-reports-parse-errors-as-before
+  (testing "an expression the parser throws on gets the usual error from /eval, not an unhandled one"
+    (doseq [expression ["company | where: name is $x" "company | where: name is 'x'"]]
+      (let [response (post "/api/v1/eval" {:expressions [expression] :connection-id :test})
+            direct (api/api-eval [expression] :test [])]
+        (is (string? (:error response)) expression)
+        (is (not= "unbound-variable" (:error-type response)) expression)
+        (is (= (:error direct) (:error response)) expression)))))
+
+(deftest test-used-ignores-expressions-that-dont-parse
+  (testing "an expression the parser throws on, or rejects, contributes no variables"
+    (is (= [] (vec (v/used-in-expressions ["company | where: name is $x"]))))
+    (is (= [] (vec (v/used-in-expressions ["company | where: name is 'x'" "|||"]))))
+    (is (= ["n"] (vec (v/used-in-expressions ["company | where: name is $x" "company | where: name = $n"]))))))
+
+(deftest test-bind-leaves-other-queries-alone
+  (testing "a value for a variable that isn't used changes nothing"
+    ;; The UI sends `variables` with every request, so every query goes
+    ;; through the binding walk, not only ones with a $variable.
+    (doseq [expression ["company | where: id = 1 or id = 2"
+                        "company | where: country in ('PK' 'DK')"
+                        "company | where: name = 'Acme Inc.' ::text"
+                        "company | where: id = 1 | update! name = 'x'"
+                        "company | s: id, name | l: 5"]]
+      (is (= (generate expression) (generate expression {"unused" 1})) expression)))
+
+  (testing "nor across blocks with a named result"
+    (binding [v/*bindings* {"unused" 1}]
+      (let [with (api/api-build ["company | where: id = 1 |= x" "x | employee"] nil :test)]
+        (binding [v/*bindings* {}]
+          (is (= (:query (api/api-build ["company | where: id = 1 |= x" "x | employee"] nil :test))
+                 (:query with))))))))

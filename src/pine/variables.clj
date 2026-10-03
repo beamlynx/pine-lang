@@ -125,7 +125,10 @@
   "The `$variables` across a request's expressions. An expression that doesn't
   parse contributes none; its parse error is reported elsewhere."
   [expressions]
-  (distinct (mapcat #(some-> % parser/parse :result used) expressions)))
+  ;; parse can throw instead of returning {:error} (an unknown condition,
+  ;; `is $x`). That error belongs to /build or /eval, which report it the
+  ;; usual way, so here it just means no variables.
+  (distinct (mapcat #(try (some-> % parser/parse :result used) (catch Exception _ nil)) expressions)))
 
 (defn report
   "What /build tells the client: every variable used, and those with no value."
