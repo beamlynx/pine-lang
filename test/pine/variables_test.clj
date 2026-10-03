@@ -107,14 +107,14 @@
     (binding [v/*bindings* {"n" "Acme"}]
       (let [response (api/api-build ["company | where: name = $n | where: country in $c"] nil :test)]
         (is (nil? (:error response)))
-        (is (= {:used ["n" "c"] :unbound ["c"]} (:variables response)))
+        (is (= {:used ["n" "c"] :unbound ["c"] :lists ["c"]} (:variables response)))
         (is (re-find #"'Acme'.*\$c" (:query response))))))
 
   (testing "variables in earlier blocks count, and get their values there too"
     (binding [v/*bindings* {"n" "Acme"}]
       (let [response (api/api-build ["company | where: name = $n |= acme" "acme | employee"] nil :test)]
         (is (nil? (:error response)))
-        (is (= {:used ["n"] :unbound []} (:variables response)))))))
+        (is (= {:used ["n"] :unbound [] :lists []} (:variables response)))))))
 
 (defn- post
   "Call a route with already-parsed params, as wrap-json-params would hand
