@@ -66,7 +66,20 @@
                           (generate ["company |= c" "employee | where: company_id in c"]))))
   (testing "more than one column, named"
     (is (thrown-with-msg? Exception #"selects 2 columns \(id, name\)"
-                          (generate ["company | s: id, name |= c" "employee | where: company_id in c"])))))
+                          (generate ["company | s: id, name |= c" "employee | where: company_id in c"]))))
+  (testing "after `=`, read as a column: points to `in`"
+    (is (thrown-with-msg? Exception #"`c` is a named result, not a column\. To match its values, write `e_0\.company_id in c`\..*write `e_0\.c`"
+                          (generate ["company | s: id |= c" "employee | where: company_id = c"]))))
+  (testing "after `!=`: points to `not in`"
+    (is (thrown-with-msg? Exception #"write `e_0\.company_id not in c`"
+                          (generate ["company | s: id |= c" "employee | where: company_id != c"]))))
+  (testing "in a later `or` condition too"
+    (is (thrown-with-msg? Exception #"`c` is a named result"
+                          (generate ["company | s: id |= c" "employee | where: id = 1 or company_id = c"])))))
+
+(deftest test-column-with-alias-is-not-refused
+  (testing "a column written with its alias is a column, even with a named result's name"
+    (is (generate ["company | s: id |= name" "company as c | where: id = c.name"]))))
 
 (deftest test-through-the-api
   (testing "with a values block feeding the named result"

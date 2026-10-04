@@ -147,7 +147,10 @@ employee | where: id in acme_emps
 - **Exactly one column.** A named result that selects every column, or more than one, is an error that says which
   and how to fix it (`| s: id |= acme_emps`). The column is the one selected, by its alias if it has one.
 - **Any number of rows.** None matches nothing.
-- **Only after `in` and `not in`.** After `=`, a bare name already means a column (`where: a = b`).
+- **Only after `in` and `not in`.** After `=` or another comparison, a bare name means a column (`where: a = b`).
+  If that name is a named result, it's an error that suggests `in` instead (or `not in` for `!=`):
+  `where: id = acme_emps` almost never means a column called `acme_emps`. A column that really has a named
+  result's name can still be compared by writing its alias, like `e.acme_emps`.
 - **It can be defined earlier in the same expression,** and named results can use each other this way: each CTE is
   emitted after the ones it needs.
 

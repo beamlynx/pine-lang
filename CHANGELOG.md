@@ -14,6 +14,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - What `docs/variables.md` described (`expr |= name`) is now called a **named result**, in `docs/named-results.md`. The syntax is unchanged. "Variable" now means a `$name`.
 
 ### Fixed
+- `where: id = x`, where `x` is a named result, is now an error that suggests `where: id in x`, or `not in` for `!=`. It used to read `x` as a column of the current table and leave the named result out of the query, so the mistake only showed when the database refused an unknown column. A column with a named result's name can still be compared by writing its alias, like `t.x`.
 - The SQL preview from `/build` threw on any string literal containing `$`, such as `'price $5'`, because the value was inserted with a regex replacement that read `$` as a group reference.
 
 ## [0.47.0] - 2026-09-27

@@ -55,11 +55,33 @@
 
       :else [var-ast (column-name (first columns))])))
 
+(defn- named-result? [state n]
+  (or (contains? (:variables state) n) (contains? (:pending-assignments state) n)))
+
+(defn- refuse-named-result-as-column
+  "`where: id = x` reads `x` as a column of the current table. When `x` is a
+  named result, that's almost never what was meant, and nothing would say so
+  until the database refused an unknown column. Point to `in` instead. A
+  column that really has a named result's name can still be written with its
+  alias, like `t.x`."
+  [state [alias col _ operator value]]
+  (let [[value-alias n] (when (= (:type value) :column) (:value value))]
+    (when (and n (nil? value-alias) (named-result? state n))
+        (let [left (str alias "." col)
+              advice (case operator
+                       "=" (str "To match its values, write `" left " in " n "`.")
+                       "!=" (str "To exclude its values, write `" left " not in " n "`.")
+                       (str "A named result can only be used after `in` or `not in`, like `" left " in " n "`."))]
+          (throw (ex-info (str "`" n "` is a named result, not a column. " advice
+                               " If you meant a column called " n ", write `" alias "." n "`.")
+                          {}))))))
+
 (defn- with-named-results
   "A named result used after `in` becomes `IN ( SELECT column FROM name )`:
   record which column on the condition, and the named result in
   :value-ctes so the evaluator emits its CTE."
   [state condition]
+  (refuse-named-result-as-column state condition)
   (let [value (nth condition 4)]
     (if (= (:type value) :named-result)
       (let [n (:value value)
