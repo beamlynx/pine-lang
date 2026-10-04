@@ -19,6 +19,7 @@
   but not here yet. See beamlynx-plans/pending/2026-10-03-pine-variables.md."
   (:require [clojure.string :as str]
             [clojure.walk :as walk]
+            [instaparse.core :as insta]
             [pine.parser :as parser]))
 
 (def ^:dynamic *bindings*
@@ -152,3 +153,75 @@
 
 (defn missing-message [names]
   (str "No value for " (str/join ", " (map #(str "$" %) names)) "."))
+
+;; ------------
+;; VALUES BLOCKS
+;; ------------
+;;
+;; Values can be written in the expression text, in a block of their own:
+;;
+;;   $company_name = 'Acme'
+;;   $statuses = ('failed', 'stuck')
+;;
+;;   request | where: status in $statuses
+;;
+;; A values block holds one or more `$name = value` lines and nothing else.
+;; Its values apply to every query block in the request, and a value passed
+;; in the request's `variables` field overrides one written here (an agent
+;; reusing a saved query with other values). It has its own small grammar
+;; rather than a rule in pine.bnf: it's a different kind of expression from a
+;; pipeline, and keeping it apart leaves the query grammar untouched.
+
+(def ^:private values-parser
+  (insta/parser
+   "VALUES      := <ws?> assignment (<ws> assignment)* <ws?>
+    assignment  := <'$'> name <ws?> <'='> <ws?> value
+    name        := #'[A-Za-z_][A-Za-z0-9_]*'
+    <value>     := string | number | boolean | list
+    list        := <'('> <ws?> scalar (<ws?> <','> <ws?> scalar)* <ws?> <')'>
+    <scalar>    := string | number | boolean
+    string      := <\"'\"> #\"[^']*\" <\"'\">
+    number      := #'-?[0-9]+(\\.[0-9]+)?'
+    boolean     := 'true' | 'false'
+    ws          := (#'[ \\t\\r\\n]+' | #'--[^\\r\\n]*' | #'(?s)/\\*.*?\\*/')+"))
+
+(defn values-block?
+  "Whether an expression is a values block: its first character after any
+  comments and whitespace is `$`. A Pine query never starts with `$`."
+  [expression]
+  (boolean
+   (some-> expression
+           (str/replace #"(?s)^(\s|--[^\n]*|/\*.*?\*/)*" "")
+           (str/starts-with? "$"))))
+
+(defn- literal [[kind v]]
+  (case kind
+    :string v
+    :number (if (str/includes? v ".") (Double/parseDouble v) (Long/parseLong v))
+    :boolean (= v "true")))
+
+(defn parse-values-block
+  "The {\"name\" value} a values block defines, in the shape `variables`
+  values take (a list as a vector). Throws with a message saying what's
+  wrong, including when a query was written in the same block."
+  [expression]
+  (let [tree (values-parser expression)]
+    (if (insta/failure? tree)
+      (fail (if (some #(and (not (str/blank? %))
+                            (not (re-find #"^\s*(\$|--|/\*|\*)" %)))
+                      (str/split-lines expression))
+              "A values block holds only `$name = value` lines. Put a blank line between the values and the query."
+              (str "Couldn't read this values block. Each line is `$name = value`, where the value is like 'text', 42, true or ('a', 'b'):\n"
+                   (with-out-str (println (insta/get-failure tree))))))
+      (into {}
+            (for [[_ [_ n] v] (rest tree)]
+              [n (if (= :list (first v)) (mapv literal (rest v)) (literal v))])))))
+
+(defn text-values
+  "Every value the request's values blocks define, later blocks overriding
+  earlier ones, each checked like a value passed in `variables`."
+  [expressions]
+  (normalize (into {} (for [e expressions
+                            :when (values-block? e)
+                            [n v] (parse-values-block e)]
+                        [n {:value v}]))))

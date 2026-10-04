@@ -181,3 +181,64 @@
         (binding [v/*bindings* {}]
           (is (= (:query (api/api-build ["company | where: id = 1 |= x" "x | employee"] nil :test))
                  (:query with))))))))
+
+;; ------------
+;; VALUES BLOCKS
+;; ------------
+
+(deftest test-values-blocks
+  (testing "a block of only `$name = value` lines is a values block"
+    (is (v/values-block? "$a = 'x'"))
+    (is (v/values-block? "-- the company\n/* and more */\n$a = 'x'"))
+    (is (not (v/values-block? "company | where: name = $a")))
+    (is (not (v/values-block? ""))))
+
+  (testing "it reads strings, numbers, booleans and lists, with comments between"
+    (is (= {"company_name" "Acme" "statuses" ["failed" "stuck"] "n" 42 "ratio" 0.5 "on" false "since" "2026-09-01"}
+           (v/parse-values-block "$company_name = 'Acme'\n$statuses = ('failed', 'stuck')\n-- numbers\n$n = 42\n$ratio = 0.5\n$on = false\n$since = '2026-09-01'"))))
+
+  (testing "several blocks combine, later ones winning"
+    (is (= {"a" "y" "b" [1 2]} (v/text-values ["$a = 'x'" "company" "$a = 'y'\n$b = (1, 2)"]))))
+
+  (testing "a query in the same block says to split them"
+    (is (thrown-with-msg? Exception #"Put a blank line between the values and the query"
+                          (v/parse-values-block "$a = 'x'\ncompany | where: name = $a"))))
+
+  (testing "anything else that isn't `$name = value` says what a line should look like"
+    (is (thrown-with-msg? Exception #"Each line is `\$name = value`" (v/parse-values-block "$a = ")))
+    (is (thrown-with-msg? Exception #"Each line is `\$name = value`" (v/parse-values-block "$a = null")))))
+
+(deftest test-values-blocks-in-requests
+  (testing "/build uses the values written in the text, and reports them"
+    (let [response (post "/api/v1/build" {:expressions ["$n = 'Acme'\n$c = ('PK', 'DK')" "company | where: name = $n | where: country in $c"]
+                                          :connection-id :test})]
+      (is (nil? (:error response)))
+      (is (= {:used ["n" "c"] :unbound [] :lists ["c"] :values {"n" "Acme" "c" ["PK" "DK"]}} (:variables response)))
+      (is (re-find #"'Acme'.*'PK', 'DK'" (:query response)))))
+
+  (testing "a value passed in the request overrides the one written in the text"
+    (let [response (post "/api/v1/build" {:expressions ["$n = 'Acme'" "company | where: name = $n"]
+                                          :connection-id :test
+                                          :variables {:n {:value "Globex"}}})]
+      (is (re-find #"'Globex'" (:query response)))))
+
+  (testing "/eval counts written values as given, and still names the rest"
+    (let [response (post "/api/v1/eval" {:expressions ["$n = 'Acme'" "company | where: name = $n | where: id = $id"]
+                                         :connection-id :test})]
+      (is (= "unbound-variable" (:error-type response)))
+      (is (= ["id"] (:unbound response)))))
+
+  (testing "with every value written, eval gets as far as running"
+    (let [response (post "/api/v1/eval" {:expressions ["$n = 'Acme'" "company | where: name = $n"]
+                                         :connection-id :test})]
+      (is (nil? (:error-type response)))
+      (is (re-find #"(?i)connection" (str (:error response))))))
+
+  (testing "a values block after the query still applies, and values blocks alone build like an empty tab"
+    (is (re-find #"'Acme'" (:query (post "/api/v1/build" {:expressions ["company | where: name = $n" "$n = 'Acme'"] :connection-id :test}))))
+    (is (nil? (:error (post "/api/v1/build" {:expressions ["$n = 'Acme'"] :connection-id :test})))))
+
+  (testing "a broken values block is reported, not thrown"
+    (let [response (post "/api/v1/build" {:expressions ["$n = 'Acme'\ncompany"] :connection-id :test})]
+      (is (= "variables" (:error-type response)))
+      (is (re-find #"blank line" (:error response))))))
