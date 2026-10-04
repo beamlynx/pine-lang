@@ -130,6 +130,27 @@ support — Pine may add that separately in the future, most likely via an expli
 occurrence of the same real table (`t | t as t2`), at which point this fallback would just be one case of
 that more general mechanism rather than a separate one.
 
+### In a condition, after `in`
+
+A named result that selects one column can stand for the values that column returns:
+
+```
+company | where: name = 'Acme' | employee .company_id | s: id |= acme_emps
+
+employee | where: id in acme_emps
+```
+
+`id in acme_emps` means the id is one of the ids `acme_emps` returns. It's built as
+`"e_0"."id" IN ( SELECT "id" FROM "acme_emps" )`, with `acme_emps` emitted as a CTE as when it's used as a table.
+`not in` works the same way.
+
+- **Exactly one column.** A named result that selects every column, or more than one, is an error that says which
+  and how to fix it (`| s: id |= acme_emps`). The column is the one selected, by its alias if it has one.
+- **Any number of rows.** None matches nothing.
+- **Only after `in` and `not in`.** After `=`, a bare name already means a column (`where: a = b`).
+- **It can be defined earlier in the same expression,** and named results can use each other this way: each CTE is
+  emitted after the ones it needs.
+
 ## How it works
 
 - **Assignment** (`|= name`): saves the pipeline state at that point. The snapshot becomes the CTE body

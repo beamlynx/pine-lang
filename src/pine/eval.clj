@@ -219,7 +219,7 @@
 (defn- remove-symbols
   "Remove symbols or columns from a vector of values"
   [vs]
-  (filter #(not (or (= (:type %) :symbol) (= (:type %) :column))) vs))
+  (filter #(not (#{:symbol :column :named-result} (:type %))) vs))
 
 (defn- build-group-clause [{:keys [group]}]
   (if (empty? group) nil
@@ -237,11 +237,18 @@
              group)))))
 
 (defn- render-condition [[alias col cast operator value]]
-  (if (or (= operator "IN") (= operator "NOT IN"))
+  (cond
+    ;; `in <named result>`: the values its one column returns (pine.ast.where
+    ;; filled in :column). Its CTE is emitted by all-ctes.
+    (= (:type value) :named-result)
+    (str (q alias col) " " (render-operator operator) " ( SELECT " (q (:column value)) " FROM " (q (:value value)) " )")
+
+    (or (= operator "IN") (= operator "NOT IN"))
     ;; A map here is an unbound `in $variable` (pine.variables): one `?`
     ;; standing for the list, shown as `$name` by formatted-query.
     (str (q alias col) " " (render-operator operator) " ("
          (if (map? value) "?" (s/join ", " (repeat (count value) "?"))) ")")
+    :else
     (str (column-ref-with-cast alias col cast) " " (render-operator operator) " "
          (cond
            (= (:type value) :symbol) (:value value)
@@ -311,6 +318,23 @@
                                (:columns ast))]
     (build-bare-select (assoc ast :columns columns))))
 
+(declare all-ctes)
+
+(defn- dedupe-ctes [ctes]
+  (->> ctes
+       (reduce (fn [[seen acc] [name _ _ :as cte]]
+                 (if (contains? seen name)
+                   [seen acc]
+                   [(conj seen name) (conj acc cte)]))
+               [#{} []])
+       second))
+
+(defn- cte-for
+  "A named result's own CTE, after every CTE it needs itself."
+  [name ast]
+  (let [{:keys [query params]} (build-cte-body ast)]
+    (conj (vec (all-ctes ast)) [name query params])))
+
 (defn- collect-ctes
   "Recursively collect [name query params] triples from variable tables in
   topological order (deepest dependencies first). Deduplicates by name."
@@ -319,19 +343,19 @@
        (mapcat (fn [{:keys [alias]}]
                  (let [entry (get aliases alias)]
                    (when-let [ast (:ast entry)]
-                     (let [var-name    (:table entry)
-                           nested-ctes (collect-ctes (:tables ast) (:aliases ast))
-                           {:keys [query params]} (build-cte-body ast)]
-                       (conj nested-ctes [var-name query params]))))))
-       (reduce (fn [[seen acc] [name _ _ :as cte]]
-                 (if (contains? seen name)
-                   [seen acc]
-                   [(conj seen name) (conj acc cte)]))
-               [#{} []])
-       second))
+                     (cte-for (:table entry) ast)))))
+       dedupe-ctes))
+
+(defn- all-ctes
+  "Every CTE a state needs: the named results it uses as tables, and those
+  it uses after `in` (pine.ast.where's :value-ctes), each after its own
+  dependencies. Deduplicates by name."
+  [state]
+  (dedupe-ctes (concat (collect-ctes (:tables state) (:aliases state))
+                       (mapcat (fn [[name ast]] (cte-for name ast)) (:value-ctes state)))))
 
 (defn build-select-query [state]
-  (let [ctes        (collect-ctes (:tables state) (:aliases state))
+  (let [ctes        (all-ctes state)
         result      (build-bare-select state)
         cte-params  (mapcat #(nth % 2 nil) ctes)
         cte-prefix  (when (seq ctes)
@@ -413,7 +437,7 @@
         ;; collect-ctes entirely (unlike build-select-query, which already
         ;; calls it), so the user-named CTE was never defined and the group's
         ;; wrapper CTE (below) referenced it as a dangling bare relation.
-        ctes        (collect-ctes tables aliases)
+        ctes        (all-ctes state)
         cte-params  (mapcat #(nth % 2 nil) ctes)
         cte-prefix  (when (seq ctes)
                       (str (s/join ", " (map (fn [[name body _]]

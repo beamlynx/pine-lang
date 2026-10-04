@@ -139,10 +139,10 @@ acme | employee
 
 Limits: 50 variables per request, 5,000 values in a list, 10,000 characters in a string.
 
-## Not yet
+## A query's result
 
-A variable is always a value, never a query. To use one query's result in another, make it a named result: using a
-named result after `in` is planned (`beamlynx-plans/pending/2026-10-03-pine-variables.md`).
+A variable is always a value, never a query. To use one query's result in another, make it a named result and use it
+after `in`: see [named-results.md](named-results.md#in-a-condition-after-in).
 
 ## Implementation
 

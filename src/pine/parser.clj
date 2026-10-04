@@ -228,6 +228,12 @@
   (match condition
     ;; $variables first: the generic `rhs` clauses below would otherwise take
     ;; [:variable ...] for a column, and `& strings` for an `in` list.
+    [:condition column-pattern [:in] [:named-result [:symbol n]]]
+    (make-condition column-pattern "IN" (dt/named-result n))
+
+    [:condition column-pattern [:not-in] [:named-result [:symbol n]]]
+    (make-condition column-pattern "NOT IN" (dt/named-result n))
+
     [:condition column-pattern [:in] [:variable n]]
     (make-condition column-pattern "IN" (dt/variable n true))
 

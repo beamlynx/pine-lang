@@ -19,6 +19,13 @@
   ([x] {:type :variable :value x})
   ([x list?] (cond-> {:type :variable :value x} list? (assoc :list true))))
 
+(defn named-result
+  "A named result (`|= name`) used after `in`: the values its one column
+  returns. :column is filled in by pine.ast.where once the named result is
+  known."
+  [x]
+  {:type :named-result :value x})
+
 (defn pine-symbol [x]
   {:type :symbol
    :value x})
