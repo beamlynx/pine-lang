@@ -164,7 +164,11 @@
          (let [{:keys [variables error]} (evaluate-expressions context-exprs conn-id access-policy)]
            (if error
              {:connection-id connection-name :error error}
-             (let [result                    (generate-state last-expr cursor conn-id variables access-policy)
+             ;; The AST describes the expression as written, so a $variable
+             ;; stays `$name` in it (the canvas shows it that way); only :query,
+             ;; the SQL preview below, gets the values.
+             (let [result                    (binding [variables/*bindings* {}]
+                                               (generate-state last-expr cursor conn-id variables access-policy))
                    {state :result build-error :error} result]
                (if build-error
                  {:connection-id connection-name :error build-error}
