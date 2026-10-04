@@ -57,7 +57,9 @@ condition           := column <ws*> (condition-default|condition-in) (<ws*> cast
 partial-condition   := partial-alias | column <ws*> operator <ws*> <"$">? | column
 partial-alias       := alias <".">
 <condition-default> := operator <ws*> (column|string|number|boolean|null|date|variable)
-<condition-in>      := (in  | not-in) <ws*>  (<"("> strings* <")"> | variable)
+<condition-in>      := (in  | not-in) <ws*>  (<"("> strings* <")"> | variable | named-result)
+(* A named result defined with `|= name`, used as the set of values its one column returns. *)
+named-result        := symbol
 cast                := <"::"> ("text"|"uuid")
 <strings>           := <ws*> string <ws*> <",">?
 
