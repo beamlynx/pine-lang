@@ -1,6 +1,12 @@
 # Variables
 
-A `$name` in an expression, whose value is sent along with the request instead of written into the expression.
+A `$name` in a query, whose value is written once in a values block above it, or passed with the request.
+
+```
+$company_name = 'Acme'
+
+company | where: name = $company_name
+```
 
 > Before 2026-10, "variable" meant `expr |= name`. Those are now called **named results**; see
 > [named-results.md](named-results.md). A named result is a table you made. A variable is a value you plug in.
@@ -30,9 +36,32 @@ The value travels as a SQL parameter, like any literal Pine writes, so it can ne
 
 Not after `is` or `is not`: those only take `null`, and a variable can't be null.
 
-## Values
+## Values blocks
 
-The request's `variables` field maps each name to `{"value": ...}`:
+A values block is a block of its own, made only of `$name = value` lines, one or several:
+
+```
+$company_name = 'Acme'
+$statuses = ('failed', 'stuck')
+-- comments are fine
+$min_amount = 100
+
+request | where: status in $statuses | where: amount > $min_amount
+```
+
+- **A value is written like a literal:** `'text'`, a number, `true` or `false`. A date is a string, `'2026-09-01'`, read
+  as a date by a date column. A list is in brackets, `('a', 'b')` or `(17, 23)`.
+- **Its values apply to every query in the request.** A later values block overrides an earlier one with the same name.
+- **A values block holds nothing else.** Writing a query in the same block is an error asking for a blank line between
+  them: a value is its own expression, like a named result.
+- **The rest of Pine never sees it.** The routes take values blocks out before building or running, so the query
+  blocks, hints and named results work exactly as without them.
+
+## Values passed with the request
+
+The request's `variables` field maps each name to `{"value": ...}`. A value passed this way **overrides** one written in
+a values block, so a saved query can be run with other values without editing it. This is how an AI agent passes
+values through beamlynx's `run_query`.
 
 ```json
 {
@@ -85,8 +114,11 @@ acme | employee
   value, and which are used with `in` and so take a list:
 
   ```json
-  "variables": {"used": ["company_name", "tenant_ids"], "unbound": ["tenant_ids"], "lists": ["tenant_ids"]}
+  "variables": {"used": ["company_name", "tenant_ids"], "unbound": ["tenant_ids"], "lists": ["tenant_ids"],
+                "values": {"company_name": "Acme"}}
   ```
+
+  `values` are the ones written in values blocks.
 
 - **`/eval` refuses to run with a value missing**, before anything reaches the database:
 
@@ -109,9 +141,8 @@ Limits: 50 variables per request, 5,000 values in a list, 10,000 characters in a
 
 ## Not yet
 
-Binding a variable to another Pine query, so one query's result feeds the next, is planned. Passing
-`{"expression": ...}` today is refused with a message that says so. See
-`beamlynx-plans/pending/2026-10-03-pine-variables.md`.
+A variable is always a value, never a query. To use one query's result in another, make it a named result: using a
+named result after `in` is planned (`beamlynx-plans/pending/2026-10-03-pine-variables.md`).
 
 ## Implementation
 
@@ -124,5 +155,8 @@ Binding a variable to another Pine query, so one query's result feeds the next, 
   the rest of Pine (column typing in `where.clj`, `?` parameters in `eval.clj`) treats it exactly like a literal.
 - **Unbound**: a variable with no value stays `{:type :variable}`. `where.clj` and `update_action.clj` skip column
   typing for it, `eval.clj` renders it as one `?`, and `formatted-query` shows it as `$name`.
-- **Requests**: the `/build` and `/eval` routes check the `variables` field (`variables/normalize`) and bind it for
-  the request. `/eval` checks for missing values first.
+- **Values blocks** (`variables.clj`): a block whose first non-comment character is `$`. Read by their own small
+  grammar, not `pine.bnf`, so the query grammar is untouched.
+- **Requests**: the `/build` and `/eval` routes (`with-variables` in `api.clj`) read the values blocks, check the
+  `variables` field (`variables/normalize`), merge the two with the field winning, bind the result for the request,
+  and pass on only the query blocks. `/eval` checks for missing values first.

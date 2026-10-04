@@ -400,13 +400,19 @@
          :headers {"Content-Type" "application/json"}
          :body (json/generate-string {:error (or (.getMessage t) (.getName (class t)))})}))))
 
-;; The request's `$variable` values (its `variables` param), checked and bound
-;; for the duration of f (see pine.variables). A malformed map is reported, not
-;; thrown.
-(defn- with-variables [params f]
+;; The request's `$variable` values, checked and bound for the duration of f
+;; (see pine.variables): those written in its values blocks, overridden by
+;; any passed in its `variables` param. f gets the expressions with the values
+;; blocks taken out, which is all the rest of Pine ever sees. The values
+;; written in the text are added to /build's report. A malformed values block
+;; or `variables` map is reported, not thrown.
+(defn- with-variables [params exprs f]
   (try
-    (binding [variables/*bindings* (variables/normalize (:variables params))]
-      (f))
+    (let [written (variables/text-values exprs)]
+      (binding [variables/*bindings* (merge written (variables/normalize (:variables params)))]
+        (let [response (f (vec (remove variables/values-block? exprs)))]
+          (cond-> response
+            (:variables response) (assoc-in [:variables :values] written)))))
     (catch clojure.lang.ExceptionInfo e
       (if (= "variables" (:error-type (ex-data e)))
         {:error-type "variables" :error (.getMessage e)}
@@ -438,8 +444,8 @@
           exprs (or expressions (when expression [expression]))
           rules (access-policy/sanitize-rules (:access-policy params))]
       (response
-       (with-variables params
-         #(api-build exprs cursor connection-id rules)))))
+       (with-variables params exprs
+         #(api-build % cursor connection-id rules)))))
   (POST "/api/v1/eval" {params :params}
     (let [{:keys [expressions expression connection-id]} params
           exprs (or expressions (when expression [expression]))
@@ -449,14 +455,14 @@
           ;; never read as "refuse everything" for the callers that don't send it.
           allow-writes (not (false? (:allow-writes params)))]
       (response
-       (with-variables params
-         (fn []
+       (with-variables params exprs
+         (fn [query-exprs]
            ;; Every $variable must have a value before anything runs.
-           (if-let [unbound (seq (:unbound (variables/report exprs variables/*bindings*)))]
+           (if-let [unbound (seq (:unbound (variables/report query-exprs variables/*bindings*)))]
              {:error-type "unbound-variable"
               :error (variables/missing-message unbound)
               :unbound (vec unbound)}
-             (api-eval exprs connection-id rules allow-writes)))))))
+             (api-eval query-exprs connection-id rules allow-writes)))))))
 
   ;; raw SQL execution
   (POST "/api/v1/sql" {params :params}
