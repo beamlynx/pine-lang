@@ -67,14 +67,14 @@
   [state [alias col _ operator value]]
   (let [[value-alias n] (when (= (:type value) :column) (:value value))]
     (when (and n (nil? value-alias) (named-result? state n))
-        (let [left (str alias "." col)
-              advice (case operator
-                       "=" (str "To match its values, write `" left " in " n "`.")
-                       "!=" (str "To exclude its values, write `" left " not in " n "`.")
-                       (str "A named result can only be used after `in` or `not in`, like `" left " in " n "`."))]
-          (throw (ex-info (str "`" n "` is a named result, not a column. " advice
-                               " If you meant a column called " n ", write `" alias "." n "`.")
-                          {}))))))
+      (let [left (str alias "." col)
+            advice (case operator
+                     "=" (str "To match its values, write `" left " in " n "`.")
+                     "!=" (str "To exclude its values, write `" left " not in " n "`.")
+                     (str "A named result can only be used after `in` or `not in`, like `" left " in " n "`."))]
+        (throw (ex-info (str "`" n "` is a named result, not a column. " advice
+                             " If you meant a column called " n ", write `" alias "." n "`.")
+                        {}))))))
 
 (defn- with-named-results
   "A named result used after `in` becomes `IN ( SELECT column FROM name )`:
