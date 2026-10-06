@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [0.48.0] - 2026-10-06
 ### Added
 - Set `PINE_PORT` to run the server on a port other than 33333. beamlynx-desktop uses it so its dev build and the installed app can run at the same time.
 - **A named result after `in`:** `employee | where: id in acme_emps` matches the values `acme_emps`'s one column returns, so one query's result can feed another: `company | where: name = 'Acme' | employee .company_id | s: id |= acme_emps`. It's built as `IN ( SELECT "id" FROM "acme_emps" )`, with the named result's CTE emitted as when it's used as a table. `not in` works too. A named result that selects every column or more than one is an error naming its columns. After `=` or another comparison, a named result is an error that suggests `in`, or `not in` for `!=`: `where: id = x` would otherwise read `x` as a column. A column with a named result's name can still be compared by writing its alias, like `t.x`. See `docs/named-results.md`.
