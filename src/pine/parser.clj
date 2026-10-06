@@ -235,11 +235,14 @@
       (throw (ex-info (str "`" (s/lower-case operator) "` takes a list of strings, a $variable or a named result.") {:_ items})))
     (make-condition column-pattern operator (map parse-strings items) cast-type)))
 
-(defn- parse-condition [condition]
+(defn- parse-in-condition
+  "`in` and `not in` conditions, or nil for any other operator. Kept out of
+  parse-condition: core.match nests a class per clause, and with every
+  clause in one match the ahead-of-time compiled class names grow past the
+  filesystem's 255-character limit (\"File name too long\")."
+  [condition]
   (match condition
-    ;; $variables and named results first: the generic `rhs` clauses below
-    ;; would otherwise take [:variable ...] for a column, and `& strings` for
-    ;; an `in` list. A cast after them applies to the column.
+    ;; A cast after a named result, a $variable or a list applies to the column.
     [:condition column-pattern [:in] [:named-result [:symbol n]]]
     (make-condition column-pattern "IN" (dt/named-result n))
 
@@ -264,141 +267,146 @@
     [:condition column-pattern [:not-in] [:variable n] [:cast cast-type]]
     (make-condition column-pattern "NOT IN" (dt/variable n true) cast-type)
 
-    [:condition column-pattern [op] [:variable n]]
-    (make-condition column-pattern (variable-operator op) (dt/variable n))
-
-    [:condition column-pattern [op] [:variable n] [:cast cast-type]]
-    (make-condition column-pattern (variable-operator op) (dt/variable n) cast-type)
-
-    ;; Equals operations
-    [:condition column-pattern [:equals] [:number value]]
-    (make-condition column-pattern "=" (dt/number value))
-
-    [:condition column-pattern [:equals] [:null]]
-    (make-condition column-pattern "IS" (dt/pine-symbol "NULL"))
-
-    [:condition column-pattern [:equals] [:string & characters]]
-    (make-condition column-pattern "=" (parse-characters characters))
-
-    [:condition column-pattern [:equals] [:string & characters] [:cast cast-type]]
-    (make-condition column-pattern "=" (parse-characters characters) cast-type)
-
-    [:condition column-pattern [:equals] [:boolean b]]
-    (make-condition column-pattern "=" (dt/pine-symbol b))
-
-    [:condition column-pattern [:equals] [:date value]]
-    (make-condition column-pattern "=" (dt/date value))
-
-    ;; Column-to-column equals
-    [:condition column-pattern [:equals] rhs]
-    (make-condition column-pattern "=" rhs)
-
-    ;; Not equals operations
-    [:condition column-pattern [:does-not-equal] [:number value]]
-    (make-condition column-pattern "!=" (dt/number value))
-
-    [:condition column-pattern [:does-not-equal] [:null]]
-    (make-condition column-pattern "IS NOT" (dt/pine-symbol "NULL"))
-
-    [:condition column-pattern [:does-not-equal] [:string & characters]]
-    (make-condition column-pattern "!=" (parse-characters characters))
-
-    [:condition column-pattern [:does-not-equal] [:string & characters] [:cast cast-type]]
-    (make-condition column-pattern "!=" (parse-characters characters) cast-type)
-
-    [:condition column-pattern [:does-not-equal] [:boolean b]]
-    (make-condition column-pattern "!=" (dt/pine-symbol b))
-
-    [:condition column-pattern [:does-not-equal] [:date value]]
-    (make-condition column-pattern "!=" (dt/date value))
-
-    ;; Column-to-column not equals
-    [:condition column-pattern [:does-not-equal] rhs]
-    (make-condition column-pattern "!=" rhs)
-
-    ;; IS NULL operations
-    [:condition column-pattern [:is] [:null]]
-    (make-condition column-pattern "IS" (dt/pine-symbol "NULL"))
-
-    [:condition column-pattern [:is-not] [:null]]
-    (make-condition column-pattern "IS NOT" (dt/pine-symbol "NULL"))
-
-    ;; LIKE operations
-    [:condition column-pattern [:like] [:string & characters]]
-    (make-condition column-pattern "LIKE" (parse-characters characters))
-
-    [:condition column-pattern [:like] [:string & characters] [:cast cast-type]]
-    (make-condition column-pattern "LIKE" (parse-characters characters) cast-type)
-
-    ;; NOT LIKE operations
-    [:condition column-pattern [:not-like] [:string & characters]]
-    (make-condition column-pattern "NOT LIKE" (parse-characters characters))
-
-    [:condition column-pattern [:not-like] [:string & characters] [:cast cast-type]]
-    (make-condition column-pattern "NOT LIKE" (parse-characters characters) cast-type)
-
-    ;; ILIKE operations
-    [:condition column-pattern [:ilike] [:string & characters]]
-    (make-condition column-pattern "ILIKE" (parse-characters characters))
-
-    [:condition column-pattern [:ilike] [:string & characters] [:cast cast-type]]
-    (make-condition column-pattern "ILIKE" (parse-characters characters) cast-type)
-
-    ;; NOT ILIKE operations
-    [:condition column-pattern [:not-ilike] [:string & characters]]
-    (make-condition column-pattern "NOT ILIKE" (parse-characters characters))
-
-    [:condition column-pattern [:not-ilike] [:string & characters] [:cast cast-type]]
-    (make-condition column-pattern "NOT ILIKE" (parse-characters characters) cast-type)
-
-    ;; Greater than operations
-    [:condition column-pattern [:greater-than] [:number value]]
-    (make-condition column-pattern ">" (dt/number value))
-
-    [:condition column-pattern [:greater-than] [:string & characters]]
-    (make-condition column-pattern ">" (parse-characters characters))
-
-    [:condition column-pattern [:greater-than] [:date value]]
-    (make-condition column-pattern ">" (dt/date value))
-
-    ;; Less than operations
-    [:condition column-pattern [:less-than] [:number value]]
-    (make-condition column-pattern "<" (dt/number value))
-
-    [:condition column-pattern [:less-than] [:string & characters]]
-    (make-condition column-pattern "<" (parse-characters characters))
-
-    [:condition column-pattern [:less-than] [:date value]]
-    (make-condition column-pattern "<" (dt/date value))
-
-    ;; Greater than or equal operations
-    [:condition column-pattern [:greater-than-equal] [:number value]]
-    (make-condition column-pattern ">=" (dt/number value))
-
-    [:condition column-pattern [:greater-than-equal] [:string & characters]]
-    (make-condition column-pattern ">=" (parse-characters characters))
-
-    [:condition column-pattern [:greater-than-equal] [:date value]]
-    (make-condition column-pattern ">=" (dt/date value))
-
-    ;; Less than or equal operations
-    [:condition column-pattern [:less-than-equal] [:number value]]
-    (make-condition column-pattern "<=" (dt/number value))
-
-    [:condition column-pattern [:less-than-equal] [:string & characters]]
-    (make-condition column-pattern "<=" (parse-characters characters))
-
-    [:condition column-pattern [:less-than-equal] [:date value]]
-    (make-condition column-pattern "<=" (dt/date value))
-
-    ;; IN operations
     [:condition column-pattern [:in] & items]
     (in-list-condition column-pattern "IN" items)
 
     [:condition column-pattern [:not-in] & items]
     (in-list-condition column-pattern "NOT IN" items)
 
-    :else                (throw (ex-info "Unknown condition in WHERE operation"      {:_ condition}))))
+    :else nil))
+
+(defn- parse-condition [condition]
+  (or
+   (parse-in-condition condition)
+   (match condition
+     [:condition column-pattern [op] [:variable n]]
+     (make-condition column-pattern (variable-operator op) (dt/variable n))
+
+     [:condition column-pattern [op] [:variable n] [:cast cast-type]]
+     (make-condition column-pattern (variable-operator op) (dt/variable n) cast-type)
+
+    ;; Equals operations
+     [:condition column-pattern [:equals] [:number value]]
+     (make-condition column-pattern "=" (dt/number value))
+
+     [:condition column-pattern [:equals] [:null]]
+     (make-condition column-pattern "IS" (dt/pine-symbol "NULL"))
+
+     [:condition column-pattern [:equals] [:string & characters]]
+     (make-condition column-pattern "=" (parse-characters characters))
+
+     [:condition column-pattern [:equals] [:string & characters] [:cast cast-type]]
+     (make-condition column-pattern "=" (parse-characters characters) cast-type)
+
+     [:condition column-pattern [:equals] [:boolean b]]
+     (make-condition column-pattern "=" (dt/pine-symbol b))
+
+     [:condition column-pattern [:equals] [:date value]]
+     (make-condition column-pattern "=" (dt/date value))
+
+    ;; Column-to-column equals
+     [:condition column-pattern [:equals] rhs]
+     (make-condition column-pattern "=" rhs)
+
+    ;; Not equals operations
+     [:condition column-pattern [:does-not-equal] [:number value]]
+     (make-condition column-pattern "!=" (dt/number value))
+
+     [:condition column-pattern [:does-not-equal] [:null]]
+     (make-condition column-pattern "IS NOT" (dt/pine-symbol "NULL"))
+
+     [:condition column-pattern [:does-not-equal] [:string & characters]]
+     (make-condition column-pattern "!=" (parse-characters characters))
+
+     [:condition column-pattern [:does-not-equal] [:string & characters] [:cast cast-type]]
+     (make-condition column-pattern "!=" (parse-characters characters) cast-type)
+
+     [:condition column-pattern [:does-not-equal] [:boolean b]]
+     (make-condition column-pattern "!=" (dt/pine-symbol b))
+
+     [:condition column-pattern [:does-not-equal] [:date value]]
+     (make-condition column-pattern "!=" (dt/date value))
+
+    ;; Column-to-column not equals
+     [:condition column-pattern [:does-not-equal] rhs]
+     (make-condition column-pattern "!=" rhs)
+
+    ;; IS NULL operations
+     [:condition column-pattern [:is] [:null]]
+     (make-condition column-pattern "IS" (dt/pine-symbol "NULL"))
+
+     [:condition column-pattern [:is-not] [:null]]
+     (make-condition column-pattern "IS NOT" (dt/pine-symbol "NULL"))
+
+    ;; LIKE operations
+     [:condition column-pattern [:like] [:string & characters]]
+     (make-condition column-pattern "LIKE" (parse-characters characters))
+
+     [:condition column-pattern [:like] [:string & characters] [:cast cast-type]]
+     (make-condition column-pattern "LIKE" (parse-characters characters) cast-type)
+
+    ;; NOT LIKE operations
+     [:condition column-pattern [:not-like] [:string & characters]]
+     (make-condition column-pattern "NOT LIKE" (parse-characters characters))
+
+     [:condition column-pattern [:not-like] [:string & characters] [:cast cast-type]]
+     (make-condition column-pattern "NOT LIKE" (parse-characters characters) cast-type)
+
+    ;; ILIKE operations
+     [:condition column-pattern [:ilike] [:string & characters]]
+     (make-condition column-pattern "ILIKE" (parse-characters characters))
+
+     [:condition column-pattern [:ilike] [:string & characters] [:cast cast-type]]
+     (make-condition column-pattern "ILIKE" (parse-characters characters) cast-type)
+
+    ;; NOT ILIKE operations
+     [:condition column-pattern [:not-ilike] [:string & characters]]
+     (make-condition column-pattern "NOT ILIKE" (parse-characters characters))
+
+     [:condition column-pattern [:not-ilike] [:string & characters] [:cast cast-type]]
+     (make-condition column-pattern "NOT ILIKE" (parse-characters characters) cast-type)
+
+    ;; Greater than operations
+     [:condition column-pattern [:greater-than] [:number value]]
+     (make-condition column-pattern ">" (dt/number value))
+
+     [:condition column-pattern [:greater-than] [:string & characters]]
+     (make-condition column-pattern ">" (parse-characters characters))
+
+     [:condition column-pattern [:greater-than] [:date value]]
+     (make-condition column-pattern ">" (dt/date value))
+
+    ;; Less than operations
+     [:condition column-pattern [:less-than] [:number value]]
+     (make-condition column-pattern "<" (dt/number value))
+
+     [:condition column-pattern [:less-than] [:string & characters]]
+     (make-condition column-pattern "<" (parse-characters characters))
+
+     [:condition column-pattern [:less-than] [:date value]]
+     (make-condition column-pattern "<" (dt/date value))
+
+    ;; Greater than or equal operations
+     [:condition column-pattern [:greater-than-equal] [:number value]]
+     (make-condition column-pattern ">=" (dt/number value))
+
+     [:condition column-pattern [:greater-than-equal] [:string & characters]]
+     (make-condition column-pattern ">=" (parse-characters characters))
+
+     [:condition column-pattern [:greater-than-equal] [:date value]]
+     (make-condition column-pattern ">=" (dt/date value))
+
+    ;; Less than or equal operations
+     [:condition column-pattern [:less-than-equal] [:number value]]
+     (make-condition column-pattern "<=" (dt/number value))
+
+     [:condition column-pattern [:less-than-equal] [:string & characters]]
+     (make-condition column-pattern "<=" (parse-characters characters))
+
+     [:condition column-pattern [:less-than-equal] [:date value]]
+     (make-condition column-pattern "<=" (dt/date value))
+
+     :else                (throw (ex-info "Unknown condition in WHERE operation"      {:_ condition})))))
 
 (defmethod -normalize-op :WHERE [[_ payload]]
   (match payload
