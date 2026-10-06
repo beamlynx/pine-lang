@@ -91,3 +91,18 @@
                                                     :connection-id :test}}))]
       (is (nil? (:error response)))
       (is (re-find #"WITH \"acme_emps\" AS \(.*'Acme'.*\).*IN \( SELECT \"id\" FROM \"acme_emps\" \)" (:query response))))))
+
+(deftest test-cast-applies-to-the-column
+  (testing "a cast after `in <named result>` casts the column; it is never a value"
+    (let [{:keys [query]} (generate ["employee | s: name |= a" "employee | where: name not in a ::text"])]
+      (is (re-find #"\"e_0\"\.\"name\"::text NOT IN \( SELECT \"name\" FROM \"a\" \)" query))
+      (is (not (re-find #"'text'" query)))))
+  (testing "the same for a literal list"
+    (let [{:keys [query]} (generate ["employee | where: name in ('a') ::text"])]
+      (is (re-find #"::text IN \(" query))
+      (is (not (re-find #"'text'" query))))))
+
+(deftest test-star-is-every-column
+  (testing "a named result that selects `alias.*` is refused like one that selects every column"
+    (is (thrown-with-msg? Exception #"selects every column"
+                          (generate ["company | employee .company_id | s: e_1.* |= x" "employee | where: company_id in x"])))))

@@ -241,12 +241,12 @@
     ;; `in <named result>`: the values its one column returns (pine.ast.where
     ;; filled in :column). Its CTE is emitted by all-ctes.
     (= (:type value) :named-result)
-    (str (q alias col) " " (render-operator operator) " ( SELECT " (q (:column value)) " FROM " (q (:value value)) " )")
+    (str (column-ref-with-cast alias col cast) " " (render-operator operator) " ( SELECT " (q (:column value)) " FROM " (q (:value value)) " )")
 
     (or (= operator "IN") (= operator "NOT IN"))
     ;; A map here is an unbound `in $variable` (pine.variables): one `?`
     ;; standing for the list, shown as `$name` by formatted-query.
-    (str (q alias col) " " (render-operator operator) " ("
+    (str (column-ref-with-cast alias col cast) " " (render-operator operator) " ("
          (if (map? value) "?" (s/join ", " (repeat (count value) "?"))) ")")
     :else
     (str (column-ref-with-cast alias col cast) " " (render-operator operator) " "
@@ -528,26 +528,32 @@
         (= type :paths) {:query " /* No SQL. Pick a path from hints.paths and build that expression instead */ "}
         :else (build-select-query (update state :limit #(or % 250)))))))
 
+(defn- param-preview [{v :value :as param}]
+  (case (:type param)
+    :boolean (str v)
+    ;; Not run, only shown: a $variable with no value yet.
+    :variable (str "$" v)
+    (str "'" (s/replace (str v) "'" "''") "'")))
+
+(defn- fill-params
+  "The query with each `?` replaced by its param, in order, in one pass. Never
+  rescans what it inserted, so a `?` inside a value stays in the value."
+  [query params]
+  (let [parts (s/split query #"\?" -1)]
+    (apply str (first parts)
+           (map (fn [part param] (str (if param (param-preview param) "?") part))
+                (rest parts)
+                (concat params (repeat nil))))))
+
 (defn formatted-query [build-result]
-  (let [replacer (fn [s param]
-                   (let [v (:value param)
-                         param-str (case (:type param)
-                                     :boolean (str v)
-                                     ;; Not run, only shown: a $variable with no value yet.
-                                     :variable (str "$" v)
-                                     (str "'" v "'"))]
-                     ;; quoteReplacement: a `$` in the value (a $variable, or
-                     ;; any literal like 'price $5') is otherwise read as a
-                     ;; regex group reference and throws.
-                     (clojure.string/replace-first s #"\?" (java.util.regex.Matcher/quoteReplacement param-str))))]
-    (if-let [queries (:queries build-result)]
-      ;; Multiple update queries
-      (s/join "\n" (map (fn [{:keys [query params]}]
-                          (if (empty? query) "" (str (reduce replacer query params) ";")))
-                        queries))
-      ;; Single query (legacy format or other operations)
-      (let [{:keys [query params]} build-result]
-        (if (empty? query) "" (str "\n" (reduce replacer query params) ";\n"))))))
+  (if-let [queries (:queries build-result)]
+    ;; Multiple update queries
+    (s/join "\n" (map (fn [{:keys [query params]}]
+                        (if (empty? query) "" (str (fill-params query params) ";")))
+                      queries))
+    ;; Single query (legacy format or other operations)
+    (let [{:keys [query params]} build-result]
+      (if (empty? query) "" (str "\n" (fill-params query params) ";\n")))))
 
 (defn run-query [state]
   (if (= (-> state :operation :type) :no-op)

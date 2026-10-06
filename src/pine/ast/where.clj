@@ -46,7 +46,8 @@
       (nil? var-ast)
       (throw (ex-info (str "`" n "` after `in` must be a named result. Define it in an earlier block, ending with `|= " n "`.") {}))
 
-      (empty? columns)
+      ;; `s: c.*` selects every column of a table: its column has no name.
+      (or (empty? columns) (some #(s/blank? (column-name %)) columns))
       (throw (ex-info (str "The named result " n " selects every column. To use it after `in`, select the one column to match, like `| s: id |= " n "`.") {}))
 
       (next columns)

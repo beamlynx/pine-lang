@@ -249,3 +249,21 @@
           value (get-in response [:ast :where 0 4])]
       (is (= {:type :variable :value "n"} value))
       (is (re-find #"'Acme'" (:query response))))))
+
+(deftest test-too-large-numbers
+  (testing "a number too large for a long, written in a values block, is a variables error"
+    (let [response (post "/api/v1/build" {:expressions ["$n = 99999999999999999999" "company | where: id = $n"] :connection-id :test})]
+      (is (= "variables" (:error-type response)))
+      (is (re-find #"too large.*'99999999999999999999'" (:error response)))))
+  (testing "and passed in the request"
+    (let [response (post "/api/v1/build" {:expressions ["company | where: id = $n"] :connection-id :test
+                                          :variables {:n {:value 99999999999999999999N}}})]
+      (is (= "variables" (:error-type response)))
+      (is (re-find #"too large" (:error response))))))
+
+(deftest test-preview-fills-params-once
+  (testing "a `?` inside a value isn't taken for the next placeholder"
+    (is (re-find #"name\" = 'x\?' AND .*country\" = 'y'"
+                 (eval/formatted-query (generate "company | where: name = $a | where: country = $b" {"a" "x?" "b" "y"})))))
+  (testing "a quote inside a value is doubled, as SQL writes it"
+    (is (re-find #"'O''Brien'" (eval/formatted-query (generate "company | where: name = $a" {"a" "O'Brien"}))))))
