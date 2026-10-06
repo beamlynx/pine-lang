@@ -14,6 +14,8 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - What `docs/variables.md` described (`expr |= name`) is now called a **named result**, in `docs/named-results.md`. The syntax is unchanged. "Variable" now means a `$name`.
 
 ### Fixed
+- A cast after an `in` list, as in `where: name in ('a') ::text`, was read as one more value, so the query matched `'text'` too. The cast now applies to the column, as with every other operator: `"name"::text IN (...)`. The same goes for `in` followed by a `$variable` or a named result.
+- The SQL preview from `/build` put a value's `?` in place of the next value when a string contained one, and showed a `'` inside a value without doubling it. It now fills each placeholder once, in order. Running a query was never affected: values are sent separately.
 - The SQL preview from `/build` threw on any string literal containing `$`, such as `'price $5'`, because the value was inserted with a regex replacement that read `$` as a group reference.
 
 ## [0.47.0] - 2026-09-27

@@ -224,21 +224,45 @@
   (or (variable-operators op)
       (throw (ex-info (str "A $variable can't follow `" (name op) "`.") {:operator op}))))
 
+(defn- in-list-condition
+  "`in ('a', 'b')`, with an optional cast at the end. The cast applies to the
+  column, as with every other operator; it is never one of the values."
+  [column-pattern operator items]
+  (let [[cast-type items] (if (= :cast (first (last items)))
+                            [(second (last items)) (butlast items)]
+                            [nil items])]
+    (when-not (every? #(= :string (first %)) items)
+      (throw (ex-info (str "`" (s/lower-case operator) "` takes a list of strings, a $variable or a named result.") {:_ items})))
+    (make-condition column-pattern operator (map parse-strings items) cast-type)))
+
 (defn- parse-condition [condition]
   (match condition
-    ;; $variables first: the generic `rhs` clauses below would otherwise take
-    ;; [:variable ...] for a column, and `& strings` for an `in` list.
+    ;; $variables and named results first: the generic `rhs` clauses below
+    ;; would otherwise take [:variable ...] for a column, and `& strings` for
+    ;; an `in` list. A cast after them applies to the column.
     [:condition column-pattern [:in] [:named-result [:symbol n]]]
     (make-condition column-pattern "IN" (dt/named-result n))
+
+    [:condition column-pattern [:in] [:named-result [:symbol n]] [:cast cast-type]]
+    (make-condition column-pattern "IN" (dt/named-result n) cast-type)
 
     [:condition column-pattern [:not-in] [:named-result [:symbol n]]]
     (make-condition column-pattern "NOT IN" (dt/named-result n))
 
+    [:condition column-pattern [:not-in] [:named-result [:symbol n]] [:cast cast-type]]
+    (make-condition column-pattern "NOT IN" (dt/named-result n) cast-type)
+
     [:condition column-pattern [:in] [:variable n]]
     (make-condition column-pattern "IN" (dt/variable n true))
 
+    [:condition column-pattern [:in] [:variable n] [:cast cast-type]]
+    (make-condition column-pattern "IN" (dt/variable n true) cast-type)
+
     [:condition column-pattern [:not-in] [:variable n]]
     (make-condition column-pattern "NOT IN" (dt/variable n true))
+
+    [:condition column-pattern [:not-in] [:variable n] [:cast cast-type]]
+    (make-condition column-pattern "NOT IN" (dt/variable n true) cast-type)
 
     [:condition column-pattern [op] [:variable n]]
     (make-condition column-pattern (variable-operator op) (dt/variable n))
@@ -368,11 +392,11 @@
     (make-condition column-pattern "<=" (dt/date value))
 
     ;; IN operations
-    [:condition column-pattern [:in] & strings]
-    (make-condition column-pattern "IN" (map parse-strings strings))
+    [:condition column-pattern [:in] & items]
+    (in-list-condition column-pattern "IN" items)
 
-    [:condition column-pattern [:not-in] & strings]
-    (make-condition column-pattern "NOT IN" (map parse-strings strings))
+    [:condition column-pattern [:not-in] & items]
+    (in-list-condition column-pattern "NOT IN" items)
 
     :else                (throw (ex-info "Unknown condition in WHERE operation"      {:_ condition}))))
 

@@ -45,6 +45,8 @@
     (and (string? v) (> (count v) max-string-length))
     (fail (str "$" n " is longer than " max-string-length " characters."))
     (not (scalar? v)) (fail (str "$" n " must be a string, a number or a boolean, or a list of them."))
+    (and (integer? v) (not (<= Long/MIN_VALUE v Long/MAX_VALUE)))
+    (fail (str "$" n " is too large for a number. Pass it as a string."))
     :else v))
 
 (defn normalize
@@ -197,7 +199,11 @@
 (defn- literal [[kind v]]
   (case kind
     :string v
-    :number (if (str/includes? v ".") (Double/parseDouble v) (Long/parseLong v))
+    :number (if (str/includes? v ".")
+              (Double/parseDouble v)
+              (try (Long/parseLong v)
+                   (catch NumberFormatException _
+                     (fail (str v " is too large for a number. Write it as a string: '" v "'.")))))
     :boolean (= v "true")))
 
 (defn parse-values-block
