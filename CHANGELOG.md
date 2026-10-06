@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Fixed
+- 0.48.0 couldn't be built into the standalone jar the desktop app and the Docker image run. Compiling `pine.parser` ahead of time failed with "File name too long": the `where:` conditions grew past what core.match can turn into short enough class names. The `in` and `not in` conditions are now matched on their own. CI now builds the jar on every change, so this can't happen silently again.
 
 ## [0.48.0] - 2026-10-06
 ### Added

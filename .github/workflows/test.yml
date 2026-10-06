@@ -95,3 +95,9 @@ jobs:
 
       - name: Run tests
         run: clojure -M:test
+
+      # The desktop app and the Docker image run pine-lang ahead-of-time
+      # compiled. That can fail where the tests pass, as 0.48.0 did ("File
+      # name too long" from a large core.match), so build the jar here too.
+      - name: Build the standalone jar
+        run: clojure -T:build uber
