@@ -182,7 +182,7 @@
     <value>     := string | number | boolean | list
     list        := <'('> <ws?> scalar (<ws?> <','> <ws?> scalar)* <ws?> <')'>
     <scalar>    := string | number | boolean
-    string      := <\"'\"> #\"[^']*\" <\"'\">
+    string      := <\"'\"> #\"(?:[^']|'')*+\" <\"'\">
     number      := #'-?[0-9]+(\\.[0-9]+)?'
     boolean     := 'true' | 'false'
     ws          := (#'[ \\t\\r\\n]+' | #'--[^\\r\\n]*' | #'(?s)/\\*.*?\\*/')+"))
@@ -198,7 +198,7 @@
 
 (defn- literal [[kind v]]
   (case kind
-    :string v
+    :string (str/replace v "''" "'")
     :number (if (str/includes? v ".")
               (Double/parseDouble v)
               (try (Long/parseLong v)

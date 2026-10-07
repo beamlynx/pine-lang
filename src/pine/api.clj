@@ -439,6 +439,35 @@
         {:error-type "variables" :error (.getMessage e)}
         (throw e)))))
 
+;; Longer than any expression a person writes. Checked before parsing, so a
+;; pasted file or a hostile request can't make the parser do unbounded work.
+(def max-expression-length 65536)
+
+(defn- too-long-response
+  "The error for an expression or query over max-expression-length, or nil
+  when every one of `texts` (a string, a sequence of them, or nil) is within
+  it. Non-strings are left for the route's own handling."
+  [texts]
+  (when (some #(and (string? %) (> (count %) max-expression-length))
+              (if (sequential? texts) texts [texts]))
+    {:error-type "too-long"
+     :error (str "Expression is longer than " max-expression-length " characters.")}))
+
+;; Bigger than any request beamlynx sends. Checked from Content-Length before
+;; anything reads the body.
+(def max-body-bytes (* 1024 1024))
+
+(defn wrap-body-limit [handler]
+  (fn [request]
+    (let [length (some-> (get-in request [:headers "content-length"]) parse-long)]
+      (if (and length (> length max-body-bytes))
+        ;; Encoded by hand: this sits outside wrap-json-response.
+        {:status 413
+         :headers {"Content-Type" "application/json"}
+         :body (json/generate-string {:error-type "too-large"
+                                      :error "Request body larger than 1 MB."})}
+        (handler request)))))
+
 ;; TODO: POST method should return 401
 
 (defroutes app-routes
@@ -465,12 +494,14 @@
           exprs (or expressions (when expression [expression]))
           rules (access-policy/sanitize-rules (:access-policy params))]
       (response
-       (let [built (with-variables params exprs
-                     #(api-build % (usable-cursor cursor) connection-id rules))]
-         ;; api-build only sees the blocks left after values blocks are taken
-         ;; out, so the doc comes from the full list here.
-         (cond-> built
-           (contains? built :doc) (assoc :doc (tab-doc exprs)))))))
+       (or
+        (too-long-response exprs)
+        (let [built (with-variables params exprs
+                      #(api-build % (usable-cursor cursor) connection-id rules))]
+          ;; api-build only sees the blocks left after values blocks are taken
+          ;; out, so the doc comes from the full list here.
+          (cond-> built
+            (contains? built :doc) (assoc :doc (tab-doc exprs))))))))
   (POST "/api/v1/eval" {params :params}
     (let [{:keys [expressions expression connection-id]} params
           exprs (or expressions (when expression [expression]))
@@ -480,19 +511,22 @@
           ;; never read as "refuse everything" for the callers that don't send it.
           allow-writes (not (false? (:allow-writes params)))]
       (response
-       (with-variables params exprs
-         (fn [query-exprs]
+       (or
+        (too-long-response exprs)
+        (with-variables params exprs
+          (fn [query-exprs]
            ;; Every $variable must have a value before anything runs.
-           (if-let [unbound (seq (:unbound (variables/report query-exprs variables/*bindings*)))]
-             {:error-type "unbound-variable"
-              :error (variables/missing-message unbound)
-              :unbound (vec unbound)}
-             (api-eval query-exprs connection-id rules allow-writes)))))))
+            (if-let [unbound (seq (:unbound (variables/report query-exprs variables/*bindings*)))]
+              {:error-type "unbound-variable"
+               :error (variables/missing-message unbound)
+               :unbound (vec unbound)}
+              (api-eval query-exprs connection-id rules allow-writes))))))))
 
   ;; raw SQL execution
   (POST "/api/v1/sql" {params :params}
     (let [{:keys [query connection-id]} params]
-      (->> (api-sql query connection-id) response)))
+      (response (or (too-long-response query)
+                    (api-sql query connection-id)))))
 
   ;; Legacy
   ;;
@@ -509,5 +543,6 @@
       wrap-exception-logging
       wrap-logger
       (wrap-defaults api-defaults)
+      wrap-body-limit
       (wrap-cors :access-control-allow-origin [#".*"]
                  :access-control-allow-methods [:get :post :put :delete])))

@@ -3,12 +3,17 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Added
+- A string can contain an apostrophe by writing it twice, as in SQL: `where: name = 'O''Brien'`. This works in values blocks too.
+
 ### Changed
 - **Breaking:** `/build`'s AST lists named results under `named-results`, not `variables`. "Variable" means a `$name` since 0.48.0, and its report is still `variables` in the response. Inside pine-lang, the state key and the code that passes named results between blocks are renamed the same way. beamlynx-ui's matching change reads the new key.
+- An expression or raw SQL query longer than 65 536 characters is refused with `error-type: "too-long"` before it is parsed. A request body over 1 MB is refused with HTTP 413.
 
 ### Fixed
 - A `/build` cursor before the start of the expression, which beamlynx-ui sent with the cursor in a values block above the query, made the build fail with `"error": null`. Such a cursor is now ignored, and a failed build always says something: an exception with no message reports its type.
 - `/build`'s `doc` was empty when the tab started with a values block. It now comes from the first doc comment in the leading values blocks or the first query block.
+- Block comments after a `select:` column could take seconds to parse, or run the server out of memory: ten took 4 s, twelve exhausted a 2 GB heap. A 1 MB string literal took 7.5 s. Whitespace with comments, and each string literal, are now one token, so parsing is linear. Twelve comments now take under a millisecond and a 1 MB literal 17 ms.
 
 ## [0.48.1] - 2026-10-06
 ### Fixed
