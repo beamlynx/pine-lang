@@ -165,7 +165,8 @@ employee | where: id in acme_emps
 - **Column hints**: when a named result has explicit output columns (from `s:`, `g:`, etc.), hints reflect
   those columns, not the full schema of the source table. Named results using `*` (no explicit selection)
   inherit the source table's columns.
-- **No LIMIT in CTE body**: limits only apply to the outer query.
+- **A limit stays in the CTE body**: `company | l: 10 |= x` builds `WITH "x" AS ( ... LIMIT 10 )`, so `x`
+  holds ten companies. Checkpoints (see [checkpoints.md](checkpoints.md)) depend on this.
 - **No auto-id columns**: Pine's hidden `id` tracking columns are not added for named result tables.
   See [result-updates.md](result-updates.md).
 

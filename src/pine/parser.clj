@@ -630,6 +630,60 @@
   (mapv (fn [[_ op]] (-normalize-op op))
         (filter #(= (first %) :OPERATION) nodes)))
 
+;; ---------------------------------------------------------------------------
+;; Readable parse errors
+;; ---------------------------------------------------------------------------
+;;
+;; Instaparse reports a position and every token the grammar would have
+;; accepted there, regex literals included. Correct, but it rarely says what
+;; went wrong. For the common mistakes a sentence that does is put in front;
+;; the raw report stays after it (beamlynx-desktop's MCP formatter reads its
+;; "Parse error at line" and "Expected one of" lines).
+
+(def ^:private operation-names
+  ["select" "where" "limit" "from" "order" "group" "count" "delete!" "update!"])
+
+(defn- edit-distance [a b]
+  (let [n (count b)]
+    (peek
+     (reduce (fn [prev [i ca]]
+               (reduce (fn [row [j cb]]
+                         (conj row (min (inc (peek row))
+                                        (inc (nth prev (inc j)))
+                                        (+ (nth prev j) (if (= ca cb) 0 1)))))
+                       [(inc i)]
+                       (map-indexed vector b)))
+             (vec (range (inc n)))
+             (map-indexed vector a)))))
+
+(defn- closest-operation [word]
+  (let [word (s/lower-case word)
+        [best distance] (apply min-key second (map (juxt identity #(edit-distance word %)) operation-names))]
+    (when (<= distance 2) best)))
+
+(defn- parse-error-hint
+  "A sentence naming the likely mistake, or nil."
+  [expression {:keys [index]}]
+  (let [index  (min (or index 0) (count expression))
+        before (subs expression 0 index)
+        after  (subs expression index)
+        word   (second (re-find #"([A-Za-z]+!?)\s*$" before))]
+    (cond
+      (odd? (count (re-seq #"'" (s/replace expression "''" ""))))
+      "A string is missing its closing quote. To put an apostrophe inside a string, write it twice: 'O''Brien'."
+
+      (and (re-find #"(?:where:|w:)[^|]*$" before) (re-find #"^\s*(?:,|and\b)" after))
+      "Join conditions in one where: with `or`. To require several, add a where: for each: `| where: a = 1 | where: b = 2`."
+
+      (and word (s/starts-with? after ":") (not (some #{(s/lower-case word)} operation-names)))
+      (if-let [op (closest-operation word)]
+        (str "Unknown operation `" word ":`. Did you mean `" op ":`?")
+        (str "Unknown operation `" word ":`."))
+
+      (and word (some #{(s/lower-case word)} ["select" "where" "limit" "from" "order" "group"])
+           (re-find #"^\s*[^:\s|]" after))
+      (str "`" word "` needs a colon: `" (s/lower-case word) ":`."))))
+
 (defn parse
   "Parse an expression and return the normalized operations or failure as a string"
   [expression]
@@ -637,8 +691,9 @@
         failure? (insta/failure? result)]
     (if failure?
       (let [failure (insta/get-failure result)
-            error (with-out-str (println (insta/get-failure result)))]
-        {:error error :failure failure})
+            raw (with-out-str (println failure))
+            hint (parse-error-hint expression failure)]
+        {:error (if hint (str hint "\n\n" raw) raw) :failure failure})
       {:result (normalize-ops result)})))
 
 (defn parse-or-fail [expression]

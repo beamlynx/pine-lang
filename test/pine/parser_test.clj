@@ -298,8 +298,9 @@
            (p "group: status")))
     (is (= [{:type :group, :value {:columns [{:column "status"}], :functions ["count"]}}]
            (p "group: status => count")))
-    (is (= [{:type :group, :value {:columns [{:column "status"}], :functions ["count", "sum"]}}]
-           (p "group: status => count, sum")))
+    ;; Only count: the others computed over the constant 1.
+    (is (:error (parse "group: status => count, sum")))
+    (is (:error (parse "company | group: name => avg")))
     (is (= [{:type :group, :value {:columns [{:column "name"} {:column "status"}], :functions ["count"]}}]
            (p "group: name, status => count")))
 
@@ -685,3 +686,26 @@
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"limit: must be between 0 and 10000"
                             (p (str "company | limit: " n)))
           n))))
+
+(deftest test-dates-and-times
+  (let [value #(-> (p (str "x | where: t > '" % "'")) second :value last)]
+    (testing "a date is a java.sql.Date"
+      (is (= {:type :date :value (java.sql.Date/valueOf "2024-01-31")} (value "2024-01-31"))))
+    (testing "a date and time is a timestamp, with or without seconds, with a space or a T"
+      (is (= (java.sql.Timestamp/valueOf "2024-01-01 10:00:00") (:value (value "2024-01-01 10:00"))))
+      (is (= (java.sql.Timestamp/valueOf "2024-01-01 10:00:30") (:value (value "2024-01-01T10:00:30"))))
+      (is (= (java.sql.Timestamp/valueOf "2024-01-01 10:00:30.5") (:value (value "2024-01-01 10:00:30.5")))))
+    (testing "an impossible date is an error, not rolled over to the next month"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"isn't a valid date" (value "2024-02-31")))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"isn't a valid date" (value "2024-01-01 25:00"))))))
+
+(deftest test-readable-parse-errors
+  (let [error #(:error (parse %))]
+    (testing "a hint comes first; Instaparse's own report follows it unchanged"
+      (is (re-find #"(?s)^Unknown operation `wher:`\. Did you mean `where:`\?\n\nParse error at line 1"
+                   (error "user | wher: id = 1"))))
+    (is (re-find #"^`where` needs a colon" (error "user | where id = 1")))
+    (is (re-find #"^A string is missing its closing quote" (error "user | where: name = 'abc")))
+    (is (re-find #"^Join conditions in one where: with `or`" (error "user | where: a = 1, b = 2")))
+    (is (re-find #"^Join conditions in one where: with `or`" (error "user | where: a = 1 and b = 2")))
+    (is (re-find #"^Unknown operation `zzzzz:`\.\n" (error "user | zzzzz: id")))))

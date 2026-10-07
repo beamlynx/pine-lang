@@ -1,5 +1,6 @@
 (ns pine.data-types
-  (:require [pine.ast.table :as table]))
+  (:require [clojure.string]
+            [pine.ast.table :as table]))
 
 (defn string [x]
   {:type :string
@@ -9,9 +10,20 @@
   {:type :number
    :value (Long/parseLong x)})
 
-(defn date [x]
+(defn date
+  "A date or date-time literal. Read strictly: '2024-02-31' is an error.
+  java.sql.Date/valueOf used to roll it over to 2024-03-02 without a word.
+  A time of day makes it a timestamp; it used to be bound as a string,
+  which Postgres refuses to compare with a timestamp column."
+  [x]
   {:type :date
-   :value (java.sql.Date/valueOf x)})
+   :value (try
+            (if (re-find #"[ T]\d" x)
+              (java.sql.Timestamp/valueOf (java.time.LocalDateTime/parse (clojure.string/replace x " " "T")))
+              (java.sql.Date/valueOf (java.time.LocalDate/parse x)))
+            (catch java.time.format.DateTimeParseException _
+              (throw (ex-info (str "'" x "' isn't a valid date. Write it as YYYY-MM-DD, optionally followed by HH:MM or HH:MM:SS.")
+                              {:error-type "parse" :value x}))))})
 
 (defn variable
   "A `$name` in the expression: a value supplied with the request (see
@@ -82,7 +94,9 @@
     ;; bpchar is Postgres's own internal name for CHAR(n)/"character" --
     ;; pg_catalog's pg_type.typname (postgres.clj's get-columns) returns it
     ;; where information_schema.columns would have said "character".
-    ("varchar" "text" "char" "character" "bpchar" "longtext" "mediumtext" "tinytext") (string (:value value))
+    ;; str: a number given for a text column ($n = 7, say) is compared as
+    ;; text. Bound as a number, Postgres refused `varchar = bigint`.
+    ("varchar" "text" "char" "character" "bpchar" "longtext" "mediumtext" "tinytext") (string (str (:value value)))
     ("date" "timestamp" "timestamptz" "timestamp without time zone" "timestamp with time zone" "datetime")
     (if (= (:type value) :string)
       (try

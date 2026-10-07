@@ -142,7 +142,7 @@
            (generate "company | where: country = 'PK' | id = 1 or id = 2"))))
 
   (testing "Condition : columns"
-    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" = \"country\" LIMIT 250",
+    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" = \"c_0\".\"country\" LIMIT 250",
             :params nil}
            (generate "company | where: name = country")))
     (is (= {:query "SELECT \"c\".id AS \"__c__id\", \"c\".* FROM \"company\" AS \"c\" WHERE \"c\".\"name\" != \"c\".\"country\" LIMIT 250",
@@ -391,6 +391,19 @@
   (testing "a terminal group: returns at most 10 000 groups; one sealed into a checkpoint keeps them all"
     (is (clojure.string/ends-with? (:query (generate "email | group: status => count")) " LIMIT 10000"))
     (is (not (re-find #"LIMIT 10000" (:query (generate "x.company | group: id => count | employee"))))))
+
+  (testing "a date and time binds as a timestamp"
+    (is (= {:query "SELECT \"e_0\".id AS \"__e_0__id\", \"e_0\".* FROM \"employee\" AS \"e_0\" WHERE \"e_0\".\"created_at\" > ?::timestamp LIMIT 250"
+            :params [{:type :date :value (java.sql.Timestamp/valueOf "2024-01-01 10:00:00")}]}
+           (update (generate "employee | where: created_at > '2024-01-01 10:00'") :params vec))))
+
+  (testing "a column on the right of a comparison is qualified with the current table, as the left one is"
+    (is (re-find #"WHERE \"e_1\"\.\"name\" = \"e_1\"\.\"country\""
+                 (:query (generate "company | employee | where: name = country")))))
+
+  (testing "a number given for a text column is compared as text"
+    (is (= {:type :string :value "7"} (dt/convert-value-to-db-type (dt/number "7") "text")))
+    (is (= {:type :string :value "7"} (dt/convert-value-to-db-type {:type :number :value 7} "varchar"))))
 
   (testing "an update! still being typed (trailing comma) builds nothing"
     (is (= {:query "" :params nil}
