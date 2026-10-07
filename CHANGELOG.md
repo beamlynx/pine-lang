@@ -5,10 +5,15 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ## [Unreleased]
 ### Added
 - A string can contain an apostrophe by writing it twice, as in SQL: `where: name = 'O''Brien'`. This works in values blocks too.
+- `/build` reports `writes`, whether the expression changes data, as `/eval` already did. When the SQL can't be built (a refused write, an unresolved join), `/build` still returns the AST and hints, with the reason in `query-error` and `query-error-type`. An error that has a kind now carries it as `error-type` from `/eval` too.
 
 ### Changed
 - **Breaking:** `/build`'s AST lists named results under `named-results`, not `variables`. "Variable" means a `$name` since 0.48.0, and its report is still `variables` in the response. Inside pine-lang, the state key and the code that passes named results between blocks are renamed the same way. beamlynx-ui's matching change reads the new key.
 - An expression or raw SQL query longer than 65 536 characters is refused with `error-type: "too-long"` before it is parsed. A request body over 1 MB is refused with HTTP 413.
+- **Breaking:** `delete!` and `update!` refuse to change every row of a table: add a `where:` or a `limit:` first. A `limit:` sealed into a checkpoint counts, so `company | l: 10 | employee | delete! .id` still works. They also refuse after `group:`, and on a named result. These come back with `error-type: "write-refused"`. See `docs/side-effects.md`.
+- **Breaking:** a join Pine can't resolve is an error naming both tables, with `error-type: "unresolved-join"`, for every operation. It used to produce SQL with no `ON` clause: a syntax error on Postgres, and a cross join on MySQL.
+- Every `delete!` and `update!` runs in a transaction, not only an `update!` across several tables.
+- `/eval` refuses an `update!` that ends in a comma, with `error-type: "incomplete"`, instead of running the assignments before the comma.
 
 ### Fixed
 - A `/build` cursor before the start of the expression, which beamlynx-ui sent with the cursor in a values block above the query, made the build fail with `"error": null`. Such a cursor is now ignored, and a failed build always says something: an exception with no message reports its type.

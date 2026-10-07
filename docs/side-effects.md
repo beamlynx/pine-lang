@@ -87,9 +87,41 @@ on several columns — cannot be updated through Pine. This is a separate
 limitation from the one `delete!` just lost, and it is about the target's own
 primary key rather than the foreign key it was reached by.
 
+### Writes Pine refuses to build
+
+Some writes would act on more rows than the person can have meant. Pine refuses
+to build them, whoever asks, with `error-type: "write-refused"`:
+
+| Expression | Why it's refused |
+| --- | --- |
+| `company \| delete! .id` | Nothing narrows the rows, so it changes the whole table. Add a `where:` or a `limit:` first. |
+| `company \| g: name \| delete! .id` | `group:` collapses rows into groups. The `GROUP BY` would stay in the subquery that picks the rows: an error on Postgres, and on MySQL one arbitrary row per group. |
+| `x \| where: id = 1 \| u! name = 'a'`, where `x` is a named result | A named result has no table of its own. The statement would target a real table that happens to share its name. |
+
+A `limit:` sealed into a checkpoint still counts as narrowing.
+`company | l: 10 | employee | delete! .id` deletes the employees of ten
+companies, so it is built. A named result counts only if its own query is
+narrowed.
+
+An unresolved join, where Pine found nothing connecting two tables, is refused
+for every operation with `error-type: "unresolved-join"`. It used to render
+with no `ON` clause: a syntax error on Postgres, and on MySQL a cross join that
+a `delete!` would then act on.
+
+An `update!` that ends in a comma is still being typed. `/eval` refuses it with
+`error-type: "incomplete"` rather than running the assignments before the comma.
+
+Every `delete!` and `update!` runs in a transaction, so a statement that fails
+part way leaves nothing half-applied.
+
+`/api/v1/build` still returns the AST and hints for a refused write or an
+unresolved join, since the person is usually still typing. Its `query` is then
+an SQL comment with the reason, and `query-error` and `query-error-type` hold it.
+
 ## Finding out: `writes`
 
-Every `/api/v1/eval` response carries a `writes` boolean.
+Every `/api/v1/eval` response carries a `writes` boolean, and so does every
+`/api/v1/build` response, so a caller can refuse a write before running it.
 
 ```json
 { "connection-id": "...", "writes": false, "result": [...], "columns": [...] }

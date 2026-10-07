@@ -129,9 +129,7 @@
   here - this does not care how many there are.
 
   An unresolved join (nothing connects the two tables, so :columns is
-  empty) renders no condition at all. That query is broken either way; it
-  used to compare two zero-length identifiers instead. Rejecting it
-  outright, with an error naming the tables, is a separate change."
+  empty) never gets here: build-join-clause rejects it first."
   [{:keys [from to columns cast]}]
   (when (seq columns)
     (str " ON " (s/join " AND "
@@ -140,7 +138,26 @@
                                     " = " (join-column-ref cast to to-column)))
                              columns)))))
 
-(defn- build-join-clause [{:keys [tables joins aliases]}]
+(defn- table-label
+  "schema.table (or just table) for the table behind alias `a`, for messages."
+  [aliases a]
+  (let [{:keys [schema table]} (get aliases a)]
+    (if schema (str schema "." table) (or table a))))
+
+(defn- check-joins-resolved
+  "Throws when a join has nothing connecting its two tables. Such a join
+  would render with no ON clause: a syntax error on Postgres, and on MySQL a
+  cross join of every row with every row, which a delete! would then act on."
+  [{:keys [joins aliases]}]
+  (doseq [{:keys [from to columns]} joins
+          :when (empty? columns)]
+    (throw (ex-info (str "No relation between `" (table-label aliases from) "` and `" (table-label aliases to)
+                         "`. Name the join column with `.column`, for example `"
+                         (table-label aliases to) " .some_id`.")
+                    {:error-type "unresolved-join" :from from :to to}))))
+
+(defn- build-join-clause [{:keys [tables joins aliases] :as state}]
+  (check-joins-resolved state)
   (when (not-empty (rest tables))
     (let [join-statements (map (fn [{:keys [to type] :as join}]
                                  (let [{to-table :table to-schema :schema} (get aliases to)
@@ -455,6 +472,35 @@
         params (where-params (:where state))]
     {:query query :params (seq (concat cte-params params))}))
 
+(defn- scoped?
+  "Whether a state's rows are narrowed by anything: a where:, a limit:, or a
+  source table that is a named result or checkpoint CTE whose own query is
+  narrowed. `company | l: 10 | employee` keeps no limit in its final state -
+  the limit was sealed into a CTE - but its rows are still scoped by it."
+  [{:keys [where limit tables aliases]}]
+  (boolean
+   (or (seq where)
+       limit
+       (some (fn [{a :alias}]
+               (when-let [cte (get-in aliases [a :ast])]
+                 (scoped? cte)))
+             tables))))
+
+(defn- refuse-write [message]
+  (throw (ex-info message {:error-type "write-refused"})))
+
+(defn- check-write-allowed
+  "Refuses a delete!/update! that would act on more than the person can have
+  meant. `target` is the alias of the table being changed."
+  [{:keys [group aliases] :as state} op-name target]
+  (when (get-in aliases [target :ast])
+    (refuse-write (str op-name " can't change a named result. Pipe it onto the table itself.")))
+  (when (seq group)
+    (refuse-write (str op-name " after group: is not supported. Remove the group:, or select the rows with where:.")))
+  (when-not (scoped? state)
+    (refuse-write (str "Refusing to change every row of `" (table-label aliases target)
+                       "`. Add a where: or a limit: first."))))
+
 (defn build-delete-query
   "`delete!` names the columns that identify the rows to remove, and the
   DELETE matches them against those same columns as selected by the
@@ -465,6 +511,7 @@
   out a row on its own, so deleting on one of them at a time would take
   rows belonging to other records with it."
   [state]
+  (check-write-allowed state "delete!" (:current state))
   (let [{:keys [delete current aliases]} state
         {table :table schema :schema}     (get aliases current)
         {:keys [columns]}                 delete
@@ -489,6 +536,7 @@
   (q column))
 
 (defn- build-single-update-query [state update-alias assignments]
+  (check-write-allowed state "update!" update-alias)
   (let [{:keys [aliases]}              state
         {table :table schema :schema}  (get aliases update-alias)
         set-clause (s/join ", "
@@ -531,7 +579,9 @@
               (= "" (get-in state [:aliases cur :table])))) {:query "" :params nil}
         (= type :delete-action) (build-delete-query state)
         (= type :update-action) {:queries (build-update-queries state)}
-        (= type :update-partial) {:queries (build-update-queries state)}
+        ;; A trailing comma: the assignment is still being typed. Nothing to
+        ;; build, and run-query refuses to run it.
+        (= type :update-partial) {:query "" :params nil}
         (= type :count) (build-count-query state)
         (= type :group) (build-group-query state)
         ;; :paths only generates candidate pine expressions (see hints.paths) -
@@ -570,25 +620,24 @@
   (if (= (-> state :operation :type) :no-op)
     [["No operation"] ["-"]]
     (let [connection-id (state :connection-id)
-          build-result  (build-query state)
-          operation-type (-> state :operation :type)]
+          operation-type (-> state :operation :type)
+          _ (when (= operation-type :update-partial)
+              (throw (ex-info "The update! isn't finished: add an assignment after the comma, or remove the comma."
+                              {:error-type "incomplete"})))
+          build-result  (build-query state)]
       (cond
-        (contains? #{:update-action :update-partial} operation-type)
-        ;; Run update queries; use transaction when multiple tables to rollback all on failure
-        (let [queries (or (:queries build-result)
-                          [{:table nil :query (:query build-result) :params (:params build-result)}])
-              results (if (> (count queries) 1)
-                        (db/run-action-queries-in-transaction connection-id queries)
-                        (mapv (fn [{:keys [table query params]}]
-                                (let [affected (db/run-action-query connection-id {:query query :params params})]
-                                  [(or table "table") affected]))
-                              queries))]
+        ;; Every write runs in a transaction, even a single statement: if it
+        ;; fails part way, nothing is left half-applied. A multi-table
+        ;; update! rolls back all of its tables together.
+        (= :update-action operation-type)
+        (let [results (db/run-action-queries-in-transaction connection-id (:queries build-result))]
           (into [["Table" "Rows updated"]]
                 (map (fn [[t n]] [t n]) results)))
 
-        (contains? #{:delete-action} operation-type)
+        (= :delete-action operation-type)
         (let [{:keys [query params]} build-result
-              affected-rows (db/run-action-query connection-id {:query query :params params})]
+              [[_ affected-rows]] (db/run-action-queries-in-transaction
+                                   connection-id [{:table nil :query query :params params}])]
           [["Rows deleted"] [affected-rows]])
 
         :else
