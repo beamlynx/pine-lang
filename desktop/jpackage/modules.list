@@ -22,12 +22,20 @@
 # jdeps-detected (static analysis of the actual bytecode):
 java.base
 java.desktop
+java.instrument
 java.management
 java.naming
 java.security.jgss
 java.security.sasl
 java.sql
 jdk.unsupported
+#
+# java.instrument arrived with Jetty 12 (ring-jetty-adapter 1.15.5,
+# 2026-10-08). jdeps attributes it to org.eclipse.jetty.ee.webapp, which
+# pine-lang doesn't use, but it is kept because a missing module only fails
+# at runtime in the packaged app. Re-verified on 2026-10-08 with Temurin
+# 21.0.12: the uberjar ran on a jlink image of exactly this list, connected
+# to Postgres 16, and served /build, /eval and the token check.
 # Manually added -- jdeps' static analysis misses these because the paths
 # are reflective/conditional, not direct bytecode references:
 jdk.crypto.ec

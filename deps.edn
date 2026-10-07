@@ -3,17 +3,19 @@
         org.clojure/core.match {:mvn/version "1.1.0"}
         ;; db
         org.clojure/java.jdbc {:mvn/version "0.7.3"}
-        org.postgresql/postgresql {:mvn/version "42.2.24.jre7"}
+        org.postgresql/postgresql {:mvn/version "42.7.14"}
         com.mysql/mysql-connector-j {:mvn/version "8.4.0" :exclusions [com.google.protobuf/protobuf-java]}
         com.zaxxer/HikariCP {:mvn/version "5.0.1"}
         ;; api
-        ring/ring-core {:mvn/version "1.12.1"}
-        ring/ring-defaults {:mvn/version "0.2.1"}
-        ring/ring-jetty-adapter {:mvn/version "1.9.5"}
-        compojure/compojure {:mvn/version "1.5.1"}
+        ring/ring-core {:mvn/version "1.15.5"}
+        ring/ring-defaults {:mvn/version "0.7.1"}
+        ring/ring-jetty-adapter {:mvn/version "1.15.5"}
+        compojure/compojure {:mvn/version "1.7.2"}
         ring/ring-json {:mvn/version "0.5.1"}
         ring-cors/ring-cors {:mvn/version "0.1.13"}
-        ;; chesire/cheshire {:mvn/version "5.10.2"}
+        ;; Declared directly so ring-json's older cheshire (and its
+        ;; jackson-core 2.10) isn't what gets resolved.
+        cheshire/cheshire {:mvn/version "6.2.0"}
         }
 
  :paths ["src"]
@@ -28,6 +30,6 @@
 
            :run {:main-opts ["-m" "pine.core"]}
            :run-dev {:main-opts ["-m" "pine.core-dev"]
-                     :extra-deps {ring/ring-devel {:mvn/version "1.12.1"}}}
+                     :extra-deps {ring/ring-devel {:mvn/version "1.15.5"}}}
            :build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.4"}}
                    :ns-default build}}}
