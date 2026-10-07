@@ -6,6 +6,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Added
 - A string can contain an apostrophe by writing it twice, as in SQL: `where: name = 'O''Brien'`. This works in values blocks too.
 - `/build` reports `writes`, whether the expression changes data, as `/eval` already did. When the SQL can't be built (a refused write, an unresolved join), `/build` still returns the AST and hints, with the reason in `query-error` and `query-error-type`. An error that has a kind now carries it as `error-type` from `/eval` too.
+- **Launch token.** When `PINE_TOKEN` is set, every `/api/` request must send `Authorization: Bearer <token>`, or it is refused with HTTP 401 and `error-type: "unauthorized"`. beamlynx-desktop will set a fresh token each launch, so web pages and other programs on the machine can no longer use its server. Without the variable the server behaves as before, and logs that anyone on the machine can use it.
 
 ### Changed
 - **Breaking:** `/build`'s AST lists named results under `named-results`, not `variables`. "Variable" means a `$name` since 0.48.0, and its report is still `variables` in the response. Inside pine-lang, the state key and the code that passes named results between blocks are renamed the same way. beamlynx-ui's matching change reads the new key.
@@ -20,6 +21,11 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - `/build`'s `doc` was empty when the tab started with a values block. It now comes from the first doc comment in the leading values blocks or the first query block.
 - Block comments after a `select:` column could take seconds to parse, or run the server out of memory: ten took 4 s, twelve exhausted a 2 GB heap. A 1 MB string literal took 7.5 s. Whitespace with comments, and each string literal, are now one token, so parsing is linear. Twelve comments now take under a millisecond and a 1 MB literal 17 ms.
 - `update! name = other_column` set the column to NULL on every row it targeted. It now copies the other column's value. The other column has to belong to the table being changed; naming one from a joined table is an error.
+- The development entry point (`clj -M:run-dev`) listened on every network interface. It listens on loopback, like the real one, unless `PINE_HOST` says otherwise.
+
+### Security
+- When the server listens on loopback (the default), a request whose Host header isn't `localhost`, `127.0.0.1` or `[::1]` is refused with HTTP 403. This stops a web page from reaching the server by rebinding its own domain to 127.0.0.1 (DNS rebinding), with or without a token.
+- Parameters are read from the JSON body only, not from form-encoded bodies or the query string. A form POST is a request a web page can send to another site without the browser asking it first.
 
 ## [0.48.1] - 2026-10-06
 ### Fixed

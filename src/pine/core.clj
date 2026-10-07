@@ -1,5 +1,5 @@
 (ns pine.core
-  (:require [pine.api :refer [app]]
+  (:require [pine.api :refer [app server-config]]
             [ring.adapter.jetty :refer [run-jetty]])
   (:gen-class))
 
@@ -18,7 +18,16 @@
   ;;
   ;; PINE_PORT lets beamlynx-desktop run its dev build next to the installed
   ;; app, each with its own server.
-  (run-jetty app {:port (Integer/parseInt (or (System/getenv "PINE_PORT") "33333"))
-                  :host (or (System/getenv "PINE_HOST") "127.0.0.1")
-                  :join? false}))
+  ;;
+  ;; PINE_TOKEN, when set, is required on every request (see pine.api's
+  ;; wrap-auth). beamlynx-desktop sets a fresh one each launch.
+  (let [host  (or (System/getenv "PINE_HOST") "127.0.0.1")
+        token (not-empty (System/getenv "PINE_TOKEN"))]
+    (reset! server-config {:token token :host host})
+    (println (if token
+               "Launch token: required"
+               "Launch token: not set (anyone on this machine can use this server)"))
+    (run-jetty app {:port (Integer/parseInt (or (System/getenv "PINE_PORT") "33333"))
+                    :host host
+                    :join? false})))
 
