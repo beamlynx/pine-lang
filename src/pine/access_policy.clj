@@ -60,13 +60,26 @@
   and return `xxxxx` for real table/column names, which are not sensitive
   values in the first place. Exempt structurally, the same as an auto-id
   column, not via a configurable rule: there's no legitimate policy under
-  which catalog metadata should be masked."
-  #{"information_schema" "pg_catalog"})
+  which catalog metadata should be masked.
+
+  Only the relations schema discovery needs, not the whole schemas: they
+  also hold pg_stat_activity (the text of every running query, literal
+  values included), pg_shadow and pg_authid (password hashes), and
+  pg_settings. Those are treated like any other table."
+  {"information_schema" #{"tables" "columns" "key_column_usage" "table_constraints"
+                          "referential_constraints" "constraint_column_usage" "schemata" "views"}
+   "pg_catalog"         #{"pg_class" "pg_attribute" "pg_namespace" "pg_type" "pg_constraint"
+                          "pg_index" "pg_description" "pg_tables" "pg_views" "pg_indexes"}})
+
+(defn catalog-relation?
+  "Whether schema.table is one of the catalog relations exempt from the policy."
+  [schema table]
+  (contains? (get catalog-schemas schema) table))
 
 (defn- catalog-column?
   [state alias source]
-  (let [{:keys [schema]} (column-table-info state alias source)]
-    (contains? catalog-schemas schema)))
+  (let [{:keys [schema table]} (column-table-info state alias source)]
+    (catalog-relation? schema table)))
 
 (defn- foreign-key-source-column?
   "Whether `column` is a source column of a detected foreign-key or
@@ -161,10 +174,21 @@
   :columns) that this function has no way to enumerate."
   [{:keys [aliases] :as state} current]
   (let [{:keys [table schema] :as table-info} (get aliases current)]
-    (when (and table-info (not (:ast table-info)))
-      (mapv (fn [{:keys [column]}]
-              {:column column :alias current :source {:table table :schema schema}})
-            (real-columns state current)))))
+    (when (and table-info (not (:ast table-info)) (not (catalog-relation? schema table)))
+      (let [columns (real-columns state current)]
+        ;; Fail closed. With no indexed columns there is nothing to check
+        ;; one by one, and the caller used to fall back to an unredacted
+        ;; `alias.*`. That happened for a table created after the
+        ;; connection was indexed, a MySQL table in another database, and
+        ;; any catalog relation not listed in catalog-schemas.
+        (when (empty? columns)
+          (throw (ex-info (str "`" (if schema (str schema "." table) table)
+                               "` isn't in the schema index, so the access policy can't check its columns. "
+                               "Re-index the connection, or query a table it knows.")
+                          {:error-type "policy" :table table :schema schema})))
+        (mapv (fn [{:keys [column]}]
+                {:column column :alias current :source {:table table :schema schema}})
+              columns)))))
 
 (defn expand-explicit-star
   "`select: alias.*` (as opposed to the implicit current-table default
@@ -179,3 +203,37 @@
   (if (and (empty? column) (= symbol "*"))
     (or (seq (expand-star state alias)) [col])
     [col]))
+
+(defn- where-columns
+  "[alias column] for every column a where: entry names: the compared column,
+  and a column on the right of the comparison (whose alias defaults to the
+  current table)."
+  [current entry]
+  (mapcat (fn [[alias column _cast _op value]]
+            (cond-> [[alias column]]
+              (= :column (:type value))
+              (conj (let [[a c] (:value value)] [(or a current) c]))))
+          (if-let [conditions (:or entry)] conditions [entry])))
+
+(defn check-references
+  "Throws when where:, order: or group: names a column the policy hides.
+  Redaction only touches the SELECT list, so filtering, sorting or grouping
+  on a hidden column still read its values: `where: title like 'a%'`
+  repeated letter by letter recovers a hidden title from row counts alone.
+
+  Exempt: the `id` column (rows are already shown with their id), columns of
+  a named result or checkpoint (its query was built under the same policy,
+  so a hidden column there already holds the redacted literal), and
+  catalog relations."
+  [{:keys [where order group current aliases] :as state} rules]
+  (when (seq rules)
+    (doseq [[alias column] (concat (mapcat #(where-columns current %) where)
+                                   (map (juxt :alias :column) order)
+                                   (map (juxt :alias :column) group))
+            :when (and (not (s/blank? column))
+                       (not= "id" column)
+                       (not (get-in aliases [alias :ast]))
+                       (sensitive-column? state rules {:alias alias :column column}))]
+      (throw (ex-info (str "`" alias "." column "` is hidden by the access policy, so it can't be used in "
+                           "where:, order: or group:.")
+                      {:error-type "policy" :alias alias :column column})))))

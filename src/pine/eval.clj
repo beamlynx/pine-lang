@@ -302,6 +302,10 @@
          flatten)))
 
 (defn- build-bare-select [state]
+  ;; Every SELECT Pine builds goes through here, named results' bodies
+  ;; included, so this is where hidden columns are kept out of where:,
+  ;; order: and group:.
+  (access-policy/check-references state (:access-policy state))
   (let [{:keys [tables _columns limit where aliases]} state
         from         (let [{a :alias} (first tables)
                            {table :table schema :schema} (get aliases a)]
@@ -393,6 +397,7 @@
 (defn- build-inner-select-for-group
   "Build the inner SELECT for a GROUP query CTE. Includes non-aggregate columns only."
   [state]
+  (access-policy/check-references state (:access-policy state))
   (let [{:keys [tables columns where aliases joins]} state
         {a :alias} (first tables)
         {table :table schema :schema} (get aliases a)

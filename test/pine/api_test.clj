@@ -304,3 +304,12 @@
       (is (= 500 (:status r)))
       (is (= "internal" (get-in r [:json :error-type])))
       (is (not (re-find #"secret" (:body r)))))))
+
+(deftest test-build-keeps-hints-when-the-policy-refuses
+  ;; MCP's complete_query builds under the connection's policy. A refused
+  ;; query (here, a table missing from the schema index) must still return
+  ;; the AST and hints, with the refusal in query-error.
+  (let [response (api/api-build ["secrets"] nil :test [{:type "column-type" :allow ["integer"]}])]
+    (is (nil? (:error response)))
+    (is (:ast response))
+    (is (= "policy" (:query-error-type response)))))

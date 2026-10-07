@@ -922,9 +922,42 @@
       (is (clojure.string/includes? query "\"r\" AS ( SELECT \"r_0\".\"id\", 'xxxxx' AS \"title\" FROM \"report\" AS \"r_0\" )"))
       (is (clojure.string/includes? query "SELECT \"r\".* FROM \"r\" AS \"r\""))))
 
-  (testing "column-type rule: GROUP BY a redacted column still runs, but every group collapses to the placeholder - a known tradeoff, not a leak"
-    (is (= "WITH \"x_1\" AS ( SELECT 'xxxxx' AS \"title\" FROM \"report\" AS \"r_0\" ) SELECT \"x_1\".\"title\", COUNT(1) AS \"count\" FROM \"x_1\" GROUP BY \"x_1\".\"title\" LIMIT 10000"
-           (:query (generate "report | group: title => count" [column-type-rule]))))))
+  (testing "a hidden column can't be filtered, sorted or grouped on: that reads its values through row counts"
+    ;; GROUP BY used to run and collapse every group to the placeholder. A
+    ;; group sealed into a checkpoint grouped by the real column, which
+    ;; reveals how many rows share each hidden value, so it is refused too.
+    (doseq [e ["report | group: title => count"
+               "report | where: title like 'a%' | s: id"
+               "report | where: title = 'x' | count:"
+               "report | o: title | s: id"
+               "report | where: id = 1 or title = 'x'"]]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`r_0.title` is hidden by the access policy"
+                            (generate e [column-type-rule]))
+          e))
+    ;; Inside a named result's body as well.
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"hidden by the access policy"
+                          (generate-expressions ["report | where: title = 'x' |= x" "x"] [column-type-rule]))))
+
+  (testing "the id column and allowed columns can still be filtered on"
+    (is (re-find #"WHERE \"r_0\".\"id\" = \?" (:query (generate "report | where: id = 1" [column-type-rule]))))
+    (is (re-find #"COUNT" (:query (generate "report | where: id = 1 | count:" [column-type-rule])))))
+
+  (testing "a named result's columns are already redacted at its source, so filtering on them reveals nothing"
+    (is (:query (generate-expressions ["report |= r" "r | where: title = 'x'"] [column-type-rule]))))
+
+  (testing "a table missing from the schema index is refused, not returned unredacted"
+    ;; It used to fall back to `alias.*`: a table created after indexing, a
+    ;; MySQL table in another database, a catalog relation not listed.
+    (doseq [e ["secrets" "secrets as s | select: s.*" "pg_catalog.pg_stat_activity" "pg_catalog.pg_shadow"]]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"isn't in the schema index" (generate e [column-type-rule])) e))
+    (is (= "policy" (try (generate "secrets" [column-type-rule]) nil
+                         (catch clojure.lang.ExceptionInfo e (:error-type (ex-data e)))))))
+
+  (testing "the catalog relations schema discovery needs stay exempt"
+    (is (= "SELECT \"pc_0\".* FROM \"pg_catalog\".\"pg_class\" AS \"pc_0\" LIMIT 250"
+           (:query (generate "pg_catalog.pg_class" [column-type-rule]))))
+    (is (= "SELECT \"c_0\".* FROM \"information_schema\".\"columns\" AS \"c_0\" LIMIT 250"
+           (:query (generate "information_schema.columns" [column-type-rule]))))))
 
 (deftest test-build-query-mysql
   ;; Every Postgres assertion above must stay byte-identical through this
