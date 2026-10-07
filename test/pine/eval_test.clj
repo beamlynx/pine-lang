@@ -394,12 +394,31 @@
 
   (testing "a date and time binds as a timestamp"
     (is (= {:query "SELECT \"e_0\".id AS \"__e_0__id\", \"e_0\".* FROM \"employee\" AS \"e_0\" WHERE \"e_0\".\"created_at\" > ?::timestamp LIMIT 250"
-            :params [{:type :date :value (java.sql.Timestamp/valueOf "2024-01-01 10:00:00")}]}
+            :params [{:type :date :value (java.sql.Timestamp/valueOf "2024-01-01 10:00:00") :text "2024-01-01 10:00"}]}
            (update (generate "employee | where: created_at > '2024-01-01 10:00'") :params vec))))
 
   (testing "a column on the right of a comparison is qualified with the current table, as the left one is"
     (is (re-find #"WHERE \"e_1\"\.\"name\" = \"e_1\"\.\"country\""
                  (:query (generate "company | employee | where: name = country")))))
+
+  (testing "a date-shaped value against a text column stays exactly as written"
+    ;; report.title is character varying. The parsed timestamp would print
+    ;; as '2024-01-01 10:00:00.0'.
+    (is (= [{:type :string :value "2024-01-01 10:00"}]
+           (vec (:params (generate "report | where: title = '2024-01-01 10:00'")))))
+    (is (= [{:type :string :value "2024-02-31"}]
+           (vec (:params (generate "report | where: title = '2024-02-31'")))))
+    (is (= {:type :string :value "2024-01-01 10:00"}
+           (first (:params (first (:queries (generate "report | where: id = 1 | update! title = '2024-01-01 10:00'"))))))))
+
+  (testing "against a date or time column, a value that isn't a real date is an error"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"'2024-02-31' isn't a valid date"
+                          (generate "x.company | where: created_at > '2024-02-31'"))))
+
+  (testing "NULL stays NULL whatever the column's type"
+    (doseq [db-type ["varchar" "text" "jsonb" "boolean" "uuid" "integer" "timestamp"]]
+      (is (= {:type :symbol :value "NULL"} (dt/convert-value-to-db-type {:type :symbol :value "NULL"} db-type)) db-type))
+    (is (re-find #"SET \"title\" = NULL" (:query (first (:queries (generate "report | where: id = 1 | update! title = null")))))))
 
   (testing "a number given for a text column is compared as text"
     (is (= {:type :string :value "7"} (dt/convert-value-to-db-type (dt/number "7") "text")))

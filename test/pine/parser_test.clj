@@ -689,15 +689,16 @@
 
 (deftest test-dates-and-times
   (let [value #(-> (p (str "x | where: t > '" % "'")) second :value last)]
-    (testing "a date is a java.sql.Date"
-      (is (= {:type :date :value (java.sql.Date/valueOf "2024-01-31")} (value "2024-01-31"))))
+    (testing "a date is a java.sql.Date, keeping the text it was written as"
+      (is (= {:type :date :value (java.sql.Date/valueOf "2024-01-31") :text "2024-01-31"} (value "2024-01-31"))))
     (testing "a date and time is a timestamp, with or without seconds, with a space or a T"
       (is (= (java.sql.Timestamp/valueOf "2024-01-01 10:00:00") (:value (value "2024-01-01 10:00"))))
       (is (= (java.sql.Timestamp/valueOf "2024-01-01 10:00:30") (:value (value "2024-01-01T10:00:30"))))
       (is (= (java.sql.Timestamp/valueOf "2024-01-01 10:00:30.5") (:value (value "2024-01-01 10:00:30.5")))))
-    (testing "an impossible date is an error, not rolled over to the next month"
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"isn't a valid date" (value "2024-02-31")))
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"isn't a valid date" (value "2024-01-01 25:00"))))))
+    (testing "something date-shaped that isn't a real date is a plain string, not rolled over to the next month"
+      ;; Whether that's an error depends on the column: see eval-test.
+      (is (= {:type :string :value "2024-02-31"} (value "2024-02-31")))
+      (is (= {:type :string :value "2024-01-01 25:00"} (value "2024-01-01 25:00"))))))
 
 (deftest test-readable-parse-errors
   (let [error #(:error (parse %))]
