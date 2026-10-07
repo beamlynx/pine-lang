@@ -43,6 +43,8 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - An unqualified table that exists in several schemas takes its columns from the one Postgres would use (`public`, when it's one of them). The columns of every schema used to be merged, typed by whichever came first, which gave wrong value types, join columns and access-policy decisions.
 - Table typeahead ignores case: `Comp` finds `company`.
 - `docs/named-results.md` said a named result's `LIMIT` was dropped. It is kept, and checkpoints depend on it.
+- A date-shaped value against a text column is kept exactly as written. Since the date-time literals added above, `where: body = '2024-01-01 10:00'` on a text column compared against '2024-01-01 10:00:00.0', and a cell saved as that text was stored that way. Something date-shaped that isn't a real date, such as '2024-02-31', is ordinary text; it's an error only against a date or time column.
+- `update! col = null` on a text column wrote the text 'NULL' instead of NULL, and `null` against a boolean, JSON or UUID column was converted to a string. NULL is now left as NULL whatever the column's type.
 
 ### Security
 - When the server listens on loopback (the default), a request whose Host header isn't `localhost`, `127.0.0.1` or `[::1]` is refused with HTTP 403. This stops a web page from reaching the server by rebinding its own domain to 127.0.0.1 (DNS rebinding), with or without a token.

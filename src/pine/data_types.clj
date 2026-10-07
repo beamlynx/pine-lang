@@ -10,20 +10,38 @@
   {:type :number
    :value (Long/parseLong x)})
 
-(defn date
-  "A date or date-time literal. Read strictly: '2024-02-31' is an error.
-  java.sql.Date/valueOf used to roll it over to 2024-03-02 without a word.
-  A time of day makes it a timestamp; it used to be bound as a string,
-  which Postgres refuses to compare with a timestamp column."
+(defn- parse-temporal
+  "A java.sql.Date for 'YYYY-MM-DD', a java.sql.Timestamp when a time
+  follows, or nil when `x` isn't a real date. Strict: java.sql.Date/valueOf
+  used to roll '2024-02-31' over to 2024-03-02 without a word."
   [x]
-  {:type :date
-   :value (try
-            (if (re-find #"[ T]\d" x)
-              (java.sql.Timestamp/valueOf (java.time.LocalDateTime/parse (clojure.string/replace x " " "T")))
-              (java.sql.Date/valueOf (java.time.LocalDate/parse x)))
-            (catch java.time.format.DateTimeParseException _
-              (throw (ex-info (str "'" x "' isn't a valid date. Write it as YYYY-MM-DD, optionally followed by HH:MM or HH:MM:SS.")
-                              {:error-type "parse" :value x}))))})
+  (try
+    (if (re-find #"[ T]\d" x)
+      (java.sql.Timestamp/valueOf (java.time.LocalDateTime/parse (clojure.string/replace x " " "T")))
+      (java.sql.Date/valueOf (java.time.LocalDate/parse x)))
+    (catch java.time.format.DateTimeParseException _ nil)))
+
+(defn- invalid-date [x]
+  (ex-info (str "'" x "' isn't a valid date. Write it as YYYY-MM-DD, optionally followed by HH:MM or HH:MM:SS.")
+           {:error-type "parse" :value x}))
+
+(defn date
+  "A literal shaped like a date or date-time. It keeps its source text in
+  :text, because the column decides what it is: against a text column it
+  stays exactly the text that was written, against a date or time column it
+  is the parsed value. Something date-shaped that isn't a real date, like
+  '2024-02-31', is a plain string; it is an error only against a date or
+  time column."
+  [x]
+  (if-let [v (parse-temporal x)]
+    {:type :date :value v :text x}
+    (string x)))
+
+(defn- literal-text
+  "The text a literal was written as. A date keeps its source text; the
+  parsed value would print as '2024-01-01 10:00:00.0'."
+  [value]
+  (if (= :date (:type value)) (:text value) (:value value)))
 
 (defn variable
   "A `$name` in the expression: a value supplied with the request (see
@@ -65,13 +83,11 @@
   ([alias column] {:type :column :value [alias column nil]})
   ([alias column cast] {:type :column :value [alias column cast]}))
 
-(defn convert-value-to-db-type
-  "Convert a value to the appropriate database type based on the column's schema type.
-   Returns the value wrapped in the appropriate data type function."
+(defn- convert-literal
   [value db-type]
   (case db-type
-    "jsonb" (jsonb (:value value))
-    "json" (jsonb (:value value))
+    "jsonb" (jsonb (literal-text value))
+    "json" (jsonb (literal-text value))
     "uuid" (uuid (:value value))
     "boolean" (pine-boolean (:value value))
     "bool" (pine-boolean (:value value))
@@ -96,16 +112,32 @@
     ;; where information_schema.columns would have said "character".
     ;; str: a number given for a text column ($n = 7, say) is compared as
     ;; text. Bound as a number, Postgres refused `varchar = bigint`.
-    ("varchar" "text" "char" "character" "bpchar" "longtext" "mediumtext" "tinytext") (string (str (:value value)))
+    ;; Only literals are converted; a symbol (true, false) is left alone.
+    ("varchar" "character varying" "text" "char" "character" "bpchar" "longtext" "mediumtext" "tinytext")
+    (if (#{:string :number :date} (:type value))
+      (string (str (literal-text value)))
+      value)
     ("date" "timestamp" "timestamptz" "timestamp without time zone" "timestamp with time zone" "datetime")
     (if (= (:type value) :string)
-      (try
-        (date (:value value))
-        (catch Exception _
-          value))
+      ;; A string against a date or time column has to be a date.
+      ;; '2024-02-31' or 'yesterday' used to be bound as text, which
+      ;; Postgres refuses to compare with a timestamp.
+      (if-let [v (parse-temporal (:value value))]
+        {:type :date :value v :text (:value value)}
+        (throw (invalid-date (:value value))))
       value)
     ;; Default: return value as-is
     value))
+
+(defn convert-value-to-db-type
+  "Convert a value to the appropriate database type based on the column's schema type.
+   Returns the value wrapped in the appropriate data type function."
+  [value db-type]
+  (if (and (= :symbol (:type value)) (= "NULL" (clojure.string/upper-case (str (:value value)))))
+    ;; NULL is NULL whatever the column. Converted, it became the text
+    ;; 'NULL' on a text column, or a 'NULL' string bound to a boolean.
+    value
+    (convert-literal value db-type)))
 
 (defn- columns-for [references table-name schema]
   (if schema
