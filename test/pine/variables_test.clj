@@ -267,3 +267,14 @@
                  (eval/formatted-query (generate "company | where: name = $a | where: country = $b" {"a" "x?" "b" "y"})))))
   (testing "a quote inside a value is doubled, as SQL writes it"
     (is (re-find #"'O''Brien'" (eval/formatted-query (generate "company | where: name = $a" {"a" "O'Brien"}))))))
+
+(deftest test-build-with-values-first
+  (testing "a cursor above the query (in a values block) is ignored, not a failed build"
+    (let [response (post "/api/v1/build" {:expressions ["$n = 'Acme'" "company | where: name = $n"]
+                                          :cursor {:line -2 :character 3}
+                                          :connection-id :test})]
+      (is (nil? (:error response)))
+      (is (re-find #"'Acme'" (:query response)))))
+  (testing "the tab's doc can sit on the values block or on the query below it"
+    (is (= "My doc" (:doc (post "/api/v1/build" {:expressions ["-- My doc\n$n = 'Acme'" "company | where: name = $n"] :connection-id :test}))))
+    (is (= "Find a company" (:doc (post "/api/v1/build" {:expressions ["$n = 'Acme'" "/* Find a company */\ncompany | where: name = $n"] :connection-id :test}))))))

@@ -10,10 +10,10 @@
   "SQL for the last of several blocks, threading named results like api.clj."
   [expressions]
   (let [{:keys [state]}
-        (reduce (fn [{:keys [variables]} expression]
-                  (let [st (ast/generate (:result (parser/parse expression)) :test nil nil variables [])]
-                    {:variables (merge variables (:pending-assignments st)) :state st}))
-                {:variables {}}
+        (reduce (fn [{:keys [named-results]} expression]
+                  (let [st (ast/generate (:result (parser/parse expression)) :test nil nil named-results [])]
+                    {:named-results (merge named-results (:pending-assignments st)) :state st}))
+                {:named-results {}}
                 expressions)]
     (eval/build-query state)))
 

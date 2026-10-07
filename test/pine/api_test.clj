@@ -40,18 +40,18 @@
                                "z | "]
                               nil :test))]
 
-    (testing "ast.variables entries are pruned like pending-assignments, not raw snapshots"
-      ;; A raw variable snapshot carries :variables and :references from
+    (testing "ast.named-results entries are pruned like pending-assignments, not raw snapshots"
+      ;; A raw variable snapshot carries :named-results and :references from
       ;; pre-handle/post-handle. Left unpruned, each chained |= re-embeds every
       ;; earlier variable's own full snapshot inside the new one, growing the
       ;; response payload superlinearly with the number of chained expressions
       ;; instead of linearly.
-      (is (= #{"x" "y" "z"} (set (keys (:variables chained-blocks)))))
-      (doseq [[name var-ast] (:variables chained-blocks)]
+      (is (= #{"x" "y" "z"} (set (keys (:named-results chained-blocks)))))
+      (doseq [[name var-ast] (:named-results chained-blocks)]
         (testing (str "variable " name)
           (is (= #{:tables :selected-tables :joins :columns} (set (keys var-ast)))
               "should only carry the fields VariableAst (client.ts) actually uses")
-          (is (not (contains? var-ast :variables))
+          (is (not (contains? var-ast :named-results))
               "must not recursively embed earlier variables' own snapshots")
           (is (not (contains? var-ast :references))
               "must not carry the full schema references map"))))
@@ -61,10 +61,10 @@
       ;; var-ast) for the query builder's CTE generation. Left in place, that
       ;; recursively re-embeds the variable's entire state — and everything IT
       ;; wraps in turn — inside every table list that references it, one level
-      ;; down from the :variables map itself.
+      ;; down from the :named-results map itself.
       (doseq [table (:selected-tables chained-blocks)]
         (assert-clean-table table))
-      (doseq [[_name var-ast] (:variables chained-blocks)
+      (doseq [[_name var-ast] (:named-results chained-blocks)
               table (concat (:tables var-ast) (:selected-tables var-ast))]
         (assert-clean-table table)))
 
@@ -79,12 +79,12 @@
     (testing "an earlier variable's own entry is unaffected by how many blocks chain after it"
       ;; The actual bug wasn't about absolute size (which is arbitrary and brittle to
       ;; pin to a byte count) — it was that x's entry kept growing every time another
-      ;; block chained onto it. Pruning removes the machinery (:variables/:references/
+      ;; block chained onto it. Pruning removes the machinery (:named-results/:references/
       ;; :ast) that let that happen, so x's pruned entry here should be byte-for-byte
       ;; identical whether it's standing alone or three more blocks have chained onto
       ;; it since.
       (is (= (get-in single-block [:pending-assignments "x"])
-             (get-in chained-blocks [:variables "x"]))))))
+             (get-in chained-blocks [:named-results "x"]))))))
 
 (deftest test-api-build-doc
   (testing "the doc comment at the top of the expression comes back on the response"

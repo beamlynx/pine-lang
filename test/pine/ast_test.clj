@@ -19,15 +19,15 @@
 
 (defn- gen-with-variables
   "Evaluate expressions sequentially, threading variables forward. Returns the
-  final :variables map, so an individual variable's own var-ast (:columns,
+  final :named-results map, so an individual variable's own var-ast (:columns,
   :source, etc.) can be inspected directly."
   [expressions]
-  (:variables
-   (reduce (fn [{:keys [variables]} expr]
+  (:named-results
+   (reduce (fn [{:keys [named-results]} expr]
              (let [{:keys [result]} (parser/parse expr)
-                   state (ast/generate result :test expr nil variables)]
-               {:variables (merge variables (:pending-assignments state))}))
-           {:variables {}}
+                   state (ast/generate result :test expr nil named-results)]
+               {:named-results (merge named-results (:pending-assignments state))}))
+           {:named-results {}}
            expressions)))
 
 (deftest test-ast

@@ -350,7 +350,7 @@
 ;; todo: spec for the :value for a :table
 (defn handle [state value]
   (let [{:keys [table]} value
-        var-ast (or (get-in state [:variables table])
+        var-ast (or (get-in state [:named-results table])
                     (get-in state [:pending-assignments table]))]
     (if var-ast
       (handle-as-variable state value var-ast)

@@ -39,7 +39,7 @@
   its CTE. Throws when the name isn't a named result, or when it selects
   every column or more than one."
   [state n]
-  (let [var-ast (or (get-in state [:variables n]) (get-in state [:pending-assignments n]))
+  (let [var-ast (or (get-in state [:named-results n]) (get-in state [:pending-assignments n]))
         columns (remove :auto-id (:columns var-ast))
         column-name #(or (:column-alias %) (:column %))]
     (cond
@@ -57,7 +57,7 @@
       :else [var-ast (column-name (first columns))])))
 
 (defn- named-result? [state n]
-  (or (contains? (:variables state) n) (contains? (:pending-assignments state) n)))
+  (or (contains? (:named-results state) n) (contains? (:pending-assignments state) n)))
 
 (defn- refuse-named-result-as-column
   "`where: id = x` reads `x` as a column of the current table. When `x` is a

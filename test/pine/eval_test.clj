@@ -24,12 +24,12 @@
    (generate-expressions expressions []))
   ([expressions access-policy]
    (let [{:keys [last-state]}
-         (reduce (fn [{:keys [variables]} expr]
+         (reduce (fn [{:keys [named-results]} expr]
                    (let [{:keys [result]} (parser/parse expr)
-                         state (ast/generate result :test nil nil variables access-policy)]
-                     {:variables (merge variables (:pending-assignments state))
+                         state (ast/generate result :test nil nil named-results access-policy)]
+                     {:named-results (merge named-results (:pending-assignments state))
                       :last-state state}))
-                 {:variables {} :last-state nil}
+                 {:named-results {} :last-state nil}
                  expressions)]
      (eval/build-query last-state))))
 
@@ -52,12 +52,12 @@
    (generate-mysql-expressions expressions []))
   ([expressions access-policy]
    (let [{:keys [last-state]}
-         (reduce (fn [{:keys [variables]} expr]
+         (reduce (fn [{:keys [named-results]} expr]
                    (let [{:keys [result]} (parser/parse expr)
-                         state (ast/generate result :test-mysql nil nil variables access-policy)]
-                     {:variables (merge variables (:pending-assignments state))
+                         state (ast/generate result :test-mysql nil nil named-results access-policy)]
+                     {:named-results (merge named-results (:pending-assignments state))
                       :last-state state}))
-                 {:variables {} :last-state nil}
+                 {:named-results {} :last-state nil}
                  expressions)]
      (eval/build-query last-state))))
 

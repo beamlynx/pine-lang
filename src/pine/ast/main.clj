@@ -7,11 +7,11 @@
   which makes hints, prettification, and multiple output formats possible without
   re-parsing.
 
-  How variables join: a variable's own :columns (see ast/select.clj) each carry a
+  How named results join: a named result's own :columns (see ast/select.clj) each carry a
   :source - the real table they trace back to, resolved one hop at a time as each
-  variable is built, so it's always a real table by the time anything reads it, no
-  matter how many variables are chained. ast/table.clj's resolve-table reads that
-  directly at join time, live - there's no separate pre-seeding step; a variable's
+  named result is built, so it's always a real table by the time anything reads it, no
+  matter how many named results are chained. ast/table.clj's resolve-table reads that
+  directly at join time, live - there's no separate pre-seeding step; a named result's
   references entry is never faked into looking like a real table's."
   (:require
    [clojure.string :as str]
@@ -37,8 +37,8 @@
             :connection-id nil
             :references {}
             :access-policy []      ;; vector of rule maps (pine.access-policy); empty/absent = no redaction
-            :variables {}               ;; {"varname" <nested-AST>}, populated from |= assignments in prior expressions
-            :assign    nil              ;; variable name from the last |= op in this expression
+            :named-results {}           ;; {"name" <nested-AST>}, populated from |= assignments in prior expressions
+            :assign    nil              ;; named result name from the last |= op in this expression
             :pending-assignments {}     ;; {"varname" <state-snapshot>} accumulated by |= ops in this expression
             :expression      nil          ;; Expression string for cursor-aware hints
             :cursor          nil          ;; Cursor position {:line N :character M} (zero-indexed)
@@ -92,7 +92,7 @@
             ;; ---
             ;; Tracks auto-generated CTE names (__pine_0__, __pine_1__, ...).
             ;; This default is immediately overridden by pre-handle, which
-            ;; derives the real starting count from already-known variables -
+            ;; derives the real starting count from already-known named results -
             ;; see next-auto-cte-count.
             :auto-cte-count   0
             ;; Set after a checkpoint op (group/limit) to signal the next table op
@@ -110,8 +110,8 @@
   explicit |= names that really are unique) silently dropped one of them.
 
   The names only need to be unique, not contiguous - so instead of parsing
-  __pine_N__ back out of variables to find the highest N used, just start
-  counting from how many variables already exist. variables only ever grows
+  __pine_N__ back out of the named results to find the highest N used, just start
+  counting from how many named results already exist. named-results only ever grows
   across expressions (see api.clj's evaluate-expressions), and each
   expression's own auto-names always add at least that many new keys to it -
   every one becomes its own top-level entry, exactly like an explicit |= name
@@ -119,22 +119,22 @@
   used. By induction, seeding from the current count can never collide with a
   number a prior expression already claimed, even though later expressions
   will end up skipping some numbers (e.g. ones used by explicit |= names)."
-  [variables]
-  (count variables))
+  [named-results]
+  (count named-results))
 
 (defn pre-handle
-  ([state connection-id ops-count expression cursor variables]
-   (pre-handle state connection-id ops-count expression cursor variables []))
-  ([state connection-id ops-count expression cursor variables access-policy]
+  ([state connection-id ops-count expression cursor named-results]
+   (pre-handle state connection-id ops-count expression cursor named-results []))
+  ([state connection-id ops-count expression cursor named-results access-policy]
    (-> state
        (assoc :references (db/init-references connection-id))
        (assoc :connection-id connection-id)
        (assoc :pending-count ops-count)
        (assoc :expression expression)
        (assoc :cursor cursor)
-       (assoc :variables variables)
+       (assoc :named-results named-results)
        (assoc :access-policy (or access-policy []))
-       (assoc :auto-cte-count (next-auto-cte-count variables)))))
+       (assoc :auto-cte-count (next-auto-cte-count named-results)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Checkpoint helpers
@@ -165,7 +165,7 @@
   "Store snapshot under cname, reset the query-building state, then inject
   cname as the first table so subsequent ops compose on top of it. Nothing
   needs seeding into :references - table/resolve-table reads cname's own
-  :source-tagged :columns live, the same as any other variable."
+  :source-tagged :columns live, the same as any other named result."
   [state cname snapshot]
   (-> state
       (assoc-in [:pending-assignments cname] snapshot)
@@ -238,7 +238,7 @@
     ;; :paths adds no table/join of its own - the target it names is already
     ;; fully captured in :operation by handle-ops, which is all
     ;; hints/generate-path-hints needs. :current is deliberately left
-    ;; untouched, so it still points at whatever real table/variable the
+    ;; untouched, so it still points at whatever real table/named result the
     ;; pipe left off at - that's the path search's starting point.
     :paths state
     ;; No operations
@@ -294,7 +294,7 @@
 (defn- generate-truncated-state
   "Generate state for truncated expression at cursor position.
    Keep references for hint generation."
-  [expression cursor connection-id variables]
+  [expression cursor connection-id named-results]
   (let [truncated-expr (truncate-at-cursor expression cursor)
         {:keys [result error]} (parser/parse truncated-expr)]
     (if (or error (nil? result))
@@ -303,7 +303,7 @@
       ;; Successfully parsed, build state without going through post-handle
       ;; to preserve references for hint generation
       (-> state
-          (pre-handle connection-id (count result) nil nil variables)
+          (pre-handle connection-id (count result) nil nil named-results)
           (handle-ops result)))))
 
 (defn- offset->position
@@ -362,7 +362,7 @@
       ;; :references is normally internal-only scaffolding, dropped before the
       ;; state is used further - but when :access-policy is non-empty, eval.clj
       ;; needs it at SQL-render time to resolve each column's real DB type/table
-      ;; (see pine.access-policy). Nested variable/CTE snapshots (taken earlier,
+      ;; (see pine.access-policy). Nested named result/CTE snapshots (taken earlier,
       ;; via assign/handle) already carry :references regardless, since this
       ;; dissoc only ever runs once, on the final top-level state.
       (#(if (seq (:access-policy %)) % (dissoc % :references)))))
@@ -374,14 +374,14 @@
    (generate parse-tree connection-id nil nil {}))
   ([parse-tree connection-id expression cursor]
    (generate parse-tree connection-id expression cursor {}))
-  ([parse-tree connection-id expression cursor variables]
-   (generate parse-tree connection-id expression cursor variables []))
-  ([parse-tree connection-id expression cursor variables access-policy]
+  ([parse-tree connection-id expression cursor named-results]
+   (generate parse-tree connection-id expression cursor named-results []))
+  ([parse-tree connection-id expression cursor named-results access-policy]
    (let [full-state (-> state
-                        (pre-handle connection-id (count parse-tree) expression cursor variables access-policy)
+                        (pre-handle connection-id (count parse-tree) expression cursor named-results access-policy)
                         (handle-ops parse-tree))
          truncated-state (when (and cursor expression)
-                           (generate-truncated-state expression cursor connection-id variables))]
+                           (generate-truncated-state expression cursor connection-id named-results))]
      (-> (post-handle full-state truncated-state)
          ;; Every operation's type, in order - not just the terminal one that
          ;; :operation holds and that build-query dispatches on. Callers that

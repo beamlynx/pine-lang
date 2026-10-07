@@ -19,7 +19,7 @@
   "Every variable currently in scope: already-defined ones plus any assigned
   earlier in this same expression."
   [state]
-  (merge (:variables state) (:pending-assignments state)))
+  (merge (:named-results state) (:pending-assignments state)))
 
 (defn- schemas-containing-table
   "Every schema (from the schema-qualified index) that has this table. Used
