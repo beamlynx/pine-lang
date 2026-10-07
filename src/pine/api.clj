@@ -496,6 +496,82 @@
                                       :error "Request body larger than 1 MB."})}
         (handler request)))))
 
+;; ---------------------------------------------------------------------------
+;; Who may call this server
+;; ---------------------------------------------------------------------------
+;;
+;; The server binds loopback by default (core.clj), but that alone doesn't
+;; keep other callers out. Any web page in the person's browser can send it
+;; requests, and every program on the machine can. Two checks close that:
+;;
+;; - The launch token. beamlynx-desktop makes a random one each launch and
+;;   passes it as PINE_TOKEN; its UI sends it as `Authorization: Bearer`.
+;;   With a token set, every /api/ request without it is refused.
+;; - The Host header. When bound to loopback, a request must name a loopback
+;;   host. A web page that rebinds its own domain to 127.0.0.1 (DNS
+;;   rebinding) sends its own domain here, so it is refused even without a
+;;   token.
+
+(defonce ^{:doc "The launch token and bind host. Read from the environment;
+  core.clj sets it again from what it actually binds, and tests reset! it."}
+  server-config
+  (atom {:token (not-empty (System/getenv "PINE_TOKEN"))
+         :host  (or (System/getenv "PINE_HOST") "127.0.0.1")}))
+
+(defn- json-error [status error-type message]
+  {:status status
+   :headers {"Content-Type" "application/json"}
+   :body (json/generate-string {:error-type error-type :error message})})
+
+(defn- token-matches? [expected header]
+  (and (string? header)
+       (str/starts-with? header "Bearer ")
+       ;; Constant time, so the comparison doesn't leak how much matched.
+       (java.security.MessageDigest/isEqual
+        (.getBytes ^String expected "UTF-8")
+        (.getBytes ^String (subs header 7) "UTF-8"))))
+
+(defn wrap-auth
+  "With a launch token configured, refuse every /api/ request that doesn't
+  carry it. OPTIONS is let through so the browser's CORS preflight works; the
+  real request after it is checked."
+  [handler]
+  (fn [request]
+    (let [token (:token @server-config)]
+      (if (and token
+               (not= :options (:request-method request))
+               (str/starts-with? (or (:uri request) "") "/api/")
+               (not (token-matches? token (get-in request [:headers "authorization"]))))
+        (json-error 401 "unauthorized" "This server requires the launch token.")
+        (handler request)))))
+
+(defn- loopback-bind? [host]
+  (boolean (or (#{"localhost" "::1" "[::1]"} host)
+               (str/starts-with? (or host "") "127."))))
+
+(defn- host-name
+  "The host part of a Host header: `localhost:33333` -> `localhost`,
+  `[::1]:33333` -> `[::1]`. An IPv6 literal keeps its brackets, and its own
+  colons are not mistaken for a port."
+  [header]
+  (if (str/starts-with? header "[")
+    (subs header 0 (inc (or (str/index-of header "]") (dec (count header)))))
+    (first (str/split header #":" 2))))
+
+(def ^:private loopback-host-names #{"localhost" "127.0.0.1" "[::1]"})
+
+(defn wrap-host-check
+  "When bound to loopback, refuse a request whose Host header names anything
+  else. A request with no Host header (HTTP/1.0) is let through."
+  [handler]
+  (fn [request]
+    (let [header (get-in request [:headers "host"])]
+      (if (and header
+               (loopback-bind? (:host @server-config))
+               (not (loopback-host-names (str/lower-case (host-name header)))))
+        (json-error 403 "forbidden" "Host header not allowed.")
+        (handler request)))))
+
 ;; TODO: POST method should return 401
 
 (defroutes app-routes
@@ -570,7 +646,12 @@
       wrap-json-response
       wrap-exception-logging
       wrap-logger
-      (wrap-defaults api-defaults)
+;; Parameters come from the JSON body only. api-defaults also reads
+      ;; form-encoded bodies and the query string; a form POST is a CORS
+      ;; "simple request" that a web page can send without a preflight.
+      (wrap-defaults (assoc-in api-defaults [:params :urlencoded] false))
       wrap-body-limit
+      wrap-auth
+      wrap-host-check
       (wrap-cors :access-control-allow-origin [#".*"]
                  :access-control-allow-methods [:get :post :put :delete])))

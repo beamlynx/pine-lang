@@ -171,3 +171,91 @@
 
   (testing "an update! with a trailing comma"
     (is (= "incomplete" (:error-type (api/api-eval ["company | where: id = 1 | u! name = 'x',"] :test))))))
+
+(defn- request
+  ([method uri] (request method uri {}))
+  ([method uri headers]
+   (api/app {:request-method method
+             :uri uri
+             :headers (merge {"content-type" "application/json"} headers)
+             :body (java.io.ByteArrayInputStream. (.getBytes "{}" "UTF-8"))})))
+
+(defmacro ^:private with-config [config & body]
+  `(let [before# @api/server-config]
+     (reset! api/server-config ~config)
+     (try ~@body (finally (reset! api/server-config before#)))))
+
+(deftest test-launch-token
+  (with-config {:token "secret" :host "127.0.0.1"}
+    (testing "without the token, every /api/ request is refused"
+      (is (= 401 (:status (request :post "/api/v1/sql"))))
+      (is (= 401 (:status (request :get "/api/v1/connections"))))
+      (is (= 401 (:status (request :post "/api/v1/sql" {"authorization" "Bearer wrong"}))))
+      (is (= 401 (:status (request :post "/api/v1/sql" {"authorization" "secret"})))))
+
+    (testing "the 401 says why, and carries CORS headers so a browser can read it"
+      (let [r (request :post "/api/v1/sql" {"origin" "https://evil.example"})]
+        (is (= "unauthorized" (:error-type (json/parse-string (:body r) true))))
+        (is (= "https://evil.example" (get-in r [:headers "Access-Control-Allow-Origin"])))))
+
+    (testing "with the token, the request reaches its handler"
+      (let [r (request :post "/api/v1/sql" {"authorization" "Bearer secret"})]
+        (is (not= 401 (:status r)))))
+
+    (testing "the CORS preflight isn't refused, so the real request can follow"
+      (let [r (request :options "/api/v1/sql" {"origin" "http://localhost:3000"
+                                               "access-control-request-method" "POST"})]
+        (is (= 200 (:status r)))
+        (is (get-in r [:headers "Access-Control-Allow-Origin"])))))
+
+  (with-config {:token nil :host "127.0.0.1"}
+    (testing "with no token configured, nothing is required"
+      (is (not= 401 (:status (request :get "/api/v1/connections")))))))
+
+(deftest test-host-check
+  (with-config {:token nil :host "127.0.0.1"}
+    (testing "a loopback-bound server refuses a request naming another host (DNS rebinding)"
+      (let [r (request :get "/api/v1/connections" {"host" "evil.example:33333"})]
+        (is (= 403 (:status r)))
+        (is (= "forbidden" (:error-type (json/parse-string (:body r) true))))))
+
+    (testing "loopback names, with or without a port, are fine"
+      (doseq [host ["localhost:33333" "127.0.0.1:33333" "[::1]:33333" "localhost" "LOCALHOST:1"]]
+        (is (not= 403 (:status (request :get "/api/v1/connections" {"host" host}))) host)))
+
+    (testing "an IPv6 literal that isn't loopback is refused, its colons not read as a port"
+      (is (= 403 (:status (request :get "/api/v1/connections" {"host" "[::2]:33333"}))))))
+
+  (with-config {:token nil :host "0.0.0.0"}
+    (testing "a server bound to every interface skips the check"
+      (is (not= 403 (:status (request :get "/api/v1/connections" {"host" "pine.example"})))))))
+
+(deftest test-json-params-only
+  ;; A form POST is a CORS "simple request": a web page can send one without a
+  ;; preflight. The route must not read parameters from it, or from the query
+  ;; string.
+  (let [seen (atom ::not-called)]
+    (with-redefs [api/api-sql (fn [query _] (reset! seen query) {})]
+      (testing "a form-encoded body is not read as parameters"
+        (api/app {:request-method :post
+                  :uri "/api/v1/sql"
+                  :headers {"content-type" "application/x-www-form-urlencoded"}
+                  :body (java.io.ByteArrayInputStream. (.getBytes "query=select+1" "UTF-8"))})
+        (is (nil? @seen)))
+
+      (testing "nor is the query string"
+        (reset! seen ::not-called)
+        (api/app {:request-method :post
+                  :uri "/api/v1/sql"
+                  :query-string "query=select+1"
+                  :headers {"content-type" "application/json"}
+                  :body (java.io.ByteArrayInputStream. (.getBytes "{}" "UTF-8"))})
+        (is (nil? @seen)))
+
+      (testing "a JSON body is"
+        (reset! seen ::not-called)
+        (api/app {:request-method :post
+                  :uri "/api/v1/sql"
+                  :headers {"content-type" "application/json"}
+                  :body (java.io.ByteArrayInputStream. (.getBytes "{\"query\": \"select 1\"}" "UTF-8"))})
+        (is (= "select 1" @seen))))))
