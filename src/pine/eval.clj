@@ -477,6 +477,17 @@
     {:query (str "DELETE FROM " (q schema table) " WHERE " target " IN ( "  (in-subquery query) " )")
      :params params}))
 
+(defn- update-source-column
+  "SQL for a column on the right of an `update!` assignment. UPDATE has no
+  alias in scope, so the column is written bare, and it has to belong to the
+  table being updated."
+  [update-alias {[alias column] :value}]
+  (when (and alias (not= alias update-alias))
+    (throw (ex-info (str "update! can only copy a column of the table it changes. `"
+                         alias "." column "` is from another table.")
+                    {:alias alias :column column})))
+  (q column))
+
 (defn- build-single-update-query [state update-alias assignments]
   (let [{:keys [aliases]}              state
         {table :table schema :schema}  (get aliases update-alias)
@@ -485,7 +496,7 @@
                                   (let [{:keys [alias column]} column]
                                     (str (q column) " = " (cond
                                                             (= (:type value) :symbol) (:value value)
-                                                            (= (:type value) :column) (let [{:keys [alias column]} value] (q alias column))
+                                                            (= (:type value) :column) (update-source-column update-alias value)
                                                             :else (auto-cast-placeholder (:type value))))))
                                 assignments))
         state-for-subquery (-> state
