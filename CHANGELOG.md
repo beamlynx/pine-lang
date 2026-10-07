@@ -20,6 +20,8 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - A query ending in `group:` returns at most 10 000 groups. A `group:` sealed into a checkpoint keeps every group.
 - Raw SQL (`/api/v1/sql`) returns at most 10 000 rows, followed by a row saying it was cut.
 - Each connection keeps up to three database connections, not one, so a slow query no longer makes every other request on that connection wait 10 seconds and fail.
+- The Docker image runs on Java 21 (Temurin), like the desktop runtime. It used the end-of-life openjdk:11 Debian buster image. Jetty 12 needs Java 17 or later.
+- The desktop runtime's module list (`desktop/jpackage/modules.list`) adds `java.instrument`, which Jetty 12 references.
 
 ### Fixed
 - A `/build` cursor before the start of the expression, which beamlynx-ui sent with the cursor in a values block above the query, made the build fail with `"error": null`. Such a cursor is now ignored, and a failed build always says something: an exception with no message reports its type.
@@ -37,6 +39,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - A connection's host, port, database name and schema are checked before the server builds the connection string. A value containing `?` or `&` used to add driver options: `allowLoadLocalInfile=true` on MySQL, `socketFactory=...` on Postgres. Such a value is now refused with `error-type: "bad-connection"`, naming the field.
 - MySQL connections set `allowLoadLocalInfile=false` and `allowUrlInLocalInfile=false`, so a MySQL server can never ask pine-lang for a local file.
 - An unexpected error returns HTTP 500 with a generic message. The real exception goes only to the server log, since its message can contain internal details.
+- Updated the PostgreSQL driver from 42.2.24 to 42.7.14, closing CVE-2022-21724, CVE-2022-26520, CVE-2022-31197 and CVE-2024-1597. The web server moves from Jetty 9.4.44 (September 2021) to Jetty 12.1 through ring-jetty-adapter 1.15.5, and the JSON library to cheshire 6.2 with jackson-core 2.21. ring-core, ring-defaults and compojure are updated too.
 
 ## [0.48.1] - 2026-10-06
 ### Fixed
