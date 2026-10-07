@@ -622,3 +622,48 @@
   (testing "A comment between operations is still dropped"
     (is (= "company\n | count:"
            (:result (prettify "company | /* mid-pipe */ count:"))))))
+
+(defn- elapsed-ms [f]
+  (let [start (System/nanoTime)]
+    (f)
+    (/ (- (System/nanoTime) start) 1e6)))
+
+(deftest test-parse-time-is-linear
+  ;; Whitespace and comments used to be a repetition of small tokens, used as
+  ;; ws* and ws+, so a run of comments could be split into tokens in many
+  ;; ways. Ten block comments after a select: took 4 s; twelve ran a 2 GB
+  ;; heap out of memory. And a string literal was one parse node per
+  ;; character: 1 MB took 7.5 s.
+  (testing "block comments after a select: column"
+    (let [expression (str "user | s: id " (apply str (repeat 200 "/**/ ")))]
+      (is (:result (parse expression)))
+      (is (< (elapsed-ms #(parse expression)) 500))))
+
+  (testing "thousands of comments don't overflow the regex engine's stack"
+    (is (:result (parse (str (apply str (repeat 5000 "/**/ ")) "user"))))
+    (is (:result (parse (str "user " (apply str (repeat 5000 "-- x\n")))))))
+
+  (testing "a 1 MB string literal"
+    (let [expression (str "user | where: name = '" (apply str (repeat 1000000 "a")) "'")]
+      (is (:result (parse expression)))
+      (is (< (elapsed-ms #(parse expression)) 2000)))))
+
+(deftest test-string-apostrophes
+  (testing "an apostrophe inside a string is written twice"
+    (is (= {:type :string :value "O'Brien"}
+           (-> (p "user | where: name = 'O''Brien'") second :value last))))
+
+  (testing "an empty string is still an empty string"
+    (is (= {:type :string :value ""}
+           (-> (p "user | where: name = ''") second :value last))))
+
+  (testing "in lists, including an empty string next to doubled quotes"
+    (is (= [{:type :string :value "a"} {:type :string :value ""} {:type :string :value "b'c"}]
+           (-> (p "user | where: name in ('a', '', 'b''c')") second :value last))))
+
+  (testing "update! values"
+    (is (= {:type :string :value "it's"}
+           (-> (p "user | update! name = 'it''s'") second :value :assignments first :value))))
+
+  (testing "a date is still a date"
+    (is (= :date (-> (p "user | where: created_at > '2024-01-01'") second :value last :type)))))

@@ -1,5 +1,6 @@
 (ns pine.api-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [cheshire.core :as json]
+            [clojure.test :refer [deftest is testing]]
             [pine.api :as api]))
 
 (defn- assert-clean-table [table]
@@ -113,3 +114,25 @@
     (let [response (api/api-build ["/* Active tenants */ tenant | limit: 1"] nil :test)]
       (is (= "/* Active tenants */\ntenant\n | limit: 1"
              (get-in response [:ast :prettified]))))))
+
+(deftest test-size-caps
+  (let [long-expression (str "company | where: name = '" (apply str (repeat 70000 "a")) "'")
+        post (fn [uri body]
+               (api/app {:request-method :post
+                         :uri uri
+                         :headers {"content-type" "application/json"}
+                         :body (java.io.ByteArrayInputStream. (.getBytes (json/generate-string body) "UTF-8"))}))
+        body-of (fn [r] (json/parse-string (:body r) true))]
+    (testing "an expression over the length cap is refused before parsing"
+      (doseq [uri ["/api/v1/build" "/api/v1/eval"]]
+        (is (= "too-long" (:error-type (body-of (post uri {:expressions [long-expression]}))))))
+      (is (= "too-long" (:error-type (body-of (post "/api/v1/sql" {:query long-expression}))))))
+
+    (testing "a body over 1 MB is refused from its Content-Length"
+      (let [r (api/app {:request-method :post
+                        :uri "/api/v1/build"
+                        :headers {"content-type" "application/json"
+                                  "content-length" (str (inc (* 1024 1024)))}
+                        :body (java.io.ByteArrayInputStream. (.getBytes "{}" "UTF-8"))})]
+        (is (= 413 (:status r)))
+        (is (= "too-large" (:error-type (body-of r))))))))

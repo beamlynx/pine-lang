@@ -182,7 +182,10 @@
 ;; WHERE
 ;; -----
 
-(defn- parse-characters [characters] {:type :string :value (apply str characters)})
+;; `string` is one regex token, so `characters` is a single string (or empty
+;; for ''). An apostrophe is written doubled inside a literal: 'O''Brien'.
+(defn- parse-characters [characters]
+  {:type :string :value (s/replace (apply str characters) "''" "'")})
 (defn- parse-strings [[_ & characters]] (parse-characters characters))
 
 (defn- extract-column-info
