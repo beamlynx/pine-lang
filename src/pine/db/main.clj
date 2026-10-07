@@ -45,9 +45,13 @@
 
 ;; Connections
 ;;
-(defn set-connection [id]
-  (reset! connection-id id)
+(defn set-connection
+  "Selects a connection once its schema is indexed. Indexing first: if it
+  fails (the database is down, or the user can't read the catalog), the
+  previous selection stays, rather than one every later request fails on."
+  [id]
   (init-references id)
+  (reset! connection-id id)
   id)
 
 (defn clear-connection-if

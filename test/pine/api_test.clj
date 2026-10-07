@@ -235,7 +235,8 @@
   ;; preflight. The route must not read parameters from it, or from the query
   ;; string.
   (let [seen (atom ::not-called)]
-    (with-redefs [api/api-sql (fn [query _] (reset! seen query) {})]
+    (with-redefs [api/api-sql (fn [query _] (reset! seen query) {})
+                  pine.db.main/connection-id (atom :test)]
       (testing "a form-encoded body is not read as parameters"
         (api/app {:request-method :post
                   :uri "/api/v1/sql"
@@ -259,3 +260,47 @@
                   :headers {"content-type" "application/json"}
                   :body (java.io.ByteArrayInputStream. (.getBytes "{\"query\": \"select 1\"}" "UTF-8"))})
         (is (= "select 1" @seen))))))
+
+(defn- post-json [uri body]
+  (let [r (api/app {:request-method :post
+                    :uri uri
+                    :headers {"content-type" "application/json"}
+                    :body (java.io.ByteArrayInputStream. (.getBytes (json/generate-string body) "UTF-8"))})]
+    (assoc r :json (try (json/parse-string (:body r) true) (catch Exception _ nil)))))
+
+(deftest test-ordinary-mistakes-are-not-500s
+  (with-redefs [pine.db.main/connection-id (atom nil)]
+    (testing "a parameter of the wrong type is a 400 naming it"
+      (let [r (post-json "/api/v1/sql" {:query 5})]
+        (is (= 400 (:status r)))
+        (is (= "bad-request" (get-in r [:json :error-type]))))
+      (is (= 400 (:status (post-json "/api/v1/build" {:expressions 5}))))
+      (is (= 400 (:status (post-json "/api/v1/eval" {:expressions [1 2]}))))
+      (is (= 400 (:status (post-json "/api/v1/build" {:expressions ["company"] :connection-id 7}))))
+      (is (= 400 (:status (post-json "/api/v1/eval" {:expressions ["company"] :variables [1]})))))
+
+    (testing "no connection selected is a normal error"
+      (doseq [[uri body] [["/api/v1/build" {:expressions ["company"]}]
+                          ["/api/v1/eval" {:expressions ["company"]}]
+                          ["/api/v1/sql" {:query "select 1"}]]]
+        (let [r (post-json uri body)]
+          (is (= 200 (:status r)) uri)
+          (is (= "no-connection" (get-in r [:json :error-type])) uri)))
+      (let [r (api/app {:request-method :get :uri "/api/v1/connection/stats" :headers {}})]
+        (is (= 200 (:status r)))))
+
+    (testing "an unknown connection id is a normal error"
+      (let [r (post-json "/api/v1/build" {:expressions ["company"] :connection-id "nope"})]
+        (is (= 200 (:status r)))
+        (is (= "no-connection" (get-in r [:json :error-type])))))
+
+    (testing "the legacy route without an expression doesn't throw"
+      (is (= 200 (:status (post-json "/api/v1/build-with-params" {})))))))
+
+(deftest test-internal-errors-dont-leak
+  (with-redefs [api/api-sql (fn [& _] (throw (NullPointerException. "secret internals")))
+                pine.db.main/connection-id (atom :test)]
+    (let [r (post-json "/api/v1/sql" {:query "select 1"})]
+      (is (= 500 (:status r)))
+      (is (= "internal" (get-in r [:json :error-type])))
+      (is (not (re-find #"secret" (:body r)))))))

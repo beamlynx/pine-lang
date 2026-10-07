@@ -428,9 +428,11 @@
                      (:uri request)
                      t))
         (.printStackTrace t)
+        ;; The real exception went to the log above. Its message can carry
+        ;; internals (class names, SQL, file paths) the caller has no use for.
         {:status 500
          :headers {"Content-Type" "application/json"}
-         :body (json/generate-string {:error (or (.getMessage t) (.getName (class t)))})}))))
+         :body (json/generate-string {:error-type "internal" :error "Internal error. See the server log."})}))))
 
 ;; The request's `$variable` values, checked and bound for the duration of f
 ;; (see pine.variables): those written in its values blocks, overridden by
@@ -572,6 +574,53 @@
         (json-error 403 "forbidden" "Host header not allowed.")
         (handler request)))))
 
+;; ---------------------------------------------------------------------------
+;; Request checks
+;; ---------------------------------------------------------------------------
+;;
+;; Run by the routes before anything else, so an ordinary mistake (no
+;; connection selected, a parameter of the wrong type) gets a normal error
+;; instead of an exception surfacing as HTTP 500.
+
+(defn- bad-request [message]
+  {:status 400
+   :headers {"Content-Type" "application/json"}
+   :body {:error-type "bad-request" :error message}})
+
+(defn- param-problem
+  "A 400 response for the first parameter of the wrong type, or nil."
+  [{:keys [expressions expression connection-id variables query]} & {:keys [sql?]}]
+  (cond
+    (and (some? expressions) (not (and (sequential? expressions) (every? string? expressions))))
+    (bad-request "`expressions` must be a list of strings.")
+
+    (and (some? expression) (not (string? expression)))
+    (bad-request "`expression` must be a string.")
+
+    ;; JSON only produces strings; the keyword sentinels are the tests'
+    ;; fixture connections (pine.db.connections/test-connection-ids).
+    (and (some? connection-id) (not (string? connection-id))
+         (not (connections/test-connection? connection-id)))
+    (bad-request "`connection-id` must be a string.")
+
+    (and (some? variables) (not (map? variables)))
+    (bad-request "`variables` must be an object.")
+
+    (and sql? (some? query) (not (string? query)))
+    (bad-request "`query` must be a string.")))
+
+(defn- connection-problem
+  "An error response when there is no connection to use, or nil."
+  [connection-id]
+  (let [conn-id (or connection-id @db/connection-id)]
+    (cond
+      (nil? conn-id)
+      {:error-type "no-connection" :error "No connection selected. Connect to a database first."}
+
+      (not (try (connections/get-connection-name conn-id) true
+                (catch clojure.lang.ExceptionInfo _ false)))
+      {:error-type "no-connection" :error (str "Connection `" conn-id "` isn't connected. Connect to it again.")})))
+
 ;; TODO: POST method should return 401
 
 (defroutes app-routes
@@ -588,24 +637,29 @@
   (DELETE "/api/v1/connections/:id" [id]
     (-> id disconnect response))
   (GET "/api/v1/connection/stats" []
-    (-> {:connection-count (db/get-connection-count @db/connection-id)
-         :version version
-         :time (str (java.time.LocalDateTime/now))} response))
+    (response
+     (or (connection-problem nil)
+         {:connection-count (db/get-connection-count @db/connection-id)
+          :version version
+          :time (str (java.time.LocalDateTime/now))})))
 
   ;; query building and evaluation
   (POST "/api/v1/build" {params :params}
     (let [{:keys [expressions expression cursor connection-id]} params
           exprs (or expressions (when expression [expression]))
           rules (access-policy/sanitize-rules (:access-policy params))]
-      (response
-       (or
-        (too-long-response exprs)
-        (let [built (with-variables params exprs
-                      #(api-build % (usable-cursor cursor) connection-id rules))]
+      (or
+       (param-problem params)
+       (response
+        (or
+         (too-long-response exprs)
+         (connection-problem connection-id)
+         (let [built (with-variables params exprs
+                       #(api-build % (usable-cursor cursor) connection-id rules))]
           ;; api-build only sees the blocks left after values blocks are taken
           ;; out, so the doc comes from the full list here.
-          (cond-> built
-            (contains? built :doc) (assoc :doc (tab-doc exprs))))))))
+           (cond-> built
+             (contains? built :doc) (assoc :doc (tab-doc exprs)))))))))
   (POST "/api/v1/eval" {params :params}
     (let [{:keys [expressions expression connection-id]} params
           exprs (or expressions (when expression [expression]))
@@ -614,30 +668,37 @@
           ;; value must never read as "allowed to write" by accident, and must
           ;; never read as "refuse everything" for the callers that don't send it.
           allow-writes (not (false? (:allow-writes params)))]
-      (response
-       (or
-        (too-long-response exprs)
-        (with-variables params exprs
-          (fn [query-exprs]
+      (or
+       (param-problem params)
+       (response
+        (or
+         (too-long-response exprs)
+         (connection-problem connection-id)
+         (with-variables params exprs
+           (fn [query-exprs]
            ;; Every $variable must have a value before anything runs.
-            (if-let [unbound (seq (:unbound (variables/report query-exprs variables/*bindings*)))]
-              {:error-type "unbound-variable"
-               :error (variables/missing-message unbound)
-               :unbound (vec unbound)}
-              (api-eval query-exprs connection-id rules allow-writes))))))))
+             (if-let [unbound (seq (:unbound (variables/report query-exprs variables/*bindings*)))]
+               {:error-type "unbound-variable"
+                :error (variables/missing-message unbound)
+                :unbound (vec unbound)}
+               (api-eval query-exprs connection-id rules allow-writes)))))))))
 
   ;; raw SQL execution
   (POST "/api/v1/sql" {params :params}
     (let [{:keys [query connection-id]} params]
-      (response (or (too-long-response query)
-                    (api-sql query connection-id)))))
+      (or (param-problem params :sql? true)
+          (response (or (too-long-response query)
+                        (connection-problem connection-id)
+                        (api-sql query connection-id))))))
 
   ;; Legacy
   ;;
   ;; pine-mode.el
   (POST "/api/v1/build-with-params" {params :params}
     (let [{:keys [expression connection-id]} params]
-      (->> (api-build [(trim-pipes expression)] nil connection-id) :query response)))
+      (or (param-problem params)
+          (some-> (connection-problem connection-id) response)
+          (->> (api-build [(trim-pipes (or expression ""))] nil connection-id) :query response))))
   ;; default case
   (route/not-found "Not Found"))
 (def app
