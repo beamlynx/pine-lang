@@ -136,3 +136,38 @@
                         :body (java.io.ByteArrayInputStream. (.getBytes "{}" "UTF-8"))})]
         (is (= 413 (:status r)))
         (is (= "too-large" (:error-type (body-of r))))))))
+
+(deftest test-build-reports-writes-and-keeps-hints
+  (testing "/build says whether the expression changes data"
+    (is (true? (:writes (api/api-build ["company | where: id = 1 | delete! .id"] nil :test))))
+    (is (false? (:writes (api/api-build ["company"] nil :test)))))
+
+  (testing "a refused write still returns the AST, so hints keep working while typing"
+    (let [response (api/api-build ["company | delete! .id"] nil :test)]
+      (is (nil? (:error response)))
+      (is (:ast response))
+      (is (true? (:writes response)))
+      (is (= "write-refused" (:query-error-type response)))
+      (is (re-find #"every row of `company`" (:query-error response)))
+      (is (re-find #"^/\* .* \*/$" (:query response)))))
+
+  (testing "an unresolved join still returns the AST"
+    (let [response (api/api-build ["company | company"] nil :test)]
+      (is (nil? (:error response)))
+      (is (:ast response))
+      (is (= "unresolved-join" (:query-error-type response))))))
+
+(deftest test-eval-refuses-before-running
+  ;; None of these reach the database: the :test connection has no pool.
+  (testing "a write with nothing narrowing it"
+    (let [response (api/api-eval ["company | delete! .id"] :test)]
+      (is (= "write-refused" (:error-type response)))
+      (is (re-find #"every row" (:error response)))))
+
+  (testing "a read-only caller gets the read-only refusal, not the scope one"
+    (let [response (api/api-eval ["company | delete! .id"] :test [] false)]
+      (is (= "write-refused" (:error-type response)))
+      (is (re-find #"read-only" (:error response)))))
+
+  (testing "an update! with a trailing comma"
+    (is (= "incomplete" (:error-type (api/api-eval ["company | where: id = 1 | u! name = 'x',"] :test))))))

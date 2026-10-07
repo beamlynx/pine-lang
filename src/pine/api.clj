@@ -63,6 +63,29 @@
   [context ^Throwable e]
   (prn (format "[%s] %s: %s" context (.getName (class e)) (.getMessage e))))
 
+;; An exception's message and, when it carries one, its :error-type
+;; (write-refused, unresolved-join, ...), so a client can tell kinds apart.
+(defn- error-body [^Throwable e]
+  (cond-> {:error (or (.getMessage e) (str "Failed (" (.getSimpleName (class e)) ")."))}
+    (:error-type (ex-data e)) (assoc :error-type (:error-type (ex-data e)))))
+
+(defn- build-sql
+  "The SQL preview for /build. Building it can fail where the AST didn't: an
+  unresolved join, or a delete!/update! that would be refused. The AST and
+  hints are still worth returning then - the person is usually mid-way
+  through typing - so the failure goes in :query-error instead of failing
+  the whole build, and :query says why as an SQL comment."
+  [state]
+  (try
+    {:query (-> state eval/build-query eval/formatted-query)}
+    (catch Exception e
+      (when-not (instance? clojure.lang.ExceptionInfo e)
+        (log-exception "api-build query" e))
+      (let [{:keys [error error-type]} (error-body e)]
+        (cond-> {:query (str "/* " (str/replace error "*/" "* /") " */")
+                 :query-error error}
+          error-type (assoc :query-error-type error-type))))))
+
 (defn- generate-state
   ([expression]
    (generate-state expression nil nil {}))
@@ -170,21 +193,25 @@
                    {state :result build-error :error} result]
                (if build-error
                  {:connection-id connection-name :error build-error}
-                 {:connection-id connection-name
-                  :version version
+                 (merge
+                  {:connection-id connection-name
+                   :version version
+                  ;; Whether the expression changes data, as /eval reports it.
+                  ;; Lets a caller refuse a write before running anything.
+                   :writes (effects/any-writes? (:operation-types state))
                   ;; The doc comment for this tab, which lives at the top of
                   ;; the FIRST expression. Deliberately not also exposed per
                   ;; expression on :ast - a tab has one description, and a
                   ;; second field of the same name meaning "the last
                   ;; expression's" was only ever confusing. The client always
                   ;; sends block 0, so this is always resolvable.
-                  :doc (some-> exprs first parser/extract-doc :text)
-                  :query (-> last-expr trim-pipes (generate-state nil conn-id named-results access-policy) :result eval/build-query eval/formatted-query)
+                   :doc (some-> exprs first parser/extract-doc :text)
                   ;; Every $variable the expressions use, and those with no
                   ;; value in this request. Never an error here: a template
                   ;; keeps its hints. /eval is the one that refuses.
-                  :variables (variables/report exprs variables/*bindings*)
-                  :ast (prune-ast state)})))))
+                   :variables (variables/report exprs variables/*bindings*)
+                   :ast (prune-ast state)}
+                  (-> last-expr trim-pipes (generate-state nil conn-id named-results access-policy) :result build-sql)))))))
        (catch Exception e
          (log-exception "api-build" e)
          {:connection-id connection-name
@@ -237,8 +264,7 @@
                (let [{last-state :result build-error :error} (generate-state trimmed nil conn-id named-results access-policy)]
                  (if build-error
                    {:connection-id connection-name :error build-error}
-                   (let [query  (-> last-state eval/build-query eval/formatted-query)
-                         writes (effects/any-writes? (:operation-types last-state))]
+                   (let [writes (effects/any-writes? (:operation-types last-state))]
                      (if (and (false? allow-writes) writes)
                        {:connection-id connection-name
                         :error-type "write-refused"
@@ -269,15 +295,17 @@
                             :prettified (:prettified last-state)})
                          (catch Exception e
                            (log-exception "api-eval" e)
-                           {:connection-id connection-name
-                            :error (.getMessage e)
-                            :query query
-                            :writes writes
-                            :prettified (:prettified last-state)}))))))))))
+                           (merge {:connection-id connection-name
+                                   ;; nil when the SQL itself couldn't be built
+                                   ;; (a refused write, an unresolved join).
+                                   :query (try (-> last-state eval/build-query eval/formatted-query)
+                                               (catch Exception _ nil))
+                                   :writes writes
+                                   :prettified (:prettified last-state)}
+                                  (error-body e))))))))))))
        (catch Exception e
          (log-exception "api-eval" e)
-         {:connection-id connection-name
-          :error (.getMessage e)})))))
+         (assoc (error-body e) :connection-id connection-name))))))
 
 (defn get-connection []
   (let [connection-id   @db/connection-id]

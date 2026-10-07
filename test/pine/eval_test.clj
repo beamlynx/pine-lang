@@ -355,9 +355,42 @@
            (generate "employee | select: name, created_at => month | group: month => count"))))
 
   (testing "delete action"
-    (is (= {:query "DELETE FROM \"company\" WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" )",
+    (is (= {:query "DELETE FROM \"company\" WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )",
+            :params (list (dt/number "1"))}
+           (generate "company | where: id = 1 | delete! .id")))
+    (is (= {:query "DELETE FROM \"company\" WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" LIMIT 10 )",
             :params nil}
-           (generate "company | delete! .id"))))
+           (generate "company | limit: 10 | delete! .id")))
+    ;; A limit: sealed into a checkpoint CTE still scopes the rows: the
+    ;; employees of ten companies, not every employee.
+    (is (= {:query "DELETE FROM \"employee\" WHERE \"id\" IN ( WITH \"__pine_0__\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" LIMIT 10 ) SELECT \"e_1\".\"id\" FROM \"__pine_0__\" AS \"__pine_0__\" JOIN \"employee\" AS \"e_1\" ON \"__pine_0__\".\"id\" = \"e_1\".\"company_id\" )",
+            :params nil}
+           (generate "company | l: 10 | employee | delete! .id"))))
+
+  (testing "writes that would act on more than can have been meant are refused"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Refusing to change every row of `company`"
+                          (generate "company | delete! .id")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Refusing to change every row of `company`"
+                          (generate "company | update! name = 'x'")))
+    (is (= "write-refused"
+           (try (generate "company | delete! .id") nil
+                (catch clojure.lang.ExceptionInfo e (:error-type (ex-data e))))))
+    ;; An unscoped named result is no scope at all.
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"every row of `employee`"
+                          (generate-expressions ["company |= x" "x | employee | delete! .id"])))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"after group:"
+                          (generate "company | where: id = 1 | g: name | delete! .id")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"can't change a named result"
+                          (generate-expressions ["company | where: id = 1 |= x" "x | where: id = 1 | u! name = 'a'"])))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"can't change a named result"
+                          (generate-expressions ["company | where: id = 1 |= x" "x | where: id = 1 | delete! .id"])))
+    ;; Unresolved joins are refused for every operation, writes included.
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No relation between `company` and `company`"
+                          (generate "company | where: id = 1 | company | delete! .id"))))
+
+  (testing "an update! still being typed (trailing comma) builds nothing"
+    (is (= {:query "" :params nil}
+           (generate "company | where: id = 1 | u! name = 'x',"))))
 
   (testing "update action"
     (is (= {:queries [{:table "company"
@@ -385,9 +418,9 @@
 
     ;; Test update with explicit table alias (disambiguates when multiple tables in context)
     (is (= {:queries [{:table "company"
-                       :query "UPDATE \"company\" SET \"x\" = ? WHERE id IN ( SELECT \"c\".\"id\" FROM \"company\" AS \"c\" JOIN \"document\" AS \"d_1\" ON \"c\".\"id\" = \"d_1\".\"company_id\" )"
-                       :params (list (dt/string "y"))}]}
-           (generate "company as c | document | update! c.x = 'y'")))
+                       :query "UPDATE \"company\" SET \"x\" = ? WHERE id IN ( SELECT \"c\".\"id\" FROM \"company\" AS \"c\" JOIN \"document\" AS \"d_1\" ON \"c\".\"id\" = \"d_1\".\"company_id\" WHERE \"c\".\"id\" = ? )"
+                       :params (list (dt/string "y") (dt/number "1"))}]}
+           (generate "company as c | where: id = 1 | document | update! c.x = 'y'")))
 
     ;; Test multi-table update (runs multiple queries, one per table)
     (let [result (generate "company as c | w: id = 1 | document as d | w: type = 'invoice' | update! c.deleted_at = '2026-01-01', d.deleted_at = '2026-01-01'")]
@@ -405,7 +438,7 @@
                        :params (list (dt/number "1"))}]}
            (generate "company as c | where: id = 1 | update! c.name = c.country")))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"only copy a column of the table it changes"
-                          (generate "company as c | document as d | update! c.name = d.title"))))
+                          (generate "company as c | where: id = 1 | document as d | update! c.name = d.title"))))
 
   (testing "paths"
     ;; :paths only generates candidate pine expressions (hints.paths) - it
@@ -571,12 +604,10 @@
     (is (clojure.string/includes?
          (:query (generate-expressions ["company | s: id as c_id |= x" "x | employee"]))
          "\"x\".\"c_id\" = \"e_1\".\"company_id\""))
-    ;; An unresolved join renders with no ON clause at all - there are no
-    ;; column pairs to render. (It used to compare two zero-length
-    ;; identifiers, which was no more runnable.)
-    (is (clojure.string/includes?
-         (:query (generate-expressions ["employee | s: id as tmp_id |= x" "x | company"]))
-         "JOIN \"company\" AS \"c_1\" LIMIT")))
+    ;; An unresolved join is an error naming both tables. It used to render
+    ;; with no ON clause: a syntax error on Postgres, a cross join on MySQL.
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No relation between `x` and `company`"
+                          (generate-expressions ["employee | s: id as tmp_id |= x" "x | company"]))))
 
   (testing "Mid-pipeline assign: expression continues after |="
     ;; The assign snapshots the state at that point; subsequent ops still apply
@@ -650,15 +681,14 @@
     ;; But two RAW references to the same table still don't resolve - Pine has
     ;; no way yet to distinguish which occurrence is which (no `t | t as t2`
     ;; self-aliasing), so this stays unsupported (see docs/named-results.md).
-    (is (clojure.string/includes? (:query (generate "company | company"))
-                                  "JOIN \"company\" AS \"c_1\" LIMIT")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No relation between `company` and `company`"
+                          (generate "company | company"))))
 
   (testing "A table is a join source through a variable only if its id is present"
     ;; `s: name` alone has no id anywhere in x's snapshot — Pine doesn't add
     ;; one, so company is not a valid join source.
-    (is (clojure.string/includes?
-         (:query (generate-expressions ["company as c | s: name |= x" "x | employee"]))
-         "JOIN \"employee\" AS \"e_1\" LIMIT"))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No relation between `x` and `employee`"
+                          (generate-expressions ["company as c | s: name |= x" "x | employee"])))
 
     ;; `s: id, name` includes it explicitly, so the join resolves.
     (is (clojure.string/includes?
@@ -667,9 +697,8 @@
 
     ;; Same for GROUP: grouping by a non-id column has no id anywhere, so
     ;; company is not a valid join source.
-    (is (clojure.string/includes?
-         (:query (generate-expressions ["company as c | employee .company_id | group: c.name |= x" "x | employee"]))
-         "JOIN \"employee\" AS \"e_1\" LIMIT")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No relation between `x` and `employee`"
+                          (generate-expressions ["company as c | employee .company_id | group: c.name |= x" "x | employee"]))))
 
   (testing "WHERE value coercion through a variable resolves the real column's type"
     ;; A variable's pre-seeded column list never carried type information, so
@@ -999,9 +1028,9 @@
            (generate-mysql "product | where: released = '2025-01-01'"))))
 
   (testing "delete!/update! wrap the inner SELECT in a derived table (MySQL error 1093/1235) - identity for Postgres, already asserted above"
-    (is (= {:query "DELETE FROM `company` WHERE `id` IN ( SELECT * FROM ( SELECT `c_0`.`id` FROM `company` AS `c_0` ) AS `pine_sub` )"
-            :params nil}
-           (generate-mysql "company | delete! .id")))
+    (is (= {:query "DELETE FROM `company` WHERE `id` IN ( SELECT * FROM ( SELECT `c_0`.`id` FROM `company` AS `c_0` WHERE `c_0`.`id` = ? ) AS `pine_sub` )"
+            :params (list (dt/number "1"))}
+           (generate-mysql "company | where: id = 1 | delete! .id")))
 
     ;; The error-1235 case specifically: LIMIT inside an IN subquery. Must
     ;; land inside the derived-table wrap (`... c_0\" LIMIT 5 ) AS`), not
@@ -1057,21 +1086,21 @@
                         "SELECT \"cr_1\".\"id\" FROM \"k\".\"case\" AS \"c_0\" "
                         "JOIN \"k\".\"case_ref\" AS \"cr_1\" "
                         "ON \"c_0\".\"id\" = \"cr_1\".\"case_id\" "
-                        "AND \"c_0\".\"search_id\" = \"cr_1\".\"search_id\" )")
-            :params nil}
-           (generate "k.case | k.case_ref | delete! .id")))
+                        "AND \"c_0\".\"search_id\" = \"cr_1\".\"search_id\" "
+                        "WHERE \"cr_1\".\"case_id\" = ? )")
+            :params (list (dt/number "1"))}
+           (generate "k.case | k.case_ref | where: case_id = 1 | delete! .id")))
 
     (is (clojure.string/includes?
-         (:query (first (:queries (generate "k.case | k.case_ref | update! id = 1"))))
+         (:query (first (:queries (generate "k.case | k.case_ref | where: case_id = 1 | update! id = 1"))))
          "ON \"c_0\".\"id\" = \"cr_1\".\"case_id\" AND \"c_0\".\"search_id\" = \"cr_1\".\"search_id\"")))
 
   (testing "A variable exposing only some of the key's columns can't serve the join"
     ;; x exposes case.id and nothing else, so the second pair has no column to
     ;; translate to - the whole relation is unreachable through the CTE,
     ;; exactly as one unexposed column already rejects a single-pair join.
-    (is (clojure.string/includes?
-         (:query (generate-expressions ["k.case | s: id |= x" "x | k.case_ref"]))
-         "JOIN \"k\".\"case_ref\" AS \"cr_1\" LIMIT"))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No relation between `x` and `k.case_ref`"
+                          (generate-expressions ["k.case | s: id |= x" "x | k.case_ref"])))
 
     ;; Exposing both does serve it.
     (is (clojure.string/includes?
@@ -1100,9 +1129,10 @@
                         "FROM `k`.`case` AS `c_0` "
                         "JOIN `k`.`case_ref` AS `cr_1` "
                         "ON `c_0`.`id` = `cr_1`.`case_id` "
-                        "AND `c_0`.`search_id` = `cr_1`.`search_id` ) AS `pine_sub` )")
-            :params nil}
-           (generate-mysql "k.case | k.case_ref | delete! .case_id, .search_id"))))
+                        "AND `c_0`.`search_id` = `cr_1`.`search_id` "
+                        "WHERE `cr_1`.`case_id` = ? ) AS `pine_sub` )")
+            :params (list (dt/number "1"))}
+           (generate-mysql "k.case | k.case_ref | where: case_id = 1 | delete! .case_id, .search_id"))))
 
   (testing "A foreign key with no constraint name is still its own relation"
     ;; w.department.lead_worker_id has no constraint name in the fixtures - a
@@ -1159,8 +1189,8 @@
     ;; search_id is only in the primary key and other_id only in the related
     ;; one, so no single relation holds both. Unresolved, rather than
     ;; silently picking one.
-    (is (= "JOIN \"k\".\"note_ref\" AS \"nr_1\""
-           (join-clause "k.note | k.note_ref .search_id, .other_id"))))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No relation between `k.note` and `k.note_ref`"
+                          (join-clause "k.note | k.note_ref .search_id, .other_id"))))
 
   (testing "Explicit columns take more than one pair"
     ;; The only way to write a multi-column join no foreign key describes -
