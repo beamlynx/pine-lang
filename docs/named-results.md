@@ -1,7 +1,5 @@
 # Named results
 
-> These were called variables until 2026-10. A *variable* is now a `$name` whose value comes with the request; see [variables.md](variables.md).
-
 Name and reuse intermediate query results across expressions.
 
 ## Why

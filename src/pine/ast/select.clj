@@ -74,7 +74,7 @@
           next-operation-index (inc (:index state))
           references (:references state)
           aliases (:aliases state)
-          variables (:variables state)
+          variables (:named-results state)
           ;; Only create auto-ID columns for real tables (not variables/CTEs) that have an 'id' column
           valid-aliases (filter #(and (not (:ast (get aliases %)))
                                       (has-id-column? references aliases %))

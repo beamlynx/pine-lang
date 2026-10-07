@@ -3,8 +3,8 @@
 
   Why multi-expression evaluation exists: Pine expressions are designed to be
   composed across blank-line-separated blocks. Each block can assign its result
-  to a variable (|= name) which subsequent blocks use as a CTE. This file
-  threads variables between expressions so each one sees what earlier ones
+  to a named result (|= name) which subsequent blocks use as a CTE. This file
+  threads named results between expressions so each one sees what earlier ones
   produced. The last expression's SQL is the one actually returned or executed."
   (:require
    [cheshire.core :as json]
@@ -70,38 +70,36 @@
    (generate-state expression cursor nil {}))
   ([expression cursor connection-id]
    (generate-state expression cursor connection-id {}))
-  ([expression cursor connection-id variables]
-   (generate-state expression cursor connection-id variables []))
-  ([expression cursor connection-id variables access-policy]
+  ([expression cursor connection-id named-results]
+   (generate-state expression cursor connection-id named-results []))
+  ([expression cursor connection-id named-results access-policy]
    (let [{:keys [result error]} (->> expression parser/parse)
          conn-id (or connection-id @db/connection-id)]
      (if result
        ;; `$name`s with a value in this request become ordinary literals here,
-       ;; before the AST sees them (pine.variables). This function's own
-       ;; `variables` argument is the named results (`|=`) of earlier blocks,
-       ;; a different thing.
-       {:result (ast/generate (variables/bind result) conn-id expression cursor variables access-policy)}
+       ;; before the AST sees them (pine.variables).
+       {:result (ast/generate (variables/bind result) conn-id expression cursor named-results access-policy)}
        {:error-type "parse"
         :error error}))))
 
 (defn- evaluate-expressions
-  "Evaluate a sequence of pine expressions, threading variables from |= assignments
+  "Evaluate a sequence of pine expressions, threading named results from |= assignments
   into subsequent expressions. Returns {:last-state <state> :error <msg>}.
 
   Why pending-assignments: |= is now a mid-pipeline op that snapshots state at the
-  point of assignment. An expression can assign multiple variables before its last op
+  point of assignment. An expression can assign several named results before its last op
   determines the final SQL. All assignments from one expression become available as
-  CTE variables to the next."
+  CTEs to the next."
   ([expressions connection-id]
    (evaluate-expressions expressions connection-id []))
   ([expressions connection-id access-policy]
-   (reduce (fn [{:keys [variables]} expression]
-             (let [{:keys [result error]} (generate-state expression nil connection-id variables access-policy)]
+   (reduce (fn [{:keys [named-results]} expression]
+             (let [{:keys [result error]} (generate-state expression nil connection-id named-results access-policy)]
                (if error
                  (reduced {:error error})
-                 {:variables (merge variables (:pending-assignments result))
+                 {:named-results (merge named-results (:pending-assignments result))
                   :last-state result})))
-           {:variables {} :last-state nil}
+           {:named-results {} :last-state nil}
            expressions)))
 
 (defn- trim-pipes [s]
@@ -121,7 +119,7 @@
 
 (defn- prune-var-ast
   "Prune a variable/pending-assignment snapshot down to what the frontend actually
-  uses (VariableAst in client.ts). Critical: a raw snapshot still carries :variables
+  uses (NamedResultAst in client.ts). Critical: a raw snapshot still carries :named-results
   and :references from pre-handle/post-handle — left unpruned, each additional
   chained |= block would re-embed every earlier block's full snapshot inside the new
   one, growing the response payload superlinearly instead of linearly. Its own
@@ -138,8 +136,8 @@
   [state]
   (-> (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where :group :prettified :ranges :assign])
       (update :selected-tables #(mapv prune-table %))
-      (assoc :variables
-             (into {} (for [[k v] (:variables state)] [k (prune-var-ast v)])))
+      (assoc :named-results
+             (into {} (for [[k v] (:named-results state)] [k (prune-var-ast v)])))
       (assoc :pending-assignments
              (into {} (for [[k v] (:pending-assignments state)] [k (prune-var-ast v)])))))
 
@@ -161,14 +159,14 @@
              ;; empty :table op, which is what lets an empty input still show
              ;; table hints on Tab instead of "nothing found".
              last-expr     (or (last exprs) "")]
-         (let [{:keys [variables error]} (evaluate-expressions context-exprs conn-id access-policy)]
+         (let [{:keys [named-results error]} (evaluate-expressions context-exprs conn-id access-policy)]
            (if error
              {:connection-id connection-name :error error}
              ;; The AST describes the expression as written, so a $variable
              ;; stays `$name` in it (the canvas shows it that way); only :query,
              ;; the SQL preview below, gets the values.
              (let [result                    (binding [variables/*bindings* {}]
-                                               (generate-state last-expr cursor conn-id variables access-policy))
+                                               (generate-state last-expr cursor conn-id named-results access-policy))
                    {state :result build-error :error} result]
                (if build-error
                  {:connection-id connection-name :error build-error}
@@ -181,7 +179,7 @@
                   ;; expression's" was only ever confusing. The client always
                   ;; sends block 0, so this is always resolvable.
                   :doc (some-> exprs first parser/extract-doc :text)
-                  :query (-> last-expr trim-pipes (generate-state nil conn-id variables access-policy) :result eval/build-query eval/formatted-query)
+                  :query (-> last-expr trim-pipes (generate-state nil conn-id named-results access-policy) :result eval/build-query eval/formatted-query)
                   ;; Every $variable the expressions use, and those with no
                   ;; value in this request. Never an error here: a template
                   ;; keeps its hints. /eval is the one that refuses.
@@ -190,7 +188,9 @@
        (catch Exception e
          (log-exception "api-build" e)
          {:connection-id connection-name
-          :error (.getMessage e)})))))
+          ;; Never a null error: some exceptions (a NullPointerException)
+          ;; have no message, and a client reads {:error nil} as success.
+          :error (or (.getMessage e) (str "Couldn't build this expression (" (.getSimpleName (class e)) ")."))})))))
 
 (defn- get-columns
   ([rows]
@@ -231,10 +231,10 @@
              trimmed       (trim-pipes (or last-expr ""))]
          (if (str/blank? trimmed)
            {:connection-id connection-name}
-           (let [{:keys [variables error]} (evaluate-expressions context-exprs conn-id access-policy)]
+           (let [{:keys [named-results error]} (evaluate-expressions context-exprs conn-id access-policy)]
              (if error
                {:connection-id connection-name :error error}
-               (let [{last-state :result build-error :error} (generate-state trimmed nil conn-id variables access-policy)]
+               (let [{last-state :result build-error :error} (generate-state trimmed nil conn-id named-results access-policy)]
                  (if build-error
                    {:connection-id connection-name :error build-error}
                    (let [query  (-> last-state eval/build-query eval/formatted-query)
@@ -410,6 +410,23 @@
 ;; blocks taken out, which is all the rest of Pine ever sees. The values
 ;; written in the text are added to /build's report. A malformed values block
 ;; or `variables` map is reported, not thrown.
+(defn- usable-cursor
+  "The cursor, or nil when it can't point into the expression: a cursor
+  before its first line or column means the client measured it from another
+  block, and is ignored rather than failing the build."
+  [cursor]
+  (when (and (map? cursor) (nat-int? (:line cursor)) (nat-int? (:character cursor)))
+    cursor))
+
+(defn- tab-doc
+  "The tab's doc comment: the first one in its leading values blocks or its
+  first query block. A tab often starts with its values, with the doc on
+  the query below them."
+  [exprs]
+  (->> exprs
+       (reduce (fn [acc e] (if (variables/values-block? e) (conj acc e) (reduced (conj acc e)))) [])
+       (some #(some-> % parser/extract-doc :text))))
+
 (defn- with-variables [params exprs f]
   (try
     (let [written (variables/text-values exprs)]
@@ -448,8 +465,12 @@
           exprs (or expressions (when expression [expression]))
           rules (access-policy/sanitize-rules (:access-policy params))]
       (response
-       (with-variables params exprs
-         #(api-build % cursor connection-id rules)))))
+       (let [built (with-variables params exprs
+                     #(api-build % (usable-cursor cursor) connection-id rules))]
+         ;; api-build only sees the blocks left after values blocks are taken
+         ;; out, so the doc comes from the full list here.
+         (cond-> built
+           (contains? built :doc) (assoc :doc (tab-doc exprs)))))))
   (POST "/api/v1/eval" {params :params}
     (let [{:keys [expressions expression connection-id]} params
           exprs (or expressions (when expression [expression]))

@@ -19,12 +19,12 @@
   "Evaluate expressions sequentially, threading variables. Returns :hints from the last expression."
   [expressions]
   (let [{:keys [last-hints]}
-        (reduce (fn [{:keys [variables]} expr]
+        (reduce (fn [{:keys [named-results]} expr]
                   (let [{:keys [result]} (parser/parse expr)
-                        state (ast/generate result :test expr nil variables)]
-                    {:variables (merge variables (:pending-assignments state))
+                        state (ast/generate result :test expr nil named-results)]
+                    {:named-results (merge named-results (:pending-assignments state))
                      :last-hints (:hints state)}))
-                {:variables {} :last-hints nil}
+                {:named-results {} :last-hints nil}
                 expressions)]
     last-hints))
 
