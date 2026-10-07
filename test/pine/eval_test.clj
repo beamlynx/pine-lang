@@ -392,7 +392,20 @@
     ;; Test multi-table update (runs multiple queries, one per table)
     (let [result (generate "company as c | w: id = 1 | document as d | w: type = 'invoice' | update! c.deleted_at = '2026-01-01', d.deleted_at = '2026-01-01'")]
       (is (= 2 (count (:queries result))))
-      (is (= #{"company" "document"} (set (map :table (:queries result)))))))
+      (is (= #{"company" "document"} (set (map :table (:queries result))))))
+
+    ;; Column-to-column: the right side is a column, written bare because
+    ;; UPDATE has no alias in scope. It used to be a `?` bound to NULL.
+    (is (= {:queries [{:table "company"
+                       :query "UPDATE \"company\" SET \"name\" = \"country\" WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
+                       :params (list (dt/number "1"))}]}
+           (generate "company | where: id = 1 | update! name = country")))
+    (is (= {:queries [{:table "company"
+                       :query "UPDATE \"company\" SET \"name\" = \"country\" WHERE id IN ( SELECT \"c\".\"id\" FROM \"company\" AS \"c\" WHERE \"c\".\"id\" = ? )"
+                       :params (list (dt/number "1"))}]}
+           (generate "company as c | where: id = 1 | update! c.name = c.country")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"only copy a column of the table it changes"
+                          (generate "company as c | document as d | update! c.name = d.title"))))
 
   (testing "paths"
     ;; :paths only generates candidate pine expressions (hints.paths) - it

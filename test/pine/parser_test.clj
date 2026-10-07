@@ -667,3 +667,10 @@
 
   (testing "a date is still a date"
     (is (= :date (-> (p "user | where: created_at > '2024-01-01'") second :value last :type)))))
+
+(deftest test-update-column-to-column
+  (testing "the right side of `update! a = b` is a typed column, not a bare map"
+    (is (= {:type :column :value [nil "country" nil]}
+           (-> (p "company | update! name = country") second :value :assignments first :value)))
+    (is (= {:type :column :value ["c" "country" nil]}
+           (-> (p "company as c | update! c.name = c.country") second :value :assignments first :value)))))

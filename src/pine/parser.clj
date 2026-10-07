@@ -541,9 +541,12 @@
     [:update-assignment column-pattern [:variable n]]
     {:column (extract-column-info column-pattern) :value (dt/variable n)}
 
-    ;; Column-to-column assignment
+    ;; Column-to-column assignment: `update! name = country`. Built as a
+    ;; typed column, like a column on the right of a where: comparison. It
+    ;; used to be a bare {:alias :column} map with no :type, which eval
+    ;; rendered as a `?` bound to NULL.
     [:update-assignment column-pattern rhs]
-    {:column (extract-column-info column-pattern) :value (extract-column-info rhs)}
+    {:column (extract-column-info column-pattern) :value (make-column (extract-column-info rhs))}
 
     :else (throw (ex-info "Unknown update assignment" {:_ assignment}))))
 

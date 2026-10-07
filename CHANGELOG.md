@@ -14,6 +14,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - A `/build` cursor before the start of the expression, which beamlynx-ui sent with the cursor in a values block above the query, made the build fail with `"error": null`. Such a cursor is now ignored, and a failed build always says something: an exception with no message reports its type.
 - `/build`'s `doc` was empty when the tab started with a values block. It now comes from the first doc comment in the leading values blocks or the first query block.
 - Block comments after a `select:` column could take seconds to parse, or run the server out of memory: ten took 4 s, twelve exhausted a 2 GB heap. A 1 MB string literal took 7.5 s. Whitespace with comments, and each string literal, are now one token, so parsing is linear. Twelve comments now take under a millisecond and a 1 MB literal 17 ms.
+- `update! name = other_column` set the column to NULL on every row it targeted. It now copies the other column's value. The other column has to belong to the table being changed; naming one from a joined table is an error.
 
 ## [0.48.1] - 2026-10-06
 ### Fixed
