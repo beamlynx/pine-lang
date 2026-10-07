@@ -15,6 +15,11 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - **Breaking:** a join Pine can't resolve is an error naming both tables, with `error-type: "unresolved-join"`, for every operation. It used to produce SQL with no `ON` clause: a syntax error on Postgres, and a cross join on MySQL.
 - Every `delete!` and `update!` runs in a transaction, not only an `update!` across several tables.
 - `/eval` refuses an `update!` that ends in a comma, with `error-type: "incomplete"`, instead of running the assignments before the comma.
+- Every statement is cancelled after 60 seconds.
+- `limit:` accepts 0 to 10 000. A bigger number is an error that says so; one past the range of a Java integer used to surface as a raw `NumberFormatException`.
+- A query ending in `group:` returns at most 10 000 groups. A `group:` sealed into a checkpoint keeps every group.
+- Raw SQL (`/api/v1/sql`) returns at most 10 000 rows, followed by a row saying it was cut.
+- Each connection keeps up to three database connections, not one, so a slow query no longer makes every other request on that connection wait 10 seconds and fail.
 
 ### Fixed
 - A `/build` cursor before the start of the expression, which beamlynx-ui sent with the cursor in a values block above the query, made the build fail with `"error": null`. Such a cursor is now ignored, and a failed build always says something: an exception with no message reports its type.

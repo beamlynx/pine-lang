@@ -38,13 +38,16 @@
              (.setJdbcUrl (jdbc-url config))
              (.setUsername (:user config))
              (.setPassword (:password config))
-             (.setMaximumPoolSize 1)       ; Only need one connection
+             ;; More than one, so a slow query doesn't block every other
+             ;; request on this connection (they used to wait 10 s and fail
+             ;; with "Connection is not available").
+             (.setMaximumPoolSize 3)
              (.setMinimumIdle 1)           ; Keep one idle connection
              (.setIdleTimeout 600000)      ; 10 minutes idle timeout
              (.setConnectionTimeout 10000) ; 10 seconds connection timeout
              (.setMaxLifetime 3600000)     ; 1 hour max lifetime
-             (.setAutoCommit true)         ; Disable auto-commit
-             (.setReadOnly false))]        ; Read-only mode disabled
+             (.setAutoCommit true)         ; Each statement commits; writes use their own transaction
+             (.setReadOnly false))]
     (case dbtype
       ;; MySQL's "database" is already fully determined by the URL path -
       ;; there's no separate schema concept to set. Set the driver class

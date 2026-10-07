@@ -674,3 +674,14 @@
            (-> (p "company | update! name = country") second :value :assignments first :value)))
     (is (= {:type :column :value ["c" "country" nil]}
            (-> (p "company as c | update! c.name = c.country") second :value :assignments first :value)))))
+
+(deftest test-limit-bounds
+  (testing "limit: accepts 0 to 10 000"
+    (is (= {:type :limit :value 0} (second (p "company | limit: 0"))))
+    (is (= {:type :limit :value 10000} (second (p "company | limit: 10000")))))
+
+  (testing "beyond that, a readable error instead of a NumberFormatException"
+    (doseq [n ["10001" "99999999999" "99999999999999999999999"]]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"limit: must be between 0 and 10000"
+                            (p (str "company | limit: " n)))
+          n))))

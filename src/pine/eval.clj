@@ -570,6 +570,9 @@
             (build-single-update-query state update-alias table-assignments))
           grouped)))
 
+;; The same ceiling as limit: (pine.parser/max-limit).
+(def ^:private max-group-rows 10000)
+
 (defn build-query [state]
   (binding [*dialect* (connections/get-dialect (:connection-id state))]
     (let [{:keys [type]} (state :operation)]
@@ -583,7 +586,10 @@
         ;; build, and run-query refuses to run it.
         (= type :update-partial) {:query "" :params nil}
         (= type :count) (build-count-query state)
-        (= type :group) (build-group-query state)
+        ;; A terminal group: returns at most as many groups as limit: allows.
+        ;; A group sealed into a checkpoint CTE is built elsewhere and keeps
+        ;; every group, since what follows it may narrow them.
+        (= type :group) (update (build-group-query state) :query str " LIMIT " max-group-rows)
         ;; :paths only generates candidate pine expressions (see hints.paths) -
         ;; it never builds a query of its own.
         (= type :paths) {:query " /* No SQL. Pick a path from hints.paths and build that expression instead */ "}
