@@ -36,7 +36,7 @@ Each pipe segment maps to a typed operation. Operations are applied left to righ
 | `table`          | Registers the table, resolves FK joins, tracks current context              |
 | `select` / `s:`  | Records which columns to include                                            |
 | `where` / `w:`   | Records filter conditions and parameters                                    |
-| `group` / `g:`   | Records group-by columns and aggregate functions                            |
+| `group` / `g:`   | Records group-by columns and counts rows per group (`=> count`, the default) |
 | `order` / `o:`   | Records sort columns and direction                                          |
 | `limit` / `l:`   | Records the row limit                                                       |
 | `count:`         | Switches operation mode to COUNT                                            |

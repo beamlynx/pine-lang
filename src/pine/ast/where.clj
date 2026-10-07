@@ -19,19 +19,34 @@
 (defn- make-resolve-alias [state]
   #(if (contains? (:aliases state) %) % (or (get-in state [:pending-assignments % :current]) %)))
 
+(declare refuse-named-result-as-column)
+
 (defn- resolve-condition
   "Turn one parsed [column operator value] triple into the flat 5-tuple
   [alias col cast operator converted-value] stored in state's :where."
   [state current resolve-alias [column operator value]]
   (let [[alias col cast] (:value column)
         alias (resolve-alias (or alias current))
+        ;; Before the right-hand column gets its default alias below: a bare
+        ;; name there that is a named result is a mistake this reports.
+        _ (refuse-named-result-as-column state [alias col cast operator value])
         ;; A $variable still here has no value in this request (pine.variables
         ;; replaced every bound one with its literal). Typing it by its column
         ;; would turn its name into a string, so it stays as it is: /build
         ;; shows it, /eval refuses to run it.
-        converted-value (if (not (#{:symbol :column :variable :named-result} (:type value)))
-                          (convert-condition-value value alias col state)
-                          value)]
+        converted-value (cond
+                          ;; A column on the right without an alias belongs to
+                          ;; the current table, as the column on the left
+                          ;; does. It used to be written bare, which is
+                          ;; ambiguous (or names the wrong table) in a join.
+                          (= :column (:type value))
+                          (update value :value (fn [[a c ca]] [(resolve-alias (or a current)) c ca]))
+
+                          (#{:symbol :variable :named-result} (:type value))
+                          value
+
+                          :else
+                          (convert-condition-value value alias col state))]
     [alias col cast operator converted-value]))
 
 (defn- named-result-column

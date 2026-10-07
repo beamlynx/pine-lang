@@ -550,3 +550,10 @@
     ;; second was unreachable.
     (is (= #{"k.note_ref .note_id, .search_id" "k.note_ref .note_id, .other_id"}
            (->> (-> "k.note | " gen :table) (map :pine) set)))))
+
+(deftest test-table-typeahead-ignores-case
+  (testing "a capitalised prefix finds the same tables as a lower-case one"
+    (let [tables #(set (map :table (:table (gen %))))]
+      (is (contains? (tables "comp") "company"))
+      (is (contains? (tables "Comp") "company"))
+      (is (contains? (tables "COMP") "company")))))

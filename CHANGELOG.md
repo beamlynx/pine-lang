@@ -7,6 +7,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - A string can contain an apostrophe by writing it twice, as in SQL: `where: name = 'O''Brien'`. This works in values blocks too.
 - `/build` reports `writes`, whether the expression changes data, as `/eval` already did. When the SQL can't be built (a refused write, an unresolved join), `/build` still returns the AST and hints, with the reason in `query-error` and `query-error-type`. An error that has a kind now carries it as `error-type` from `/eval` too.
 - **Launch token.** When `PINE_TOKEN` is set, every `/api/` request must send `Authorization: Bearer <token>`, or it is refused with HTTP 401 and `error-type: "unauthorized"`. beamlynx-desktop will set a fresh token each launch, so web pages and other programs on the machine can no longer use its server. Without the variable the server behaves as before, and logs that anyone on the machine can use it.
+- Date-time literals: `where: created_at > '2024-01-01 10:00'`, with optional seconds and a space or a T. They bind as timestamps. A time of day used to make the value a string, which Postgres refuses to compare with a timestamp column.
 
 ### Changed
 - **Breaking:** `/build`'s AST lists named results under `named-results`, not `variables`. "Variable" means a `$name` since 0.48.0, and its report is still `variables` in the response. Inside pine-lang, the state key and the code that passes named results between blocks are renamed the same way. beamlynx-ui's matching change reads the new key.
@@ -22,6 +23,10 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - Each connection keeps up to three database connections, not one, so a slow query no longer makes every other request on that connection wait 10 seconds and fail.
 - The Docker image runs on Java 21 (Temurin), like the desktop runtime. It used the end-of-life openjdk:11 Debian buster image. Jetty 12 needs Java 17 or later.
 - The desktop runtime's module list (`desktop/jpackage/modules.list`) adds `java.instrument`, which Jetty 12 references.
+- A parse error starts with a sentence naming the likely mistake when it is a common one: an unknown operation (with the closest real one), a missing colon, a missing closing quote, or a comma or `and` between conditions. Instaparse's own report follows unchanged.
+
+### Removed
+- `sum`, `avg`, `min`, `max` and `string_agg` after `=>` in `group:`. They take no column, so they computed over the constant 1: a sum equal to the count, an average of 1, and `STRING_AGG(1)`, which Postgres refuses. Only `count` remains until a column can be named.
 
 ### Fixed
 - A `/build` cursor before the start of the expression, which beamlynx-ui sent with the cursor in a values block above the query, made the build fail with `"error": null`. Such a cursor is now ignored, and a failed build always says something: an exception with no message reports its type.
@@ -32,6 +37,12 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - Registering the same database twice at the same moment (a double click, a retry) left one connection pool open for good. Only one is kept now.
 - A request with no connection selected, or naming a connection that isn't connected, returned HTTP 500. It returns a normal error with `error-type: "no-connection"`. A parameter of the wrong type returns HTTP 400 with `error-type: "bad-request"` naming it. `/connection/stats` with nothing selected, and `/build-with-params` without an expression, no longer fail.
 - Selecting a connection whose schema can't be read left it selected, so every later request failed on it. The previous selection now stays.
+- An impossible date such as '2024-02-31' is an error. It used to roll over to 2024-03-02 without a word.
+- A column on the right of a comparison, as in `where: name = country`, is qualified with the current table like the column on the left. Written bare, it was ambiguous, or named the wrong table, in a join.
+- A number given for a text column, such as a `$variable` set to 7, is compared as text. Postgres used to refuse `character varying = bigint`.
+- An unqualified table that exists in several schemas takes its columns from the one Postgres would use (`public`, when it's one of them). The columns of every schema used to be merged, typed by whichever came first, which gave wrong value types, join columns and access-policy decisions.
+- Table typeahead ignores case: `Comp` finds `company`.
+- `docs/named-results.md` said a named result's `LIMIT` was dropped. It is kept, and checkpoints depend on it.
 
 ### Security
 - When the server listens on loopback (the default), a request whose Host header isn't `localhost`, `127.0.0.1` or `[::1]` is refused with HTTP 403. This stops a web page from reaching the server by rebinding its own domain to 127.0.0.1 (DNS rebinding), with or without a token.

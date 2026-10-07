@@ -7,10 +7,11 @@
   "Given a partial token (which can be completed to a table) and all the
   candidate relations, we filter out the unrelated candidates"
   [token candidates]
-  (filter #(-> %1
-               first
-               clojure.string/lower-case
-               (clojure.string/includes? token)) candidates))
+  (let [token (clojure.string/lower-case (or token ""))]
+    (filter #(-> %1
+                 first
+                 clojure.string/lower-case
+                 (clojure.string/includes? token)) candidates)))
 ;; ---------------------------------------------------------------------------
 ;; Table Hints
 ;; ---------------------------------------------------------------------------
@@ -233,7 +234,7 @@
              (concat real-hints variable-hints same-source-hints self-source-hint)))
          sources)]
     (->> hints
-         (filter #(str/includes? (str/lower-case (:table %)) token))
+         (filter #(str/includes? (str/lower-case (:table %)) (str/lower-case (or token ""))))
          (map (fn [h]
                 (if (contains? (known-variables state) (:table h))
                   (assoc h :schema nil)

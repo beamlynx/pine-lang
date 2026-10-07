@@ -2,7 +2,8 @@
   (:require
    [clojure.test :refer [deftest is testing]]
    [pine.db.connections :as connections]
-   [pine.db.main :as db])
+   [pine.db.main :as db]
+   [pine.db.references :as refs])
   (:import (com.zaxxer.hikari HikariDataSource)))
 
 (defn- fake-pool [closed?]
@@ -219,3 +220,21 @@
       (is (= 1 (count (remove deref closed))) "exactly one pool stays open; every other one is closed")
       (finally
         (swap! connections/pools dissoc "race-test:5432:app")))))
+
+(deftest test-unqualified-table-uses-one-schema
+  ;; [schema table column position type length nullable default]
+  (let [index #(refs/index-references [[] %])
+        columns-of (fn [references table] (map (juxt :column :type) (get-in references [:table table :columns])))]
+    (testing "a table in one schema: that schema's columns"
+      (is (= [["id" "integer"]] (columns-of (index [["app" "user" "id" 1 "integer" nil "NO" nil]]) "user"))))
+    (testing "the same table in public and another schema: public's columns, not both merged"
+      (is (= [["id" "integer"] ["email" "text"]]
+             (columns-of (index [["audit" "user" "id" 1 "uuid" nil "NO" nil]
+                                 ["audit" "user" "seen_at" 2 "timestamp" nil "NO" nil]
+                                 ["public" "user" "id" 1 "integer" nil "NO" nil]
+                                 ["public" "user" "email" 2 "text" nil "NO" nil]])
+                         "user"))))
+    (testing "several schemas, none of them public: still merged, since nothing says which"
+      (is (= 2 (count (columns-of (index [["a" "t" "x" 1 "text" nil "NO" nil]
+                                          ["b" "t" "y" 1 "text" nil "NO" nil]])
+                                  "t")))))))

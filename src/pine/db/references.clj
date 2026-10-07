@@ -98,6 +98,32 @@
           {}
           (group-by-constraint foreign-keys)))
 
+(defn- resolve-bare-tables
+  "An unqualified table name holds the columns of the one schema the
+  database would resolve it to, not every schema's columns merged. Two
+  schemas each with a `user` table used to give `user` the union of both,
+  typed by whichever came first: wrong value coercion, wrong join columns,
+  and wrong access-policy decisions.
+
+  One schema has the table: its columns. Several, `public` among them (the
+  head of Postgres's default search path): public's. Several without
+  public: still merged, since nothing says which one the database means."
+  [acc]
+  (reduce (fn [acc table]
+            (let [schemas (keep (fn [[schema data]]
+                                  (when-let [t (get-in data [:table table])] [schema t]))
+                                (:schema acc))
+                  chosen (cond
+                           (= 1 (count schemas)) (second (first schemas))
+                           :else (some (fn [[schema t]] (when (= "public" schema) t)) schemas))]
+              (if chosen
+                (-> acc
+                    (assoc-in [:table table :columns] (:columns chosen))
+                    (assoc-in [:table table :column-set] (:column-set chosen)))
+                acc)))
+          acc
+          (keys (:table acc))))
+
 (defn- index-columns
   "Index columns per schema+table and per bare table name. :columns is kept
   in the order given (ordinal position, per get-columns' ORDER BY) - the
@@ -232,4 +258,5 @@
   (->
    (index-foreign-keys foreign-keys)
    (index-columns columns)
+   resolve-bare-tables
    (index-heuristic-relations columns)))
