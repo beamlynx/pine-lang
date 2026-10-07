@@ -26,7 +26,11 @@
                    "?connectionTimeZone=SERVER&forceConnectionTimeZoneToSession=false"
                    "&preserveInstants=false&allowPublicKeyRetrieval=true"
                    "&zeroDateTimeBehavior=CONVERT_TO_NULL&tinyInt1isBit=false"
-                   "&characterEncoding=UTF-8")
+                   "&characterEncoding=UTF-8"
+                   ;; Never let a server ask this process for local files.
+                   ;; A malicious MySQL server can otherwise request any
+                   ;; file pine-lang can read, during any query.
+                   "&allowLoadLocalInfile=false&allowUrlInLocalInfile=false")
       (str "jdbc:postgresql://" host ":" port "/" dbname))))
 
 (defn- create-hikari-config [{:keys [dbtype schema] :as config}]
@@ -50,11 +54,46 @@
       (.setSchema hc schema))
     hc))
 
+(defn- bad-connection [message]
+  (throw (ex-info message {:error-type "bad-connection"})))
+
+;; jdbc-url builds the URL by concatenation, so these fields must not carry
+;; URL syntax. A `?` or `&` in a database name used to add driver options:
+;; `db?allowLoadLocalInfile=true` on MySQL, `db?socketFactory=...` on
+;; Postgres. The user and password are set on the pool, never in the URL,
+;; so they may contain anything.
+(def ^:private host-pattern #"^(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])$")
+(def ^:private name-pattern #"^[\p{L}\p{N}_.$-]+$")
+
+(defn validate-connection
+  "The connection config with its port as an integer (or nil for the
+  default), or an ex-info with :error-type \"bad-connection\" naming the
+  field that's wrong. Never puts the password in ex-data."
+  [{:keys [dbtype host port dbname schema user password] :as config}]
+  (let [dbtype (or dbtype "postgres")]
+    (when-not (#{"postgres" "mysql"} dbtype)
+      (bad-connection (str "Unknown database type `" dbtype "`. Use postgres or mysql.")))
+    (when-not (and (string? host) (re-matches host-pattern host))
+      (bad-connection "The host must be a hostname or an IP address, with no port, path or options."))
+    (when-not (and (string? dbname) (re-matches name-pattern dbname))
+      (bad-connection "The database name may contain only letters, digits, and _ . $ -"))
+    (when-not (or (nil? schema) (= "" schema) (and (string? schema) (re-matches name-pattern schema)))
+      (bad-connection "The schema name may contain only letters, digits, and _ . $ -"))
+    (when-not (string? user)
+      (bad-connection "The user is required."))
+    (when-not (string? password)
+      (bad-connection "The password is required."))
+    (let [port (cond
+                 (or (nil? port) (= "" port)) nil
+                 (integer? port) port
+                 (and (string? port) (re-matches #"[0-9]{1,5}" port)) (Long/parseLong port)
+                 :else (bad-connection "The port must be a number."))]
+      (when (and port (not (<= 1 port 65535)))
+        (bad-connection "The port must be between 1 and 65535."))
+      (assoc config :dbtype dbtype :port port :schema (not-empty schema)))))
+
 (defn create-pool [config]
-  (let [config (merge {:dbtype "postgres"} config)]
-    (when (some nil? (vals (select-keys config [:host :dbname :user :password])))
-      (throw (ex-info "Missing required database configuration" {:config config})))
-    (HikariDataSource. (create-hikari-config config))))
+  (HikariDataSource. (create-hikari-config (validate-connection config))))
 
 (def pools "Database connection pools" (atom {}))
 
@@ -182,10 +221,14 @@
   [connection]
   (let [candidate (create-pool connection)
         id (make-connection-id candidate)
-        existing (@pools id)]
+        ;; Decided inside the atom: two registrations of the same database at
+        ;; once (a double click, a retry) used to both read nil here, and the
+        ;; second assoc orphaned the first pool, open, for good.
+        [before _] (swap-vals! pools #(if (contains? % id) % (assoc % id candidate)))
+        existing (get before id)]
     (cond
       (nil? existing)
-      (do (swap! pools assoc id candidate) id)
+      id
 
       (same-target? existing candidate)
       ;; Closing the redundant candidate is what stops the leak -- it has

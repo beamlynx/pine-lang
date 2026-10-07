@@ -126,7 +126,8 @@
   (testing "MySQL: port defaults to 3306, plus the fixed connection params"
     (is (= (str "jdbc:mysql://h:3306/d?connectionTimeZone=SERVER&forceConnectionTimeZoneToSession=false"
                 "&preserveInstants=false&allowPublicKeyRetrieval=true"
-                "&zeroDateTimeBehavior=CONVERT_TO_NULL&tinyInt1isBit=false&characterEncoding=UTF-8")
+                "&zeroDateTimeBehavior=CONVERT_TO_NULL&tinyInt1isBit=false&characterEncoding=UTF-8"
+                "&allowLoadLocalInfile=false&allowUrlInLocalInfile=false")
            (connections/jdbc-url {:dbtype "mysql" :host "h" :dbname "d"})))
     (is (clojure.string/starts-with? (connections/jdbc-url {:dbtype "mysql" :host "h" :port 3307 :dbname "d"})
                                      "jdbc:mysql://h:3307/d?"))))
@@ -161,3 +162,60 @@
       (is (= :postgres (connections/get-dialect "dialect-fake")))
       (finally
         (swap! connections/pools dissoc "dialect-fake")))))
+
+(def ^:private ok {:host "db.example" :dbname "app" :user "u" :password "p"})
+
+(defn- problem [config]
+  (try (connections/validate-connection config) nil
+       (catch clojure.lang.ExceptionInfo e
+         [(.getMessage e) (ex-data e)])))
+
+(deftest test-validate-connection
+  (testing "values that would add options to the JDBC URL are refused"
+    (doseq [config [(assoc ok :dbname "app?allowLoadLocalInfile=true")
+                    (assoc ok :dbname "app?socketFactory=x&socketFactoryArg=y")
+                    (assoc ok :host "h:1/x?loggerFile=/tmp/x&q=")
+                    (assoc ok :host "h/x")
+                    (assoc ok :schema "public;x")]]
+      (is (= "bad-connection" (:error-type (second (problem config)))) (pr-str config))))
+
+  (testing "bad ports and types are refused"
+    (is (problem (assoc ok :port 0)))
+    (is (problem (assoc ok :port 70000)))
+    (is (problem (assoc ok :port "abc")))
+    (is (problem (assoc ok :dbtype "sqlite")))
+    (is (problem (dissoc ok :password)))
+    (is (problem (assoc ok :user 5))))
+
+  (testing "the password never appears in the error"
+    (let [[message data] (problem (assoc ok :dbname "a?b" :password "hunter2"))]
+      (is (not (re-find #"hunter2" (str message data))))))
+
+  (testing "ordinary values pass, with the port as a number"
+    (is (= 5432 (:port (connections/validate-connection (assoc ok :port "5432")))))
+    (is (nil? (:port (connections/validate-connection (assoc ok :port "")))))
+    (is (connections/validate-connection (assoc ok :host "[::1]" :dbname "db_1")))
+    (is (connections/validate-connection (assoc ok :host "sample_db" :dbname "my-db" :schema "public")))
+    (is (connections/validate-connection (assoc ok :host "10.0.0.5" :dbname "app$1" :dbtype "mysql")))))
+
+(deftest test-mysql-url-refuses-local-files
+  (is (re-find #"allowLoadLocalInfile=false" (connections/jdbc-url {:dbtype "mysql" :host "h" :dbname "d"}))))
+
+(deftest test-concurrent-registration-keeps-one-pool
+  ;; Two registrations of the same database at once (a double click, a
+  ;; retry) used to both see no pool, and the second assoc orphaned the
+  ;; first, still open. The decision now happens inside the atom.
+  (let [url "jdbc:postgresql://race-test:5432/app"
+        n 16
+        closed (vec (repeatedly n #(atom false)))
+        start (java.util.concurrent.CountDownLatch. 1)
+        counter (atom -1)]
+    (try
+      (with-redefs [connections/create-pool (fn [_] (fake-hikari url "u" (closed (swap! counter inc))))]
+        (let [futures (doall (for [_ (range n)]
+                               (future (.await start) (connections/add-connection-pool {:host "race-test"}))))]
+          (.countDown start)
+          (is (every? #(= "race-test:5432:app" @%) futures))))
+      (is (= 1 (count (remove deref closed))) "exactly one pool stays open; every other one is closed")
+      (finally
+        (swap! connections/pools dissoc "race-test:5432:app")))))

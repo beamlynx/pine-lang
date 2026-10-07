@@ -22,10 +22,16 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - Block comments after a `select:` column could take seconds to parse, or run the server out of memory: ten took 4 s, twelve exhausted a 2 GB heap. A 1 MB string literal took 7.5 s. Whitespace with comments, and each string literal, are now one token, so parsing is linear. Twelve comments now take under a millisecond and a 1 MB literal 17 ms.
 - `update! name = other_column` set the column to NULL on every row it targeted. It now copies the other column's value. The other column has to belong to the table being changed; naming one from a joined table is an error.
 - The development entry point (`clj -M:run-dev`) listened on every network interface. It listens on loopback, like the real one, unless `PINE_HOST` says otherwise.
+- Registering the same database twice at the same moment (a double click, a retry) left one connection pool open for good. Only one is kept now.
+- A request with no connection selected, or naming a connection that isn't connected, returned HTTP 500. It returns a normal error with `error-type: "no-connection"`. A parameter of the wrong type returns HTTP 400 with `error-type: "bad-request"` naming it. `/connection/stats` with nothing selected, and `/build-with-params` without an expression, no longer fail.
+- Selecting a connection whose schema can't be read left it selected, so every later request failed on it. The previous selection now stays.
 
 ### Security
 - When the server listens on loopback (the default), a request whose Host header isn't `localhost`, `127.0.0.1` or `[::1]` is refused with HTTP 403. This stops a web page from reaching the server by rebinding its own domain to 127.0.0.1 (DNS rebinding), with or without a token.
 - Parameters are read from the JSON body only, not from form-encoded bodies or the query string. A form POST is a request a web page can send to another site without the browser asking it first.
+- A connection's host, port, database name and schema are checked before the server builds the connection string. A value containing `?` or `&` used to add driver options: `allowLoadLocalInfile=true` on MySQL, `socketFactory=...` on Postgres. Such a value is now refused with `error-type: "bad-connection"`, naming the field.
+- MySQL connections set `allowLoadLocalInfile=false` and `allowUrlInLocalInfile=false`, so a MySQL server can never ask pine-lang for a local file.
+- An unexpected error returns HTTP 500 with a generic message. The real exception goes only to the server log, since its message can contain internal details.
 
 ## [0.48.1] - 2026-10-06
 ### Fixed
