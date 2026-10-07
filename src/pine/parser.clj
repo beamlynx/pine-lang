@@ -458,9 +458,19 @@
 ;; LIMIT
 ;; -----
 
+(def max-limit
+  "The largest `limit:` Pine accepts. A bigger result doesn't fit in the
+  server's memory or the results grid, and an out-of-range number used to
+  surface as a raw Java NumberFormatException."
+  10000)
+
 (defmethod -normalize-op :LIMIT [[_ [_ number]]]
-  {:type :limit
-   :value (Integer/parseInt number)})
+  (let [n (try (Long/parseLong number) (catch NumberFormatException _ nil))]
+    (when-not (and n (<= n max-limit))
+      (throw (ex-info (str "limit: must be between 0 and " max-limit ".")
+                      {:error-type "parse" :limit number})))
+    {:type :limit
+     :value n}))
 
 ;; -----
 ;; FROM

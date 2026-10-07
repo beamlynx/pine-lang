@@ -293,7 +293,7 @@
            (generate "company as c | employee as e | s: c.id, e.*"))))
 
   (testing "group"
-    (is (= {:query "WITH \"x_1\" AS ( SELECT \"e_0\".\"status\" AS \"status\" FROM \"email\" AS \"e_0\" ) SELECT \"x_1\".\"status\", COUNT(1) AS \"count\" FROM \"x_1\" GROUP BY \"x_1\".\"status\"",
+    (is (= {:query "WITH \"x_1\" AS ( SELECT \"e_0\".\"status\" AS \"status\" FROM \"email\" AS \"e_0\" ) SELECT \"x_1\".\"status\", COUNT(1) AS \"count\" FROM \"x_1\" GROUP BY \"x_1\".\"status\" LIMIT 10000",
             :params nil}
            (generate "email | group: status => count"))))
 
@@ -340,17 +340,17 @@
 
   (testing "date extraction with grouping"
     ;; Group by name AND month extraction (both specified in group)
-    (is (= {:query "WITH \"x_2\" AS ( SELECT \"e_0\".\"name\" AS \"name\", TO_CHAR(DATE_TRUNC('month', \"e_0\".\"created_at\"), 'YYYY-MM') AS \"month\" FROM \"employee\" AS \"e_0\" ) SELECT \"x_2\".\"name\", \"x_2\".\"month\", COUNT(1) AS \"count\" FROM \"x_2\" GROUP BY \"x_2\".\"name\", \"x_2\".\"month\"",
+    (is (= {:query "WITH \"x_2\" AS ( SELECT \"e_0\".\"name\" AS \"name\", TO_CHAR(DATE_TRUNC('month', \"e_0\".\"created_at\"), 'YYYY-MM') AS \"month\" FROM \"employee\" AS \"e_0\" ) SELECT \"x_2\".\"name\", \"x_2\".\"month\", COUNT(1) AS \"count\" FROM \"x_2\" GROUP BY \"x_2\".\"name\", \"x_2\".\"month\" LIMIT 10000",
             :params nil}
            (generate "employee | select: name, created_at => month | group: name, created_at => count")))
 
     ;; Group by just the extracted date (only month in group, month also selected)
-    (is (= {:query "WITH \"x_2\" AS ( SELECT TO_CHAR(DATE_TRUNC('month', \"e_0\".\"created_at\"), 'YYYY-MM') AS \"month\" FROM \"employee\" AS \"e_0\" ) SELECT \"x_2\".\"month\", COUNT(1) AS \"count\" FROM \"x_2\" GROUP BY \"x_2\".\"month\"",
+    (is (= {:query "WITH \"x_2\" AS ( SELECT TO_CHAR(DATE_TRUNC('month', \"e_0\".\"created_at\"), 'YYYY-MM') AS \"month\" FROM \"employee\" AS \"e_0\" ) SELECT \"x_2\".\"month\", COUNT(1) AS \"count\" FROM \"x_2\" GROUP BY \"x_2\".\"month\" LIMIT 10000",
             :params nil}
            (generate "employee | select: created_at => month | group: created_at => count")))
 
     ;; Select multiple columns but group by only one (month)
-    (is (= {:query "WITH \"x_2\" AS ( SELECT TO_CHAR(DATE_TRUNC('month', \"e_0\".\"created_at\"), 'YYYY-MM') AS \"month\" FROM \"employee\" AS \"e_0\" ) SELECT \"x_2\".\"month\", COUNT(1) AS \"count\" FROM \"x_2\" GROUP BY \"x_2\".\"month\"",
+    (is (= {:query "WITH \"x_2\" AS ( SELECT TO_CHAR(DATE_TRUNC('month', \"e_0\".\"created_at\"), 'YYYY-MM') AS \"month\" FROM \"employee\" AS \"e_0\" ) SELECT \"x_2\".\"month\", COUNT(1) AS \"count\" FROM \"x_2\" GROUP BY \"x_2\".\"month\" LIMIT 10000",
             :params nil}
            (generate "employee | select: name, created_at => month | group: month => count"))))
 
@@ -387,6 +387,10 @@
     ;; Unresolved joins are refused for every operation, writes included.
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No relation between `company` and `company`"
                           (generate "company | where: id = 1 | company | delete! .id"))))
+
+  (testing "a terminal group: returns at most 10 000 groups; one sealed into a checkpoint keeps them all"
+    (is (clojure.string/ends-with? (:query (generate "email | group: status => count")) " LIMIT 10000"))
+    (is (not (re-find #"LIMIT 10000" (:query (generate "x.company | group: id => count | employee"))))))
 
   (testing "an update! still being typed (trailing comma) builds nothing"
     (is (= {:query "" :params nil}
@@ -814,12 +818,12 @@
     ;; wrapper CTE ended up referencing the checkpoint's name (e.g. "pg") as a
     ;; bare relation that was never defined anywhere, a dangling reference
     ;; that would fail at execution time.
-    (is (= {:query "WITH \"pg\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ), \"x_4\" AS ( SELECT \"pg\".\"name\" AS \"name\" FROM \"pg\" AS \"pg\" ) SELECT \"x_4\".\"name\", COUNT(1) AS \"count\" FROM \"x_4\" GROUP BY \"x_4\".\"name\""
+    (is (= {:query "WITH \"pg\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ), \"x_4\" AS ( SELECT \"pg\".\"name\" AS \"name\" FROM \"pg\" AS \"pg\" ) SELECT \"x_4\".\"name\", COUNT(1) AS \"count\" FROM \"x_4\" GROUP BY \"x_4\".\"name\" LIMIT 10000"
             :params nil}
            (generate "x.company | l: 10 |= pg | s: name | g: name => count"))))
 
   (testing "Checkpoint feeding a terminal GROUP nests its own CTE (auto-named, no |=)"
-    (is (= {:query "WITH \"__pine_0__\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ), \"x_3\" AS ( SELECT \"__pine_0__\".\"name\" AS \"name\" FROM \"__pine_0__\" AS \"__pine_0__\" ) SELECT \"x_3\".\"name\", COUNT(1) AS \"count\" FROM \"x_3\" GROUP BY \"x_3\".\"name\""
+    (is (= {:query "WITH \"__pine_0__\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ), \"x_3\" AS ( SELECT \"__pine_0__\".\"name\" AS \"name\" FROM \"__pine_0__\" AS \"__pine_0__\" ) SELECT \"x_3\".\"name\", COUNT(1) AS \"count\" FROM \"x_3\" GROUP BY \"x_3\".\"name\" LIMIT 10000"
             :params nil}
            (generate "x.company | l: 10 | s: name | g: name => count"))))
 
@@ -919,7 +923,7 @@
       (is (clojure.string/includes? query "SELECT \"r\".* FROM \"r\" AS \"r\""))))
 
   (testing "column-type rule: GROUP BY a redacted column still runs, but every group collapses to the placeholder - a known tradeoff, not a leak"
-    (is (= "WITH \"x_1\" AS ( SELECT 'xxxxx' AS \"title\" FROM \"report\" AS \"r_0\" ) SELECT \"x_1\".\"title\", COUNT(1) AS \"count\" FROM \"x_1\" GROUP BY \"x_1\".\"title\""
+    (is (= "WITH \"x_1\" AS ( SELECT 'xxxxx' AS \"title\" FROM \"report\" AS \"r_0\" ) SELECT \"x_1\".\"title\", COUNT(1) AS \"count\" FROM \"x_1\" GROUP BY \"x_1\".\"title\" LIMIT 10000"
            (:query (generate "report | group: title => count" [column-type-rule]))))))
 
 (deftest test-build-query-mysql
@@ -1002,7 +1006,7 @@
            (generate-mysql "company | count:"))))
 
   (testing "Group"
-    (is (= {:query "WITH `x_1` AS ( SELECT `e_0`.`status` AS `status` FROM `email` AS `e_0` ) SELECT `x_1`.`status`, COUNT(1) AS `count` FROM `x_1` GROUP BY `x_1`.`status`"
+    (is (= {:query "WITH `x_1` AS ( SELECT `e_0`.`status` AS `status` FROM `email` AS `e_0` ) SELECT `x_1`.`status`, COUNT(1) AS `count` FROM `x_1` GROUP BY `x_1`.`status` LIMIT 10000"
             :params nil}
            (generate-mysql "email | group: status => count"))))
 

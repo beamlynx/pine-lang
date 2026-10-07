@@ -22,6 +22,17 @@
   receive it on."
   (= "1" (System/getenv "PINE_LOG_QUERIES")))
 
+(def query-timeout-seconds
+  "Every statement is cancelled by the driver after this long. A pool holds
+  only a few connections, so a query that runs for an hour would otherwise
+  hold one of them for an hour."
+  60)
+
+(def max-raw-sql-rows
+  "Rows /api/v1/sql returns at most. Pine queries have their own limits
+  (eval.clj); raw SQL had none, and a big table filled the server's memory."
+  10000)
+
 (defn- log-query [fmt & args]
   (when log-queries?
     (prn (apply format fmt args))))
@@ -32,7 +43,8 @@
         params (map convert-param params)
         _ (log-query "Running query: %s" query)
         result (with-open [conn (.getConnection pool)]
-                 (jdbc/query {:connection conn} (cons query params) {:as-arrays? true :identifiers identity}))
+                 (jdbc/query {:connection conn} (cons query params)
+                             {:as-arrays? true :identifiers identity :timeout query-timeout-seconds}))
         _ (log-query "Done!")]
     result))
 
@@ -42,7 +54,7 @@
         params (map convert-param params)
         _ (log-query "Running action: %s" query)
         result (with-open [conn (.getConnection pool)]
-                 (jdbc/execute! {:connection conn} (cons query params)))
+                 (jdbc/execute! {:connection conn} (cons query params) {:timeout query-timeout-seconds}))
         affected-rows (first result)
         _ (log-query "Affected rows: %d" affected-rows)]
     affected-rows))
@@ -60,7 +72,7 @@
          (mapv (fn [{:keys [table query params]}]
                  (let [params (map convert-param (or params []))
                        _ (log-query "Running action (tx): %s" query)
-                       result (jdbc/execute! tx (cons query params) {:transaction? false})
+                       result (jdbc/execute! tx (cons query params) {:transaction? false :timeout query-timeout-seconds})
                        affected (first result)]
                    (log-query "Affected rows: %d" affected)
                    [(or table "table") affected]))
@@ -80,10 +92,18 @@
         _ (log-query "Running raw SQL: %s" sql-query)
         result (with-open [conn (.getConnection pool)]
                  (if is-select?
-                   (jdbc/query {:connection conn} sql-query {:as-arrays? true :identifiers identity})
-                   (jdbc/execute! {:connection conn} sql-query)))
+                   ;; One row past the cap, to know whether it was reached.
+                   (jdbc/query {:connection conn} sql-query
+                               {:as-arrays? true :identifiers identity
+                                :timeout query-timeout-seconds :max-rows (+ 2 max-raw-sql-rows)})
+                   (jdbc/execute! {:connection conn} sql-query {:timeout query-timeout-seconds})))
         _ (log-query "Done!")]
     (if is-select?
-      result
+      ;; as-arrays: the first row is the header.
+      (if (> (count result) (inc max-raw-sql-rows))
+        (conj (vec (take (inc max-raw-sql-rows) result))
+              (into [(str "... cut at " max-raw-sql-rows " rows")]
+                    (repeat (dec (count (first result))) nil)))
+        result)
       ;; Return array format for action queries to match expected structure
       [["Rows affected"] [(first result)]])))
