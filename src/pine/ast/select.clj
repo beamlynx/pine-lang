@@ -1,4 +1,5 @@
-(ns pine.ast.select)
+(ns pine.ast.select
+  (:require [pine.db.references :as refs]))
 
 (defn column-source
   "The real table (and schema) this column ultimately traces back to - itself
@@ -39,23 +40,21 @@
     (-> state
         (update :columns into columns))))
 
-(defn- has-id-column?
-  "Check if a table has an 'id' column by looking up the table info in references"
+(defn- key-columns
+  "The primary key columns of the real table behind an alias, or nil."
   [references aliases alias]
   (when-let [{:keys [table schema]} (get aliases alias)]
-    (let [columns (if schema
-                    (get-in references [:schema schema :table table :columns])
-                    (get-in references [:table table :columns]))]
-      (some #(= "id" (:column %)) columns))))
+    (refs/primary-key references schema table)))
 
 (defn- create-auto-id-column
-  "Create a hidden auto-ID column for a table alias"
-  [alias operation-index]
-  {:column "id"  ; Use "id" column instead of empty column with symbol
+  "A hidden column carrying one primary key column of a table alias. The
+  results grid reads these to know which row an edit changes."
+  [alias column operation-index]
+  {:column column
    :alias alias
-   :column-alias (str "__" alias "__id")
+   :column-alias (str "__" alias "__" column)
    :hidden true  ; Mark as hidden for UI purposes
-   :auto-id true  ; Mark as auto-generated ID
+   :auto-id true  ; Mark as a key column Pine added, not one the user selected
    :operation-index operation-index}) ; Add operation index for hints context
 
 (defn- should-add-auto-ids?
@@ -64,21 +63,36 @@
   (let [operation-type (-> state :operation :type)]
     (not (contains? #{:count :group :delete-action :update-action} operation-type))))
 
+(defn add-row-keys
+  "Record the primary key of every real table in the state, as
+  `:row-keys {alias [column ...]}`. A table without one is left out."
+  [state]
+  (let [{:keys [references aliases]} state]
+    (assoc state :row-keys
+           (into {}
+                 (for [{:keys [alias]} (:tables state)
+                       :when (not (:ast (get aliases alias)))
+                       :let [columns (key-columns references aliases alias)]
+                       :when columns]
+                   [alias (vec columns)])))))
+
 (defn add-auto-id-columns
-  "Add auto-ID columns for all tables in the state, but only if the table actually has an 'id' column"
+  "Add a hidden column for each primary key column of every table in the
+  state. A table without a primary key gets none, and its rows can't be
+  edited from the results grid."
   [state]
   (if (should-add-auto-ids? state)
     (let [table-aliases (map :alias (:tables state))
           ;; Use the current operation index as the starting point for auto-ID columns
           ;; This ensures they come after all other operations
           next-operation-index (inc (:index state))
-          references (:references state)
-          aliases (:aliases state)
-          variables (:named-results state)
-          ;; Only create auto-ID columns for real tables (not variables/CTEs) that have an 'id' column
-          valid-aliases (filter #(and (not (:ast (get aliases %)))
-                                      (has-id-column? references aliases %))
-                                table-aliases)
-          auto-id-columns (map-indexed #(create-auto-id-column %2 (+ next-operation-index %1)) valid-aliases)]
+          row-keys (:row-keys state)
+          ;; Only real tables (not variables/CTEs) that have a primary key
+          keyed (for [alias table-aliases
+                      column (get row-keys alias)]
+                  [alias column])
+          auto-id-columns (map-indexed (fn [i [alias column]]
+                                         (create-auto-id-column alias column (+ next-operation-index i)))
+                                       keyed)]
       (update state :columns into auto-id-columns))
     state))

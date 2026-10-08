@@ -231,6 +231,34 @@
               [nil  "product"  "id"              nil  "integer"  nil  nil  nil]
               [nil  "product"  "config"          nil  "json"     nil  nil  nil]
               [nil  "product"  "released"        nil  "datetime" nil  nil  nil]
-              [nil  "product"  "active"          nil  "tinyint"  nil  nil  nil]])
+              [nil  "product"  "active"          nil  "tinyint"  nil  nil  nil]
 
-(def references [foreign-keys columns])
+              ;; Schema "p": tables whose rows are not identified by a
+              ;; primary key on `id`. See primary-keys below.
+              ["p"  "membership"  "group_code"   nil  "integer"            nil  nil  nil]
+              ["p"  "membership"  "member_code"  nil  "integer"            nil  nil  nil]
+              ["p"  "membership"  "role"         nil  "character varying" nil  nil  nil]
+              ["p"  "legacy"      "code"         nil  "character varying" nil  nil  nil]
+              ["p"  "legacy"      "id"           nil  "integer"            nil  nil  nil]
+              ["p"  "legacy"      "name"         nil  "character varying" nil  nil  nil]
+              ["p"  "log_entry"   "id"           nil  "integer"            nil  nil  nil]
+              ["p"  "log_entry"   "message"      nil  "character varying" nil  nil  nil]])
+
+;; schema table col position
+;;
+;; Every table above with an `id` column is keyed on it, except these, in
+;; schema "p":
+;;
+;;   p.membership  keyed on two columns, (group_code, member_code). No `id`.
+;;   p.legacy      keyed on `code`. Its `id` column is not unique.
+;;   p.log_entry   no primary key at all, like a view. Has an `id` column.
+(def primary-keys
+  (into [["p" "membership" "group_code"  1]
+         ["p" "membership" "member_code" 2]
+         ["p" "legacy"     "code"        1]]
+        (for [[schema table] (distinct (map (fn [[schema table]] [schema table]) columns))
+              :when (and (not= "p" schema)
+                         (some (fn [[s t c]] (and (= s schema) (= t table) (= c "id"))) columns))]
+          [schema table "id" 1])))
+
+(def references [foreign-keys columns primary-keys])

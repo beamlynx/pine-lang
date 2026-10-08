@@ -23,7 +23,7 @@
   (testing "in <named result> is IN ( SELECT its column FROM it ), with its CTE and parameters first"
     (is (= {:query (str "WITH \"acme_emps\" AS ( SELECT \"e_1\".\"id\" FROM \"company\" AS \"c_0\" JOIN \"employee\" AS \"e_1\" "
                         "ON \"c_0\".\"id\" = \"e_1\".\"company_id\" WHERE \"c_0\".\"name\" = ? ) "
-                        "SELECT \"e_0\".id AS \"__e_0__id\", \"e_0\".* FROM \"employee\" AS \"e_0\" "
+                        "SELECT \"e_0\".\"id\" AS \"__e_0__id\", \"e_0\".* FROM \"employee\" AS \"e_0\" "
                         "WHERE \"e_0\".\"id\" IN ( SELECT \"id\" FROM \"acme_emps\" ) LIMIT 250")
             :params [{:type :string :value "Acme"}]}
            (update (generate [acme-employees "employee | where: id in acme_emps"]) :params vec))))

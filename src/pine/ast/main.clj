@@ -350,6 +350,9 @@
 (defn post-handle [state truncated-state]
   (-> state
       (hints/handle truncated-state)
+      ;; Each table's primary key, kept for update!, which is built after
+      ;; :references is dropped below
+      select/add-row-keys
       ;; Add auto-ID columns based on final operation type
       select/add-auto-id-columns
       (assoc :selected-tables (let [tables (state :tables)

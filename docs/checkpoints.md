@@ -45,7 +45,7 @@ Pine seals `x.company | l: 10` as an anonymous CTE `__pine_0__` and joins `emplo
 WITH "__pine_0__" AS (
   SELECT "c_0".* FROM "x"."company" AS "c_0" LIMIT 10
 )
-SELECT "e_1".id AS "__e_1__id", "e_1".*
+SELECT "e_1"."id" AS "__e_1__id", "e_1".*
 FROM "__pine_0__" AS "__pine_0__"
 JOIN "employee" AS "e_1" ON "__pine_0__"."id" = "e_1"."company_id"
 LIMIT 250
@@ -63,7 +63,7 @@ Same result but the CTE is named `pg`:
 WITH "pg" AS (
   SELECT "c_0".* FROM "x"."company" AS "c_0" LIMIT 10
 )
-SELECT "e_1".id AS "__e_1__id", "e_1".*
+SELECT "e_1"."id" AS "__e_1__id", "e_1".*
 FROM "pg" AS "pg"
 JOIN "employee" AS "e_1" ON "pg"."id" = "e_1"."company_id"
 LIMIT 250
@@ -83,7 +83,7 @@ WITH "__pine_0__" AS (
   FROM "x"."company" AS "c_0"
   GROUP BY "c_0"."id"
 )
-SELECT "e_1".id AS "__e_1__id", "e_1".*
+SELECT "e_1"."id" AS "__e_1__id", "e_1".*
 FROM "__pine_0__" AS "__pine_0__"
 JOIN "employee" AS "e_1" ON "__pine_0__"."id" = "e_1"."company_id"
 LIMIT 250

@@ -204,12 +204,10 @@
      "SELECT "
      (s/join
       ", "
-      (map (fn [{:keys [column alias column-alias symbol auto-id col-fn] :as col}]
+      (map (fn [{:keys [column alias column-alias symbol col-fn] :as col}]
              (let [redact? (and restricted? (access-policy/sensitive-column? state rules col))
                    c (cond
                        redact? access-policy/redacted-sql-literal
-                       ;; Auto-ID columns should render as unquoted id
-                       auto-id (str (q alias) ".id")
                        ;; Column function (currently date functions)
                        col-fn (col-fn-expr col-fn (q alias column))
                        ;; Symbol-based columns (like aggregates)
@@ -324,9 +322,9 @@
 (defn- build-cte-body
   "Generate the inner SQL for a variable's AST used as a CTE.
   When the current table has no explicit user columns, .* is added and already
-  includes id — so the auto-id column is dropped to avoid duplicate id names.
-  When explicit columns are present (no .*), the auto-id is kept but its alias
-  is stripped so id is accessible for join conditions.
+  includes the key - so the hidden key columns are dropped to avoid duplicate
+  names. When explicit columns are present (no .*), they are kept but their
+  alias is stripped so the key is accessible for join conditions.
   Returns {:query ... :params ...}."
   [ast]
   (let [current-alias    (:current ast)
@@ -412,12 +410,10 @@
         restricted? (seq rules)
         select-parts (s/join
                       ", "
-                      (map (fn [{:keys [column alias column-alias symbol auto-id col-fn] :as col}]
+                      (map (fn [{:keys [column alias column-alias symbol col-fn] :as col}]
                              (let [redact? (and restricted? (access-policy/sensitive-column? state rules col))
                                    c (cond
                                        redact? access-policy/redacted-sql-literal
-                                       ;; Auto-ID columns should render as unquoted id
-                                       auto-id (str (q alias) ".id")
                                        ;; Column function (currently date functions)
                                        col-fn (col-fn-expr col-fn (q alias column))
                                        ;; Regular columns
@@ -506,6 +502,14 @@
     (refuse-write (str "Refusing to change every row of `" (table-label aliases target)
                        "`. Add a where: or a limit: first."))))
 
+(defn- key-target
+  "The left side of `... IN ( SELECT ... )` for the columns that identify a
+  row: one column, or several matched as a row, `(a, b)`."
+  [columns]
+  (if (next columns)
+    (str "(" (s/join ", " (map q columns)) ")")
+    (q (first columns))))
+
 (defn build-delete-query
   "`delete!` names the columns that identify the rows to remove, and the
   DELETE matches them against those same columns as selected by the
@@ -522,11 +526,8 @@
         {:keys [columns]}                 delete
         state                             (assoc state :columns
                                                  (mapv (fn [column] {:column column :alias current}) columns))
-        {:keys [query params]}            (build-select-query state)
-        target                            (if (next columns)
-                                            (str "(" (s/join ", " (map q columns)) ")")
-                                            (q (first columns)))]
-    {:query (str "DELETE FROM " (q schema table) " WHERE " target " IN ( "  (in-subquery query) " )")
+        {:keys [query params]}            (build-select-query state)]
+    {:query (str "DELETE FROM " (q schema table) " WHERE " (key-target columns) " IN ( "  (in-subquery query) " )")
      :params params}))
 
 (defn- update-source-column
@@ -540,10 +541,20 @@
                     {:alias alias :column column})))
   (q column))
 
+(defn- update-key
+  "The columns update! finds a table's rows by: its primary key. Refuses a
+  table that has none, such as a view: no column is known to pick out one
+  row, so the update could change rows nobody meant."
+  [{:keys [aliases row-keys]} update-alias]
+  (or (get row-keys update-alias)
+      (refuse-write (str "update! can't change `" (table-label aliases update-alias)
+                         "`: it has no primary key, so there is no way to tell its rows apart."))))
+
 (defn- build-single-update-query [state update-alias assignments]
   (check-write-allowed state "update!" update-alias)
   (let [{:keys [aliases]}              state
         {table :table schema :schema}  (get aliases update-alias)
+        key-columns                    (update-key state update-alias)
         set-clause (s/join ", "
                            (map (fn [{:keys [column value]}]
                                   (let [{:keys [alias column]} column]
@@ -553,14 +564,15 @@
                                                             :else (auto-cast-placeholder (:type value))))))
                                 assignments))
         state-for-subquery (-> state
-                               (assoc :columns [{:column "id" :alias update-alias}])
+                               (assoc :columns (mapv (fn [column] {:column column :alias update-alias}) key-columns))
                                (assoc :operation {:type :select :value nil}))
         {:keys [query params]} (build-select-query state-for-subquery)
         update-params (->> assignments
                            (map :value)
                            (filter #(not (or (= (:type %) :symbol) (= (:type %) :column)))))]
     {:table (if schema (str schema "." table) table)
-     :query (str "UPDATE " (q schema table) " SET " set-clause " WHERE id IN ( " (in-subquery query) " )")
+     :query (str "UPDATE " (q schema table) " SET " set-clause " WHERE " (key-target key-columns)
+                 " IN ( " (in-subquery query) " )")
      :params (concat update-params params)}))
 
 (defn build-update-queries [state]

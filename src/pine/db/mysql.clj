@@ -43,13 +43,27 @@ ORDER BY table_schema, table_name, ordinal_position"]
     (with-open [conn (.getConnection pool)]
       (rest (jdbc/query {:connection conn} sql opts)))))
 
+(defn- get-primary-keys
+  "Each table's primary key, one row per column, in key order. MySQL always
+  names a primary key constraint PRIMARY."
+  [pool]
+  (let [opts {:as-arrays? true}
+        sql "SELECT table_schema, table_name, column_name, ordinal_position
+FROM information_schema.key_column_usage
+WHERE constraint_name = 'PRIMARY'
+  AND table_schema = DATABASE()
+ORDER BY table_schema, table_name, ordinal_position"]
+    (with-open [conn (.getConnection pool)]
+      (rest (jdbc/query {:connection conn} sql opts)))))
+
 (defn get-references-helper
-  "Return [foreign-keys columns] for a live MySQL connection."
+  "Return [foreign-keys columns primary-keys] for a live MySQL connection."
   [id]
   (let [pool (connections/get-connection-pool id)
         columns (get-columns pool)
-        foreign-keys (get-foreign-keys pool)]
-    [foreign-keys columns]))
+        foreign-keys (get-foreign-keys pool)
+        primary-keys (get-primary-keys pool)]
+    [foreign-keys columns primary-keys]))
 
 (def connection-count-sql
   "Degrades gracefully to \"just my own connections\" without PROCESS

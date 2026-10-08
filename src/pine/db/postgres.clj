@@ -98,13 +98,36 @@ ORDER BY n.nspname, c.relname, a.attnum"]
     (with-open [conn (.getConnection pool)]
       (rest (jdbc/query {:connection conn} sql opts)))))
 
+(defn- get-primary-keys
+  "Each table's primary key, one row per column, with its position in the
+  key. `conkey` lists the key's columns in key order, which is the order a
+  composite key is matched in."
+  [pool]
+  (let [opts {:as-arrays? true}
+        sql "SELECT
+  n.nspname AS table_schema,
+  c.relname AS table_name,
+  a.attname AS column_name,
+  k.ord AS ordinal_position
+FROM pg_constraint con
+JOIN pg_class c ON c.oid = con.conrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) ON true
+JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+WHERE con.contype = 'p'
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY n.nspname, c.relname, k.ord"]
+    (with-open [conn (.getConnection pool)]
+      (rest (jdbc/query {:connection conn} sql opts)))))
+
 (defn get-references-helper
-  "Return [foreign-keys columns] for a live Postgres connection."
+  "Return [foreign-keys columns primary-keys] for a live Postgres connection."
   [id]
   (let [pool (connections/get-connection-pool id)
         columns (get-columns pool)
-        foreign-keys (get-foreign-keys pool)]
-    [foreign-keys columns]))
+        foreign-keys (get-foreign-keys pool)
+        primary-keys (get-primary-keys pool)]
+    [foreign-keys columns primary-keys]))
 
 (def connection-count-sql "SELECT COUNT(*) as connection_count FROM pg_stat_activity")
 

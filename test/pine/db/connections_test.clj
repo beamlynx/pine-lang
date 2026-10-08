@@ -238,3 +238,31 @@
       (is (= 2 (count (columns-of (index [["a" "t" "x" 1 "text" nil "NO" nil]
                                           ["b" "t" "y" 1 "text" nil "NO" nil]])
                                   "t")))))))
+
+(deftest test-unqualified-table-uses-its-schemas-primary-key
+  ;; columns: [schema table column position type length nullable default]
+  ;; primary keys: [schema table column position]
+  (let [index (fn [columns primary-keys] (refs/index-references [[] columns primary-keys]))
+        user-columns [["audit" "user" "id" 1 "uuid" nil "NO" nil]
+                      ["audit" "user" "seen_at" 2 "timestamp" nil "NO" nil]
+                      ["public" "user" "id" 1 "integer" nil "NO" nil]
+                      ["public" "user" "email" 2 "text" nil "NO" nil]]]
+    (testing "key columns come back in key order, not the order they arrived in"
+      (is (= ["b" "a"] (refs/primary-key (index [["s" "t" "a" 1 "int4" nil "NO" nil]
+                                                 ["s" "t" "b" 2 "int4" nil "NO" nil]]
+                                                [["s" "t" "a" 2] ["s" "t" "b" 1]])
+                                         "s" "t"))))
+    (testing "an unqualified table uses the key of the schema it resolves to"
+      (is (= ["id"] (refs/primary-key (index user-columns [["public" "user" "id" 1]
+                                                           ["audit" "user" "seen_at" 1]])
+                                      nil "user")))
+      (is (= ["seen_at"] (refs/primary-key (index user-columns [["public" "user" "id" 1]
+                                                                ["audit" "user" "seen_at" 1]])
+                                           "audit" "user"))))
+    (testing "no key when the schema it resolves to has none"
+      (is (nil? (refs/primary-key (index user-columns [["audit" "user" "seen_at" 1]]) nil "user"))))
+    (testing "no key when several schemas have the table and none is public"
+      (is (nil? (refs/primary-key (index [["a" "t" "x" 1 "text" nil "NO" nil]
+                                          ["b" "t" "x" 1 "text" nil "NO" nil]]
+                                         [["a" "t" "x" 1] ["b" "t" "x" 1]])
+                                  nil "t"))))))
