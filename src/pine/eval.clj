@@ -251,7 +251,7 @@
                  (q alias column)))
              group)))))
 
-(defn- render-condition [[alias col cast operator value]]
+(defn- render-condition [{alias :alias col :column :keys [cast operator value]}]
   (cond
     ;; `in <named result>`: the values its one column returns (pine.ast.where
     ;; filled in :column). Its CTE is emitted by all-ctes.
@@ -288,8 +288,8 @@
   collection of maps), matching what remove-symbols/flatten below expect."
   [entry]
   (if-let [conditions (:or entry)]
-    (map #(nth % 4) conditions)
-    [(nth entry 4)]))
+    (map :value conditions)
+    [(:value entry)]))
 
 (defn- where-params [where]
   (when (not-empty where)

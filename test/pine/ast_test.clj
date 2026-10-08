@@ -4,6 +4,11 @@
             [pine.ast.main :as ast]
             [pine.data-types :as dt]))
 
+(defn- condition
+  "One condition as :where stores it."
+  [alias column cast operator value]
+  {:alias alias :column column :cast cast :operator operator :value value})
+
 (defn- generate
   "Helper function to generate and get the relevant part in the ast"
   ([expression]
@@ -128,48 +133,48 @@
            (generate :limit "l: 1"))))
 
   (testing "Generate ast for `where`"
-    (is (= [[nil "name" nil "=" (dt/string "Acme")]]
+    (is (= [(condition nil "name" nil "=" (dt/string "Acme"))]
            (generate :where "name = 'Acme'")))
-    (is (= [[nil "id" nil "=" (dt/number "1")]]
+    (is (= [(condition nil "id" nil "=" (dt/number "1"))]
            (generate :where "id = 1")))
-    (is (= [["c_0" "name" nil "=" (dt/string "Acme")]]
+    (is (= [(condition "c_0" "name" nil "=" (dt/string "Acme"))]
            (generate :where "company | name = 'Acme'")))
-    (is (= [["c_0" "name" "text" "=" (dt/string "Acme")]]
+    (is (= [(condition "c_0" "name" "text" "=" (dt/string "Acme"))]
            (generate :where "company | name = 'Acme' ::text")))
-    (is (= [["c_0" "id" "uuid" "=" (dt/string "123e4567-e89b-12d3-a456-426614174000")]]
+    (is (= [(condition "c_0" "id" "uuid" "=" (dt/string "123e4567-e89b-12d3-a456-426614174000"))]
            (generate :where "company | id = '123e4567-e89b-12d3-a456-426614174000' ::uuid")))
-    (is (= [["c" "name" nil "=" (dt/string "Acme")]]
+    (is (= [(condition "c" "name" nil "=" (dt/string "Acme"))]
            (generate :where "company as c | name = 'Acme'")))
-    (is (= [["c" "name" nil "=" (dt/string "Acme")] ["c" "country" nil "=" (dt/string "PK")]]
+    (is (= [(condition "c" "name" nil "=" (dt/string "Acme")) (condition "c" "country" nil "=" (dt/string "PK"))]
            (generate :where "company as c | name = 'Acme' | country = 'PK'")))
-    (is (= [["c" "country" nil "IN" [(dt/string "PK") (dt/string "DK")]]]
+    (is (= [(condition "c" "country" nil "IN" [(dt/string "PK") (dt/string "DK")])]
            (generate :where "company as c | country in ('PK', 'DK')")))
-    (is (= [[nil "name" nil "LIKE" (dt/string "Acme%")]]
+    (is (= [(condition nil "name" nil "LIKE" (dt/string "Acme%"))]
            (generate :where "name like 'Acme%'")))
-    (is (= [[nil "name" nil "NOT LIKE" (dt/string "Acme%")]]
+    (is (= [(condition nil "name" nil "NOT LIKE" (dt/string "Acme%"))]
            (generate :where "name not like 'Acme%'")))
-    (is (= [[nil "name" nil "ILIKE" (dt/string "acme%")]]
+    (is (= [(condition nil "name" nil "ILIKE" (dt/string "acme%"))]
            (generate :where "name ilike 'acme%'")))
-    (is (= [[nil "name" nil "NOT ILIKE" (dt/string "acme%")]]
+    (is (= [(condition nil "name" nil "NOT ILIKE" (dt/string "acme%"))]
            (generate :where "name not ilike 'acme%'"))))
 
   (testing "Generate ast for `where` `or` conditions (`or` inside one where: segment)"
-    (is (= [{:or [["c" "name" nil "=" (dt/string "Acme")]
-                  ["c" "country" nil "=" (dt/string "PK")]]}]
+    (is (= [{:or [(condition "c" "name" nil "=" (dt/string "Acme"))
+                  (condition "c" "country" nil "=" (dt/string "PK"))]}]
            (generate :where "company as c | name = 'Acme' or country = 'PK'")))
-    (is (= [["c" "name" nil "=" (dt/string "Acme")]
-            {:or [["c" "country" nil "=" (dt/string "PK")]
-                  ["c" "country" nil "=" (dt/string "DK")]]}]
+    (is (= [(condition "c" "name" nil "=" (dt/string "Acme"))
+            {:or [(condition "c" "country" nil "=" (dt/string "PK"))
+                  (condition "c" "country" nil "=" (dt/string "DK"))]}]
            (generate :where "company as c | name = 'Acme' | country = 'PK' or country = 'DK'"))))
 
   (testing "Generate ast for `where` with dates"
-    (is (= [[nil "created_at" nil "=" (dt/date "2025-01-01")]]
+    (is (= [(condition nil "created_at" nil "=" (dt/date "2025-01-01"))]
            (generate :where "created_at = '2025-01-01'")))
-    (is (= [[nil "created_at" nil "!=" (dt/date "2025-01-01")]]
+    (is (= [(condition nil "created_at" nil "!=" (dt/date "2025-01-01"))]
            (generate :where "created_at != '2025-01-01'")))
-    (is (= [[nil "created_at" nil ">" (dt/date "2025-01-01")]]
+    (is (= [(condition nil "created_at" nil ">" (dt/date "2025-01-01"))]
            (generate :where "created_at > '2025-01-01'")))
-    (is (= [[nil "created_at" nil "<" (dt/date "2025-01-01")]]
+    (is (= [(condition nil "created_at" nil "<" (dt/date "2025-01-01"))]
            (generate :where "created_at < '2025-01-01'"))))
 
   ;; A join is a map, not a positional tuple: :from/:to are the two aliases
@@ -389,10 +394,10 @@
 
     ;; The complete conditions before a half-typed one are stored as one OR
     ;; group, the same as when the whole where: is complete.
-    (is (= [["c_0" "id" nil "=" (dt/number "1")]]
+    (is (= [(condition "c_0" "id" nil "=" (dt/number "1"))]
            (generate :where "company | w: id = 1 or i")))
-    (is (= [{:or [["c_0" "id" nil "=" (dt/number "1")]
-                  ["c_0" "id" nil "=" (dt/number "2")]]}]
+    (is (= [{:or [(condition "c_0" "id" nil "=" (dt/number "1"))
+                  (condition "c_0" "id" nil "=" (dt/number "2"))]}]
            (generate :where "company | w: id = 1 or id = 2 or i")))
     (is (= (generate :where "company | w: id = 1 or id = 2")
            (generate :where "company | w: id = 1 or id = 2 or "))))
@@ -423,7 +428,7 @@
     ;; Test that JSONB column gets proper type conversion in WHERE clause
     (let [where-result (generate :where "customer | w: data = '{\"key\": \"value\"}'")]
       (is (= 1 (count where-result)))
-      (let [[alias col _ operator value] (first where-result)]
+      (let [{alias :alias col :column :keys [operator value]} (first where-result)]
         (is (= alias "c_0"))
         (is (= col "data"))
         (is (= operator "="))
@@ -433,7 +438,7 @@
 (testing "AST generation with comments"
   (is (= [{:schema nil :table "company" :alias "c_0" :parent nil :join-columns nil :join-column-pairs nil :join nil :index 0}]
          (generate :tables "-- get all companies\ncompany")))
-  (is (= [[nil "name" nil "=" (dt/string "Acme")]]
+  (is (= [(condition nil "name" nil "=" (dt/string "Acme"))]
          (generate :where "/* filter by name */ name = 'Acme'")))
   (is (= 10
          (generate :limit "limit: 10 -- max results"))))

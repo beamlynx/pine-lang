@@ -212,7 +212,7 @@
   and a column on the right of the comparison (whose alias defaults to the
   current table)."
   [current entry]
-  (mapcat (fn [[alias column _cast _op value]]
+  (mapcat (fn [{:keys [alias column value]}]
             (cond-> [[alias column]]
               (= :column (:type value))
               (conj (let [[a c] (:value value)] [(or a current) c]))))
