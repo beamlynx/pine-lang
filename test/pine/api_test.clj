@@ -313,3 +313,14 @@
     (is (nil? (:error response)))
     (is (:ast response))
     (is (= "policy" (:query-error-type response)))))
+
+(deftest test-cancel-route
+  (testing "a run id is required, and must be a string"
+    (is (= 400 (:status (post-json "/api/v1/cancel" {}))))
+    (is (= 400 (:status (post-json "/api/v1/cancel" {:run-id 5}))))
+    (is (= 400 (:status (post-json "/api/v1/sql" {:query "select 1" :run-id ""})))))
+  (testing "stopping a run that isn't running is not an error"
+    (let [r (post-json "/api/v1/cancel" {:run-id "api-test-not-running"})]
+      (is (= 200 (:status r)))
+      (is (= {:running false} (:json r))))
+    (pine.db.exec/finish-run! "api-test-not-running")))
