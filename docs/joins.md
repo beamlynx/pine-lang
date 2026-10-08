@@ -41,7 +41,7 @@ company | employee
 ```
 
 ```sql
-SELECT "c_0".id AS "__c_0__id", "e_1".*
+SELECT "c_0"."id" AS "__c_0__id", "e_1".*
 FROM "company" AS "c_0"
 JOIN "employee" AS "e_1" ON "c_0"."id" = "e_1"."company_id"
 LIMIT 250

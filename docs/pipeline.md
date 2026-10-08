@@ -46,7 +46,7 @@ operation runs, the DB schema is loaded so that join paths and column lists are 
 list of operations and what each one does, see [expressions.md](expressions.md).
 
 After all operations are applied, a **post-processing** step runs: autocomplete hints are computed,
-hidden auto-id columns are appended for row tracking, and a prettified form of the expression is attached.
+hidden key columns are appended for row tracking, and a prettified form of the expression is attached.
 
 The result is a single **state map** that fully describes the query.
 
@@ -121,7 +121,7 @@ so later stages know the order columns were introduced. `:assign` ops do not upd
 
 **`post-handle`** — runs after all operations:
 - `ast/hints/handle` computes autocomplete hints using the truncated-at-cursor state.
-- `ast/select/add-auto-id-columns` appends hidden `id` columns for each real table.
+- `ast/select/add-auto-id-columns` appends a hidden column for each primary key column of each real table.
   See [result-updates.md](result-updates.md).
 - `add-prettify` attaches a formatted expression and per-operation character ranges for cursor highlighting.
 

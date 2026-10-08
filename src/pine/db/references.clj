@@ -98,6 +98,31 @@
           {}
           (group-by-constraint foreign-keys)))
 
+(defn- index-primary-keys
+  "File each table's primary key under [:schema s :table t :primary-key]: its
+  column names, in key order. A table without one has no entry. The bare
+  table name gets its key in resolve-bare-tables, from the same schema its
+  columns come from."
+  [acc primary-keys]
+  (reduce (fn [acc [[schema table] rows]]
+            (assoc-in acc [:schema schema :table table :primary-key]
+                      (mapv (fn [[_ _ column]] column)
+                            (sort-by (fn [[_ _ _ position]] (or position 0)) rows))))
+          acc
+          (group-by (fn [[schema table]] [schema table]) primary-keys)))
+
+(defn primary-key
+  "The columns that identify one row of a table: its declared primary key, in
+  key order, or nil when it has none. A view never has one.
+
+  An unqualified table uses the key of the schema it resolves to (see
+  resolve-bare-tables) - the same table its columns come from. When that
+  resolution is ambiguous, there is no key."
+  [references schema table]
+  (seq (if schema
+         (get-in references [:schema schema :table table :primary-key])
+         (get-in references [:table table :primary-key]))))
+
 (defn- resolve-bare-tables
   "An unqualified table name holds the columns of the one schema the
   database would resolve it to, not every schema's columns merged. Two
@@ -107,7 +132,10 @@
 
   One schema has the table: its columns. Several, `public` among them (the
   head of Postgres's default search path): public's. Several without
-  public: still merged, since nothing says which one the database means."
+  public: still merged, since nothing says which one the database means.
+
+  The primary key follows the same choice. A merged table has no key: no one
+  schema's key is the right one."
   [acc]
   (reduce (fn [acc table]
             (let [schemas (keep (fn [[schema data]]
@@ -117,9 +145,10 @@
                            (= 1 (count schemas)) (second (first schemas))
                            :else (some (fn [[schema t]] (when (= "public" schema) t)) schemas))]
               (if chosen
-                (-> acc
-                    (assoc-in [:table table :columns] (:columns chosen))
-                    (assoc-in [:table table :column-set] (:column-set chosen)))
+                (cond-> (-> acc
+                            (assoc-in [:table table :columns] (:columns chosen))
+                            (assoc-in [:table table :column-set] (:column-set chosen)))
+                  (:primary-key chosen) (assoc-in [:table table :primary-key] (:primary-key chosen)))
                 acc)))
           acc
           (keys (:table acc))))
@@ -251,12 +280,13 @@
 
   Heuristic relations are also detected based on column naming conventions
   (e.g., tenant_id -> tenant table) for tables without explicit foreign keys."
-  [[foreign-keys columns]]
+  [[foreign-keys columns primary-keys]]
 
   ;; Index foreign keys first, then columns (so we have column data),
   ;; then detect heuristic relations (which need both FK data and column data)
   (->
    (index-foreign-keys foreign-keys)
    (index-columns columns)
+   (index-primary-keys primary-keys)
    resolve-bare-tables
    (index-heuristic-relations columns)))

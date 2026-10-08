@@ -14,6 +14,8 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - An expression or raw SQL query longer than 65 536 characters is refused with `error-type: "too-long"` before it is parsed. A request body over 1 MB is refused with HTTP 413.
 - **Breaking:** `delete!` and `update!` refuse to change every row of a table: add a `where:` or a `limit:` first. A `limit:` sealed into a checkpoint counts, so `company | l: 10 | employee | delete! .id` still works. They also refuse after `group:`, and on a named result. These come back with `error-type: "write-refused"`. See `docs/side-effects.md`.
 - **Breaking:** a join Pine can't resolve is an error naming both tables, with `error-type: "unresolved-join"`, for every operation. It used to produce SQL with no `ON` clause: a syntax error on Postgres, and a cross join on MySQL.
+- **Breaking:** `update!` finds rows by the table's primary key, not by a column called `id`. A key of several columns is matched as a row: `WHERE ("a", "b") IN ( SELECT ... )`. A table without a primary key is refused with `error-type: "write-refused"`, even when it has an `id` column. That includes views.
+- **Breaking:** the hidden columns added to each result for editing follow the primary key too: one per key column, named `__<alias>__<column>`, so `__c_0__id` for a table keyed on `id`. A table without a primary key gets none. An unqualified table uses the key of the schema it resolves to.
 - Every `delete!` and `update!` runs in a transaction, not only an `update!` across several tables.
 - `/eval` refuses an `update!` that ends in a comma, with `error-type: "incomplete"`, instead of running the assignments before the comma.
 - Every statement is cancelled after 60 seconds.
