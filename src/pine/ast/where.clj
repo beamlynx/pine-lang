@@ -1,5 +1,7 @@
 (ns pine.ast.where
-  (:require [clojure.string :as s]
+  (:require [cheshire.core :as json]
+            [clojure.string :as s]
+            [pine.ast.path :as path]
             [pine.data-types :as dt]))
 
 (defn- convert-condition-value
@@ -16,6 +18,33 @@
         (dt/convert-value-to-db-type value db-type))
       value)))
 
+(def ^:private json-comparisons #{"=" "!=" ">" "<" ">=" "<="})
+
+(defn- json-value
+  "A JSON value as a parameter, with its JSON type for pine.eval's type check."
+  [text json-type]
+  (cond-> (dt/jsonb text) json-type (assoc :json-type json-type)))
+
+(defn- json-literal
+  "A literal compared with a value inside a JSON column. `=`, `!=`, `<` and
+  `>` compare JSON values, so the literal becomes one: 10 the JSON number 10,
+  'SE' the JSON string \"SE\", true the JSON true. `like`, `in` and `is`
+  compare text, so their literals stay as they are."
+  [operator value]
+  (if-not (json-comparisons operator)
+    value
+    (case (:type value)
+      :number (json-value (str (:value value)) "number")
+      :string (json-value (json/generate-string (:value value)) "string")
+      :date (json-value (json/generate-string (:text value)) "string")
+      :symbol (case (s/lower-case (:value value))
+                "true" (json-value "true" "boolean")
+                "false" (json-value "false" "boolean")
+                "null" (json-value "null" nil)
+                value)
+      :column (throw (ex-info "A key inside a JSON column can only be compared with a value, not with another column." {}))
+      value)))
+
 (defn- make-resolve-alias [state]
   #(if (contains? (:aliases state) %) % (or (get-in state [:pending-assignments % :current]) %)))
 
@@ -23,10 +52,13 @@
 
 (defn- resolve-condition
   "Turn one parsed [column operator value] triple into the condition stored
-  in state's :where: {:alias :column :cast :operator :value}."
+  in state's :where: {:alias :column :cast :operator :value}, with :path when
+  the column is a path into a JSON value."
   [state current resolve-alias [column operator value]]
   (let [[alias col cast] (:value column)
-        alias (resolve-alias (or alias current))
+        {alias :alias col :column json-path :path} (path/resolve-column state {:alias alias :column col :path (:path column)})
+        _ (when (:path value)
+            (throw (ex-info "A JSON path can only be on the left of a comparison." {})))
         ;; Before the right-hand column gets its default alias below: a bare
         ;; name there that is a named result is a mistake this reports.
         _ (refuse-named-result-as-column state {:alias alias :column col :operator operator :value value})
@@ -35,6 +67,11 @@
         ;; would turn its name into a string, so it stays as it is: /build
         ;; shows it, /eval refuses to run it.
         converted-value (cond
+                          ;; Compared with a value inside a JSON column. An
+                          ;; unbound $variable still stays as it is.
+                          (and json-path (not= :variable (:type value)))
+                          (json-literal operator value)
+
                           ;; A column on the right without an alias belongs to
                           ;; the current table, as the column on the left
                           ;; does. It used to be written bare, which is
@@ -47,7 +84,8 @@
 
                           :else
                           (convert-condition-value value alias col state))]
-    {:alias alias :column col :cast cast :operator operator :value converted-value}))
+    (cond-> {:alias alias :column col :cast cast :operator operator :value converted-value}
+      json-path (assoc :path json-path))))
 
 (defn- named-result-column
   "The one column a named result used after `in` exposes, as it's named in

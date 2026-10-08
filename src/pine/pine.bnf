@@ -58,7 +58,8 @@ condition           := column <ws*> (condition-default|condition-in) (<ws*> cast
 
 (* `name = $` while the variable's name is still being typed reads as `name =`. *)
 partial-condition   := partial-alias | column <ws*> operator <ws*> <"$">? | column
-partial-alias       := alias <".">
+(* `c.` names an alias. `c.data.` and `data.'k'.` stop inside a JSON path. *)
+partial-alias       := alias <"."> | alias <"."> symbol json-step* <"."> | symbol json-start json-step* <".">
 <condition-default> := operator <ws*> (column|string|number|boolean|null|date|variable)
 <condition-in>      := (in  | not-in) <ws*>  (<"("> strings* <")"> | variable | named-result)
 (* A named result defined with `|= name`, used as the set of values its one column returns. *)
@@ -83,7 +84,17 @@ explicit-pair      := hint-column <ws*> <"="> <ws*> hint-column
 columns            := column (<","> <ws*> column)*
 column             := qualified-symbol <ws*> <"=>"> <ws*> column-function | qualified-symbol
 column-function    := "minute" | "hour" | "day" | "week" | "month" | "year"
-<qualified-symbol> := symbol | alias <"."> symbol
+(* A column, optionally followed by a path into its JSON value:
+   c.data.plan, data.tags[0], data.'home address'. The grammar doesn't know
+   what an alias is, so `a.b` always parses as alias and column, and
+   pine.ast.path decides what it names. After a bare name, a path starts with
+   a quoted key or an index, so every name has exactly one parse. *)
+<qualified-symbol> := symbol | symbol json-start json-step* | alias <"."> symbol json-step*
+<json-start>       := <"."> json-quoted-key | json-index
+<json-step>        := <"."> json-key | json-index
+json-key           := symbol | string
+json-quoted-key    := string
+json-index         := <"["> number <"]">
 
 alias    := symbol
 

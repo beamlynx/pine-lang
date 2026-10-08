@@ -1,6 +1,7 @@
 (ns pine.ast.group
   (:require
    [clojure.string :as s]
+   [pine.ast.path :as path]
    [pine.ast.select :as select]))
 
 (defn handle [state value]
@@ -13,8 +14,11 @@
         ;; Filter out auto-id columns from existing columns
         non-auto-existing (filter #(not (:auto-id %)) existing-columns)
 
-        ;; Process group columns - but DON'T set alias yet
-        raw-group-columns (map #(assoc %1 :operation-index i) (:columns value))
+        ;; Resolve what each name means first: `data.plan` is a path into
+        ;; `data`, not alias `data`. Its alias may still be replaced below by
+        ;; the alias of a matching selected column.
+        raw-group-columns (map #(assoc (path/resolve-column state %1) :operation-index i) (:columns value))
+        column-name #(or (:column-alias %) (:column %))
 
         ;; Create aggregate function symbols with aliases
         fn-columns (map (fn [name] {:symbol (str (s/upper-case name) "(1)")
@@ -27,11 +31,11 @@
                          ;; Strategy: for each group column, find matching existing column
                          ;; Match by column-alias (for derived columns) or column name (for regular columns)
                          (mapcat (fn [g-col]
-                                   (let [g-col-name (:column g-col)
+                                   (let [g-col-name (column-name g-col)
                                          ;; Try to find existing column by column-alias or column name
                                          ;; This preserves the original alias from the SELECT
                                          matching (filter #(or (= (:column-alias %) g-col-name)
-                                                               (= (:column %) g-col-name))
+                                                               (and (not (:path %)) (= (:column %) g-col-name)))
                                                           non-auto-existing)]
                                      (if (seq matching)
                                        ;; Use the existing column (preserves original alias like "t")

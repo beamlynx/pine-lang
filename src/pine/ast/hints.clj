@@ -645,7 +645,9 @@
     hints))
 
 (defn exclude-columns [hints columns]
-  (if (seq columns)
+  ;; A path into a JSON column (`data.plan`) doesn't use up the column:
+  ;; `data.region` can still follow.
+  (if-let [columns (seq (remove :path columns))]
     (filter (fn [hint]
               (not (some #(= (:column hint) (:column %)) columns)))
             hints)
@@ -725,6 +727,15 @@
       ;; Otherwise, return all hints
       :else hints)))
 
+(defn- in-json-path?
+  "Whether the name being typed stops inside a JSON path, like `c.data.`.
+  What follows is a key, and keys aren't in the schema, so there are no
+  hints yet."
+  [state]
+  (boolean (or (get-in state [:operation :partial-alias :json-partial])
+               (get-in state [:operation :value :partial-condition :json-partial])
+               (get-in state [:update :partial-column :json-partial]))))
+
 (defn handle
   "Generate hints based on the current operation.
    If truncated-state is provided, use it for hint generation context."
@@ -732,14 +743,16 @@
    (handle state nil))
   ([state truncated-state]
    (let [state-for-hints (or truncated-state state)
-         op-type (-> state-for-hints :operation :type)]
+         op-type (-> state-for-hints :operation :type)
+         json-path? (in-json-path? state-for-hints)]
      ;; :paths is handled separately: unlike every other op-type, which bucket
      ;; it lands in (:table vs :paths) depends on the search's runtime result,
      ;; not on op-type alone (see generate-path-hints).
      (if (= op-type :paths)
        (let [{:keys [key hints]} (generate-path-hints state-for-hints)]
          (assoc-in state [:hints key] (or hints [])))
-       (let [hints (case op-type
+       (let [hints (case (if json-path? :json-path op-type)
+                     :json-path []
                      :table (generate-table-hints state-for-hints)
                      :select (generate-column-hints state-for-hints (state-for-hints :columns))
                      :select-partial (generate-column-hints state-for-hints (state-for-hints :columns))
