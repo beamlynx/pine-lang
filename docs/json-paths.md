@@ -113,6 +113,8 @@ MySQL takes the whole path as one parameter. Each key is quoted as a JSON string
     column is still reachable through its own table's alias: `e.data.plan`. The column is marked
     `:alias-hides-column` so the canvas can show it.
   - A path column gets `:column-alias`, the path as typed, unless `as` named it.
+  - After a named result, a path names the column the named result selected under that name. After
+    `customer | s: data.plan |= p`, `p | s: data.plan` is `p`'s column `data.plan`.
 - **Literals.** `pine.ast.where/json-literal` turns a literal compared with `=`, `!=`, `<` or `>` into a `:jsonb`
   value with its `:json-type`.
 - **SQL.** `pine.eval/json-extract` writes the extraction as JSON (to compare and sort) or as text (to show and

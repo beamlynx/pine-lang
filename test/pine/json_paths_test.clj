@@ -64,7 +64,16 @@
   (testing "`as` names a path column"
     (is (= "tier" (-> (state "customer | s: data.plan as tier") :columns first :column-alias))))
 
+  (testing "A named result's path column is read by its name"
+    (let [named-results (:pending-assignments (state "customer | s: id, data.plan |= p"))
+          st (-> "p | where: data.plan = 'x' | s: data.plan" parse (ast/generate :test nil nil named-results []))]
+      (is (= {:alias "p" :column "data.plan"} (-> st :columns first (select-keys [:alias :column :path]))))
+      (is (re-find #"SELECT \"p\".\"data.plan\" FROM \"p\" AS \"p\" WHERE \"p\".\"data.plan\" = \?"
+                   (:query (eval/build-query st))))))
+
   (testing "Errors"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`customer` is a table. Name it by its alias, `c_0`"
+                          (state "customer | s: customer.id")))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`nope` is neither an alias nor a column of `customer`"
                           (state "customer | s: nope.x")))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`uuid_col` is not a JSON column"
@@ -175,7 +184,8 @@
     (is (= ["id" "data" "uuid_col"]
            (->> (state "customer as c | s: c.") :hints :select (map :column)))))
   (testing "Inside a JSON path: keys aren't in the schema, so nothing yet"
-    (doseq [e ["customer as c | s: c.data." "customer | w: data.address." "customer | o: data.'a'."]]
+    (doseq [e ["customer as c | s: c.data." "customer | w: data.address." "customer | o: data.'a'."
+               "customer | s: data." "customer | w: data."]]
       (is (= [] (-> (state e) :hints (get (if (re-find #"w:" e) :where (if (re-find #"o:" e) :order :select)))))
           e)))
   (testing "Selecting a key doesn't use up its column"

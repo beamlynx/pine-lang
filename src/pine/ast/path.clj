@@ -56,6 +56,27 @@
         (throw (ex-info (str "`" column "` is not a JSON column, so `" (path-text column path) "` has no keys.")
                         {}))))))
 
+(defn- named-result-column
+  "A named result names a selected path after the path: after
+  `customer | s: data.plan |= p`, `p` has a column called `data.plan`. Read
+  `p | s: data.plan` as that column, not as a path into a `data` column `p`
+  doesn't have."
+  [state {:keys [alias column path] :as col}]
+  (let [ast (get-in state [:aliases alias :ast])
+        named (path-text column path)]
+    (if (and ast (seq path)
+             (some #(= named (or (:column-alias %) (:column %))) (remove :auto-id (:columns ast))))
+      (-> col (assoc :column named) (dissoc :path :column-alias))
+      col)))
+
+(defn- unknown-name [state alias]
+  (let [current (:current state)
+        table-alias (some (fn [[a {:keys [table]}]] (when (= table alias) a)) (:aliases state))]
+    (ex-info (if table-alias
+               (str "`" alias "` is a table. Name it by its alias, `" table-alias "`, like `" table-alias ".id`.")
+               (str "`" alias "` is neither an alias nor a column of `" (table-label state current) "`."))
+             {})))
+
 (defn resolve-column
   "Resolve the alias of a column descriptor ({:alias :column :path}) and,
   when the name goes into a JSON value, name the column after its path with
@@ -79,8 +100,8 @@
                    (assoc col :alias current :column alias :path (into [column] path))
 
                    :else
-                   (throw (ex-info (str "`" alias "` is neither an alias nor a column of `" (table-label state current) "`.")
-                                   {})))]
+                   (throw (unknown-name state alias)))
+        resolved (named-result-column state resolved)]
     (refuse-non-json state resolved)
     (cond-> resolved
       (and (seq (:path resolved)) (not (:column-alias resolved)))
