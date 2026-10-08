@@ -22,14 +22,14 @@
 (declare refuse-named-result-as-column)
 
 (defn- resolve-condition
-  "Turn one parsed [column operator value] triple into the flat 5-tuple
-  [alias col cast operator converted-value] stored in state's :where."
+  "Turn one parsed [column operator value] triple into the condition stored
+  in state's :where: {:alias :column :cast :operator :value}."
   [state current resolve-alias [column operator value]]
   (let [[alias col cast] (:value column)
         alias (resolve-alias (or alias current))
         ;; Before the right-hand column gets its default alias below: a bare
         ;; name there that is a named result is a mistake this reports.
-        _ (refuse-named-result-as-column state [alias col cast operator value])
+        _ (refuse-named-result-as-column state {:alias alias :column col :operator operator :value value})
         ;; A $variable still here has no value in this request (pine.variables
         ;; replaced every bound one with its literal). Typing it by its column
         ;; would turn its name into a string, so it stays as it is: /build
@@ -47,7 +47,7 @@
 
                           :else
                           (convert-condition-value value alias col state))]
-    [alias col cast operator converted-value]))
+    {:alias alias :column col :cast cast :operator operator :value converted-value}))
 
 (defn- named-result-column
   "The one column a named result used after `in` exposes, as it's named in
@@ -80,7 +80,7 @@
   until the database refused an unknown column. Point to `in` instead. A
   column that really has a named result's name can still be written with its
   alias, like `t.x`."
-  [state [alias col _ operator value]]
+  [state {alias :alias col :column :keys [operator value]}]
   (let [[value-alias n] (when (= (:type value) :column) (:value value))]
     (when (and n (nil? value-alias) (named-result? state n))
       (let [left (str alias "." col)
@@ -98,12 +98,12 @@
   :value-ctes so the evaluator emits its CTE."
   [state condition]
   (refuse-named-result-as-column state condition)
-  (let [value (nth condition 4)]
+  (let [value (:value condition)]
     (if (= (:type value) :named-result)
       (let [n (:value value)
             [var-ast column] (named-result-column state n)]
         [(update state :value-ctes (fnil conj []) [n var-ast])
-         (assoc condition 4 (assoc value :column column))])
+         (assoc-in condition [:value :column] column)])
       [state condition])))
 
 (defn- add-conditions

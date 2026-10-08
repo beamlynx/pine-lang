@@ -11,6 +11,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - Date-time literals: `where: created_at > '2024-01-01 10:00'`, with optional seconds and a space or a T. They bind as timestamps. A time of day used to make the value a string, which Postgres refuses to compare with a timestamp column.
 
 ### Changed
+- **Breaking:** each condition in `/build`'s `ast.where` is a map, `{"alias", "column", "cast", "operator", "value"}`, not a list read by position. An `or` group is still `{"or": [...]}`. This makes room for JSON paths, which add a key. beamlynx-ui's matching change reads the map.
 - **Breaking:** `/build`'s AST lists named results under `named-results`, not `variables`. "Variable" means a `$name` since 0.48.0, and its report is still `variables` in the response. Inside pine-lang, the state key and the code that passes named results between blocks are renamed the same way. beamlynx-ui's matching change reads the new key.
 - An expression or raw SQL query longer than 65 536 characters is refused with `error-type: "too-long"` before it is parsed. A request body over 1 MB is refused with HTTP 413.
 - **Breaking:** `delete!` and `update!` refuse to change every row of a table: add a `where:` or a `limit:` first. A `limit:` sealed into a checkpoint counts, so `company | l: 10 | employee | delete! .id` still works. They also refuse after `group:`, and on a named result. These come back with `error-type: "write-refused"`. See `docs/side-effects.md`.

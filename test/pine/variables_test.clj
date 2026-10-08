@@ -246,7 +246,7 @@
 (deftest test-build-ast-keeps-variables
   (testing "/build's AST shows a variable as written, while its SQL preview has the value"
     (let [response (post "/api/v1/build" {:expressions ["$n = 'Acme'" "company | where: name = $n"] :connection-id :test})
-          value (get-in response [:ast :where 0 4])]
+          value (get-in response [:ast :where 0 :value])]
       (is (= {:type :variable :value "n"} value))
       (is (re-find #"'Acme'" (:query response))))))
 

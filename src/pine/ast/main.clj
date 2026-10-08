@@ -58,7 +58,7 @@
             :joins           []           ;; e.g. [{:from "u_0" :to "c_1" :parent "to"
                                           ;;         :columns [{:from "company_id" :to "id"}]
                                           ;;         :resolution "fk" :cast nil :type nil}]
-            :where           []           ;; e.g. [ "name" "=" "john" ]
+            :where           []           ;; e.g. {:alias "c" :column "name" :cast nil :operator "=" :value ...}
             :order           []           ;; e.g. [{ :alias "u" :column "name" :direction "DESC" }]
             :group           []           ;; e.g. [{ :alias "u" :column "name" }]
             :update          nil          ;; e.g. { :assignments [{ :column {...} :value {...} }] }
