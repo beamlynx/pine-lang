@@ -133,6 +133,9 @@ When you edit a cell directly in the result grid, the UI writes an `update!` exp
 - A table without a primary key gets no hidden key columns, and `update!` refuses it with
   `error-type: "write-refused"`. This includes views, and tables that have an `id` column but no
   primary key.
+- Under an access policy, a table gets no hidden key columns when the policy hides any column of its
+  key, so a hidden value is never sent as a key. Its rows can't be edited from the grid. `id` is always
+  shown.
 - If the user explicitly selects a key column (e.g. `s: id, name`), the hidden column is still added
   under its `__alias__column` name, so the two don't clash.
 - `update!` on a named result is refused. A named result has no physical table to update.

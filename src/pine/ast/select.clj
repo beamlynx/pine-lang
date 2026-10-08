@@ -1,5 +1,6 @@
 (ns pine.ast.select
-  (:require [pine.db.references :as refs]))
+  (:require [pine.access-policy :as access-policy]
+            [pine.db.references :as refs]))
 
 (defn column-source
   "The real table (and schema) this column ultimately traces back to - itself
@@ -76,10 +77,21 @@
                        :when columns]
                    [alias (vec columns)])))))
 
+(defn- key-hidden-by-policy?
+  "Whether the access policy hides any column of this table's key. Its
+  hidden key columns would carry those values, so the table gets none, and
+  can't be edited from the grid. `id` is never hidden (see
+  access-policy/sensitive-column?)."
+  [state alias columns]
+  (let [rules (:access-policy state)]
+    (and (seq rules)
+         (some #(access-policy/sensitive-column? state rules {:alias alias :column % :auto-id true}) columns))))
+
 (defn add-auto-id-columns
   "Add a hidden column for each primary key column of every table in the
   state. A table without a primary key gets none, and its rows can't be
-  edited from the results grid."
+  edited from the results grid. Nor does a table whose key the access
+  policy hides."
   [state]
   (if (should-add-auto-ids? state)
     (let [table-aliases (map :alias (:tables state))
@@ -89,7 +101,9 @@
           row-keys (:row-keys state)
           ;; Only real tables (not variables/CTEs) that have a primary key
           keyed (for [alias table-aliases
-                      column (get row-keys alias)]
+                      :let [columns (get row-keys alias)]
+                      :when (not (key-hidden-by-policy? state alias columns))
+                      column columns]
                   [alias column])
           auto-id-columns (map-indexed (fn [i [alias column]]
                                          (create-auto-id-column alias column (+ next-operation-index i)))
