@@ -1,7 +1,9 @@
 (ns pine.eval
   (:require
+   [cheshire.core :as json]
    [clojure.string :as s]
    [pine.access-policy :as access-policy]
+   [pine.data-types :as dt]
    [pine.db.connections :as connections]
    [pine.db.main :as db]))
 
@@ -18,8 +20,10 @@
   ([a b]
    (if a (str (q a) "." (q b)) (q b)))
   ([a]
+   ;; A quote inside the name is written twice. A JSON path column is named
+   ;; after its keys, and a key can hold any character.
    (let [quote-char (if (= *dialect* :mysql) "`" "\"")]
-     (str quote-char a quote-char))))
+     (str quote-char (s/replace (str a) quote-char (str quote-char quote-char)) quote-char))))
 
 (defn- col-fn-format
   "Map column function names to TO_CHAR format strings"
@@ -99,6 +103,45 @@
     (case operator "ILIKE" "LIKE" "NOT ILIKE" "NOT LIKE" operator)
     operator))
 
+(defn- json-path-params
+  "The parameters that name a path inside a JSON value. Postgres takes one
+  per key or index. MySQL takes one path expression, `$.\"address\".\"city\"`
+  or `$.\"tags\"[0]`, with each key quoted so it can hold any character.
+  Keys are typed by the user, so they're always parameters, never SQL text."
+  [path]
+  (if (= *dialect* :mysql)
+    [(dt/string (apply str "$" (map #(if (integer? %) (str "[" % "]") (str "." (json/generate-string %))) path)))]
+    (map #(dt/string (str %)) path)))
+
+(defn- json-extract
+  "The value at `path` inside the JSON column `col-ref`, as [sql params]:
+  as JSON (`:json`), to compare or sort as JSON values, or as text
+  (`:text`), to show or to match with like. A missing key is NULL. A plain
+  Postgres `json` column is cast to `jsonb`, which a `jsonb` one already is."
+  [as col-ref path]
+  (let [params (json-path-params path)]
+    [(if (= *dialect* :mysql)
+       (let [x (str "JSON_EXTRACT(" col-ref ", ?)")]
+         (if (= as :text) (str "JSON_UNQUOTE(" x ")") x))
+       (str (if (= as :text) "jsonb_extract_path_text(" "jsonb_extract_path(")
+            col-ref "::jsonb, " (s/join ", " (repeat (count params) "?::text")) ")"))
+     params]))
+
+(def ^:private mysql-json-types
+  {"number" ["INTEGER" "DOUBLE" "DECIMAL" "UNSIGNED INTEGER"]
+   "string" ["STRING"]
+   "boolean" ["BOOLEAN"]})
+
+(defn- json-type-check
+  "SQL that is true when the JSON value `x` has the type `json-type`. Both
+  databases order values of different JSON types instead of refusing to
+  compare them: on Postgres `true > 10` and `{\"a\":1} > 10` are true. So
+  `<` and `>` only compare values of the literal's own type."
+  [x json-type]
+  (if (= *dialect* :mysql)
+    (str "JSON_TYPE(" x ") IN (" (s/join ", " (map #(str "'" % "'") (mysql-json-types json-type))) ")")
+    (str "jsonb_typeof(" x ") = '" json-type "'")))
+
 (defn- in-subquery
   "MySQL rejects `<verb> <target> ... WHERE id IN ( SELECT ... FROM <same
   target> ... )` on two counts: ER_UPDATE_TABLE_USED (1093) - can't select
@@ -168,7 +211,22 @@
                                joins)]
       (s/join " " join-statements))))
 
-(defn- build-columns-clause [{:keys [operation columns current] :as state}]
+(defn- column-sql
+  "[sql params] for one column of a SELECT list, before its `AS` name."
+  [state rules {:keys [column alias symbol col-fn path] :as col}]
+  (cond
+    (and (seq rules) (access-policy/sensitive-column? state rules col)) [access-policy/redacted-sql-literal []]
+    path (json-extract :text (q alias column) path)
+    ;; Column function (currently date functions)
+    col-fn [(col-fn-expr col-fn (q alias column)) []]
+    ;; Symbol-based columns (like aggregates)
+    (empty? column) [(if alias (str (q alias) "." symbol) symbol) []]
+    ;; Regular columns
+    :else [(q alias column) []]))
+
+(defn- build-columns-clause
+  "{:sql :params} for the SELECT list."
+  [{:keys [operation columns current] :as state}]
   (let [type (-> operation :type)
         rules (:access-policy state)
         restricted? (seq rules)
@@ -200,36 +258,28 @@
                      (not star-eligible?) ""
                      current-table-has-columns? ""  ; Don't add .* if current table has explicit columns
                      :else (str (if (seq columns) ", " "") (q current) ".*"))]
-    (str
-     "SELECT "
-     (s/join
-      ", "
-      (map (fn [{:keys [column alias column-alias symbol col-fn] :as col}]
-             (let [redact? (and restricted? (access-policy/sensitive-column? state rules col))
-                   c (cond
-                       redact? access-policy/redacted-sql-literal
-                       ;; Column function (currently date functions)
-                       col-fn (col-fn-expr col-fn (q alias column))
-                       ;; Symbol-based columns (like aggregates)
-                       (empty? column) (if alias (str (q alias) "." symbol) symbol)
-                       ;; Regular columns
-                       :else (q alias column))
-                   ;; A redacted literal loses Postgres' automatic naming of a
-                   ;; bare column reference, so name it explicitly whenever no
-                   ;; explicit column-alias was already going to do that job.
-                   out-alias (or column-alias (when redact? (if (empty? column) symbol column)))]
-               (if out-alias (str c " AS " (q out-alias)) c))) columns))
-     select-all
-     " FROM")))
+    (let [parts (map (fn [{:keys [column column-alias symbol] :as col}]
+                       (let [redact? (and restricted? (access-policy/sensitive-column? state rules col))
+                             [c params] (column-sql state rules col)
+                             ;; A redacted literal loses Postgres' automatic naming of a
+                             ;; bare column reference, so name it explicitly whenever no
+                             ;; explicit column-alias was already going to do that job.
+                             out-alias (or column-alias (when redact? (if (empty? column) symbol column)))]
+                         [(if out-alias (str c " AS " (q out-alias)) c) params]))
+                     columns)]
+      {:sql (str "SELECT " (s/join ", " (map first parts)) select-all " FROM")
+       :params (mapcat second parts)})))
 
-(defn- build-order-clause [{:keys [order]}]
-  (if (empty? order) nil
-      (str
-       "ORDER BY "
-       (s/join
-        ", "
-        (map (fn [{:keys [alias column direction]}]
-               (str (q alias column) " " direction)) order)))))
+(defn- build-order-clause
+  "[sql params] for ORDER BY, or nil. A key inside a JSON column sorts as a
+  JSON value, so numbers sort as numbers."
+  [{:keys [order]}]
+  (when (seq order)
+    (let [parts (map (fn [{:keys [alias column direction path]}]
+                       (let [[c params] (if path (json-extract :json (q alias column) path) [(q alias column) []])]
+                         [(str c " " direction) params]))
+                     order)]
+      [(str "ORDER BY " (s/join ", " (map first parts))) (mapcat second parts)])))
 
 (defn- remove-symbols
   "Remove symbols or columns from a vector of values"
@@ -243,61 +293,87 @@
        (s/join
         ", "
         ;; For each group column, determine the appropriate reference
-        (map (fn [{:keys [alias column column-alias col-fn]}]
-               (if col-fn
-                 ;; Use the column alias for columns with functions applied
+        (map (fn [{:keys [alias column column-alias col-fn path]}]
+               (if (or col-fn path)
+                 ;; Use the column alias for columns with functions applied,
+                 ;; and for keys inside a JSON column: the SELECT list names them
                  (q column-alias)
                  ;; Use the full qualified column for regular columns
                  (q alias column)))
              group)))))
 
-(defn- render-condition [{alias :alias col :column :keys [cast operator value]}]
+(defn- render-comparison
+  "`<column-sql> <operator> <value>`, with the column already rendered."
+  [column-sql cast operator value]
   (cond
     ;; `in <named result>`: the values its one column returns (pine.ast.where
     ;; filled in :column). Its CTE is emitted by all-ctes.
     (= (:type value) :named-result)
-    (str (column-ref-with-cast alias col cast) " " (render-operator operator) " ( SELECT " (q (:column value)) " FROM " (q (:value value)) " )")
+    (str column-sql " " (render-operator operator) " ( SELECT " (q (:column value)) " FROM " (q (:value value)) " )")
 
     (or (= operator "IN") (= operator "NOT IN"))
     ;; A map here is an unbound `in $variable` (pine.variables): one `?`
     ;; standing for the list, shown as `$name` by formatted-query.
-    (str (column-ref-with-cast alias col cast) " " (render-operator operator) " ("
+    (str column-sql " " (render-operator operator) " ("
          (if (map? value) "?" (s/join ", " (repeat (count value) "?"))) ")")
     :else
-    (str (column-ref-with-cast alias col cast) " " (render-operator operator) " "
+    (str column-sql " " (render-operator operator) " "
          (cond
            (= (:type value) :symbol) (:value value)
            (= (:type value) :column) (let [[a col] (:value value)] (q a col))
            ;; Cast the parameter/value, not the column (unless explicit cast)
            :else (if cast "?" (auto-cast-placeholder (:type value)))))))
 
-(defn- build-where-clause [where]
-  (when (not-empty where)
-    (str "WHERE "
-         (s/join " AND "
-                 (for [entry where]
-                   ;; A {:or [...]} entry is the comma-separated conditions from one
-                   ;; where: segment -- render as a single parenthesized OR group.
-                   (if-let [conditions (:or entry)]
-                     (str "(" (s/join " OR " (map render-condition conditions)) ")")
-                     (render-condition entry)))))))
+(defn- value-params
+  "The parameters a condition's value binds: none for a symbol, a column or
+  a named result, one per item of an `in` list."
+  [value]
+  (->> [value] remove-symbols flatten))
 
-(defn- where-condition-values
-  "Flat [value ...] seq for one :where entry, whether a plain condition or an
-  {:or [...]} group -- each value is still dt-typed (a map or, for IN/NOT IN, a
-  collection of maps), matching what remove-symbols/flatten below expect."
-  [entry]
-  (if-let [conditions (:or entry)]
-    (map :value conditions)
-    [(:value entry)]))
+(defn- render-path-condition
+  "[sql params] for a condition on a key inside a JSON column. `=`, `!=`,
+  `<` and `>` compare JSON values (pine.ast.where made the literal one).
+  `like`, `in` and `is null` compare the value as text."
+  [{alias :alias col :column :keys [cast operator value path]}]
+  (let [ref (q alias col)
+        [json-x json-params] (json-extract :json ref path)
+        [text-x text-params] (json-extract :text ref path)]
+    (cond
+      (and (#{">" "<" ">=" "<="} operator) (:json-type value))
+      [(str "(" (json-type-check json-x (:json-type value)) " AND " json-x " " operator " " (auto-cast-placeholder :jsonb) ")")
+       (concat json-params json-params (value-params value))]
 
-(defn- where-params [where]
+      (= :jsonb (:type value))
+      [(str json-x " " operator " " (auto-cast-placeholder :jsonb)) (concat json-params (value-params value))]
+
+      ;; MySQL's JSON_UNQUOTE turns a JSON null into the text 'null', so
+      ;; missing and null are told apart by JSON_TYPE instead.
+      (and (= *dialect* :mysql) (#{"IS" "IS NOT"} operator))
+      [(str "COALESCE(JSON_TYPE(" json-x "), 'NULL') " (if (= operator "IS") "=" "<>") " 'NULL'") json-params]
+
+      :else
+      [(render-comparison (if cast (render-cast text-x cast) text-x) cast operator value)
+       (concat text-params (value-params value))])))
+
+(defn- render-condition
+  "[sql params] for one condition."
+  [{alias :alias col :column :keys [cast operator value path] :as condition}]
+  (if path
+    (render-path-condition condition)
+    [(render-comparison (column-ref-with-cast alias col cast) cast operator value) (value-params value)]))
+
+(defn- build-where-clause
+  "[sql params] for WHERE, or nil."
+  [where]
   (when (not-empty where)
-    (->> where
-         (mapcat where-condition-values)
-         (map #(if (coll? %) % [%]))
-         remove-symbols
-         flatten)))
+    (let [parts (for [entry where]
+                  ;; A {:or [...]} entry is the conditions of one where:
+                  ;; segment joined with `or` -- one parenthesized OR group.
+                  (if-let [conditions (:or entry)]
+                    (let [rendered (map render-condition conditions)]
+                      [(str "(" (s/join " OR " (map first rendered)) ")") (mapcat second rendered)])
+                    (render-condition entry)))]
+      [(str "WHERE " (s/join " AND " (map first parts))) (mapcat second parts)])))
 
 (defn- build-bare-select [state]
   ;; Every SELECT Pine builds goes through here, named results' bodies
@@ -310,14 +386,15 @@
                        (str (q schema table) " AS " (q a)))
         join         (build-join-clause state)
         select       (build-columns-clause state)
-        where-clause (build-where-clause where)
+        [where-clause where-params] (build-where-clause where)
         group (build-group-clause state)
-        order (build-order-clause state)
+        [order order-params] (build-order-clause state)
         limit (when limit (str "LIMIT " limit))
-        query (s/join " " (filter some? [select from join where-clause group order limit]))
-        params (where-params where)]
+        query (s/join " " (filter some? [(:sql select) from join where-clause group order limit]))
+        ;; In the order their `?` appear in the query.
+        params (concat (:params select) where-params order-params)]
 
-    {:query query :params params}))
+    {:query query :params (seq params)}))
 
 (defn- build-cte-body
   "Generate the inner SQL for a variable's AST used as a CTE.
@@ -407,26 +484,18 @@
                           :operation {:type :group})
         ;; Build SELECT clause using the same logic as regular queries, but add aliases to all columns
         rules (:access-policy state)
-        restricted? (seq rules)
-        select-parts (s/join
-                      ", "
-                      (map (fn [{:keys [column alias column-alias symbol col-fn] :as col}]
-                             (let [redact? (and restricted? (access-policy/sensitive-column? state rules col))
-                                   c (cond
-                                       redact? access-policy/redacted-sql-literal
-                                       ;; Column function (currently date functions)
-                                       col-fn (col-fn-expr col-fn (q alias column))
-                                       ;; Regular columns
-                                       :else (q alias column))
-                                   ;; Always use an alias: either column-alias or column name
-                                   col-alias (or column-alias column)]
-                               (str c " AS " (q col-alias))))
-                           non-aggregate-cols))
-        select-clause (str "SELECT " select-parts)
+        select-parts (map (fn [{:keys [column column-alias] :as col}]
+                            (let [[c params] (column-sql state rules col)
+                                  ;; Always use an alias: either column-alias or column name
+                                  col-alias (or column-alias column)]
+                              [(str c " AS " (q col-alias)) params]))
+                          non-aggregate-cols)
+        select-clause (str "SELECT " (s/join ", " (map first select-parts)))
         from (str "FROM " (q schema table) " AS " (q a))
         join (build-join-clause {:tables tables :joins joins :aliases aliases})
-        where-clause (build-where-clause where)]
-    (s/join " " (filter some? [select-clause from join where-clause]))))
+        [where-clause where-params] (build-where-clause where)]
+    {:query (s/join " " (filter some? [select-clause from join where-clause]))
+     :params (concat (mapcat second select-parts) where-params)}))
 
 (defn- build-outer-select-for-group
   "Build the outer SELECT for a GROUP query. References CTE columns and includes aggregates."
@@ -464,13 +533,12 @@
                            ", "))
         cte-alias (str "x_" index)
         ;; Build inner query (base SELECT with non-aggregate columns)
-        inner-query (build-inner-select-for-group state)
+        {inner-query :query inner-params :params} (build-inner-select-for-group state)
         ;; Build outer query (SELECT from CTE with aggregates and GROUP BY)
         {:keys [select group-by]} (build-outer-select-for-group cte-alias state)
         ;; Combine into CTE
         query (str "WITH " cte-prefix (q cte-alias) " AS ( " inner-query " ) " select " " group-by)
-        ;; Extract params from WHERE clause
-        params (where-params (:where state))]
+        params inner-params]
     {:query query :params (seq (concat cte-params params))}))
 
 (defn- scoped?

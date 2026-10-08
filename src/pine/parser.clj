@@ -90,26 +90,59 @@
 ;; SELECT / SELECT-PARTIAL
 ;; -----------------------
 
+(declare parse-characters)
+
+(defn- json-step
+  "One step of a JSON path: a key (a string) or an array index (a number)."
+  [[tag x]]
+  (case tag
+    (:json-key :json-quoted-key) (match x
+                                   [:symbol k] k
+                                   [:string & characters] (:value (parse-characters characters)))
+    :json-index (Long/parseLong (second x))))
+
+(defn- column-info
+  "{:alias :column} for a [:column ...] node, with :path when it goes into a
+  JSON value and :column-function when it ends in `=> month`. The alias is
+  only what was written before the first dot: pine.ast.path decides whether
+  it really is an alias."
+  [[tag & children :as node]]
+  (when-not (= tag :column)
+    (throw (ex-info "Unknown column pattern" {:_ node})))
+  (let [[head & more] children
+        [alias column more] (if (= :alias (first head))
+                              [(-> head second second) (-> more first second) (rest more)]
+                              [nil (second head) more])
+        column-function (some #(when (= :column-function (first %)) (second %)) more)
+        steps (remove #(= :column-function (first %)) more)]
+    (cond-> {:column column}
+      alias (assoc :alias alias)
+      (seq steps) (assoc :path (mapv json-step steps))
+      column-function (assoc :column-function column-function))))
+
 (defn- -normalize-column [column]
   (match column
-    [:aliased-column [:column [:symbol c]]]                                            {:column c}
-    [:aliased-column [:column [:alias [:symbol a]] [:symbol c]]]                       {:alias a :column c}
-    [:aliased-column [:column [:symbol c]] [:alias [:symbol ca]]]                      {:column c :column-alias ca}
-    [:aliased-column [:column [:alias [:symbol a]] [:symbol c]] [:alias [:symbol ca]]] {:alias a :column c :column-alias ca}
-    [:aliased-column [:alias [:symbol a]] [:star _star]]                                {:alias a :column "" :symbol "*"}
-    ;; Column functions without alias
-    [:aliased-column [:column [:symbol c] [:column-function fn]]]                      {:column c :column-function fn}
-    [:aliased-column [:column [:alias [:symbol a]] [:symbol c] [:column-function fn]]] {:alias a :column c :column-function fn}
-    ;; Column functions with alias
-    [:aliased-column [:column [:symbol c] [:column-function fn]] [:alias [:symbol ca]]] {:column c :column-function fn :column-alias ca}
-    [:aliased-column [:column [:alias [:symbol a]] [:symbol c] [:column-function fn]] [:alias [:symbol ca]]] {:alias a :column c :column-function fn :column-alias ca}
+    [:aliased-column [:alias [:symbol a]] [:star _star]] {:alias a :column "" :symbol "*"}
+    [:aliased-column col]                                (column-info col)
+    [:aliased-column col [:alias [:symbol ca]]]          (assoc (column-info col) :column-alias ca)
     :else                 (throw (ex-info "Unknown COLUMN operation" {:_ column}))))
 
-(defn- parse-partial-alias [partial-alias]
-  (match partial-alias
-    [:partial-alias [:alias [:symbol a]]]
-    {:alias a :column ""}
-    :else (throw (ex-info "Unknown partial alias" {:_ partial-alias}))))
+(defn- parse-partial-alias
+  "`c.` is {:alias \"c\" :column \"\"}. A name that stops inside a JSON path,
+  `c.data.` or `data.address.`, is the column and its path so far, marked
+  :json-partial."
+  [[tag & children :as partial-alias]]
+  (cond
+    (not= tag :partial-alias)
+    (throw (ex-info "Unknown partial alias" {:_ partial-alias}))
+
+    (next children)
+    (-> (column-info (into [:column] children))
+        (update :path #(or % []))
+        (assoc :json-partial true))
+
+    :else
+    {:alias (-> children first second second) :column ""}))
 
 (defn normalize-select [payload type]
   (match payload
@@ -143,12 +176,8 @@
 (defn- -normalize-order-col [column]
   (let [normalize-direction (fn [d] (if d (s/upper-case d) "DESC"))]
     (match column
-      ;; Column with alias
-      [:order-column [:column [:alias [:symbol a]] [:symbol c]]]   {:alias a :column c :direction "DESC"}
-      [:order-column [:column [:alias [:symbol a]] [:symbol c]] d] {:alias a :column c :direction (normalize-direction d)}
-      ;; Simple column
-      [:order-column [:column [:symbol c]]]                        {:column c :direction "DESC"}
-      [:order-column [:column [:symbol c]] d]                      {:column c :direction (normalize-direction d)}
+      [:order-column col]   (assoc (column-info col) :direction "DESC")
+      [:order-column col d] (assoc (column-info col) :direction (normalize-direction d))
 
       :else
       (throw (ex-info "Unknown ORDER operation" {:_ column})))))
@@ -189,21 +218,23 @@
 (defn- parse-strings [[_ & characters]] (parse-characters characters))
 
 (defn- extract-column-info
+  "{:alias :column}, and :path for a JSON path, of a column in where: or
+  update!. A column function (`=> month`) only belongs in select:."
   [column-pattern]
-  (match column-pattern
-    [:column [:symbol column]] {:alias nil :column column}
-    [:column [:alias [:symbol alias]] [:symbol column]] {:alias alias :column column}
-    [:column [:symbol alias] [:symbol column]] {:alias alias :column column}
-    :else (throw (ex-info "Unknown column pattern" {:_ column-pattern}))))
+  (let [info (column-info column-pattern)]
+    (when (:column-function info)
+      (throw (ex-info "Unknown column pattern" {:_ column-pattern})))
+    (merge {:alias nil} info)))
 
 (defn- make-column [column-info & [cast-type]]
-  (if (:alias column-info)
-    (if cast-type
-      (dt/aliased-column (:alias column-info) (:column column-info) cast-type)
-      (dt/aliased-column (:alias column-info) (:column column-info)))
-    (if cast-type
-      (dt/column (:column column-info) cast-type)
-      (dt/column (:column column-info)))))
+  (cond-> (if (:alias column-info)
+            (if cast-type
+              (dt/aliased-column (:alias column-info) (:column column-info) cast-type)
+              (dt/aliased-column (:alias column-info) (:column column-info)))
+            (if cast-type
+              (dt/column (:column column-info) cast-type)
+              (dt/column (:column column-info))))
+    (:path column-info) (assoc :path (:path column-info))))
 
 (defn- make-condition [column-pattern operator rhs & [cast-type]]
   (let [column-info (extract-column-info column-pattern)
@@ -419,25 +450,22 @@
        :value (if (next values) {:or values} (first values))})
     :else                (throw (ex-info "Unknown WHERE operation"      {:_ payload}))))
 
+(defn- partial-alias? [node]
+  (= :partial-alias (first node)))
+
 (defn- parse-partial-condition [partial-condition]
   (match partial-condition
-    ;; Alias-dot only (e.g. "e.")
-    [:partial-condition [:partial-alias [:alias [:symbol a]]]]
-    {:alias a :column ""}
+    ;; Alias-dot (e.g. "e."), or a name that stops inside a JSON path
+    [:partial-condition (partial-alias :guard partial-alias?)]
+    (parse-partial-alias partial-alias)
 
     ;; Just a column
-    [:partial-condition [:column [:symbol column]]]
-    {:column column}
-
-    [:partial-condition [:column [:alias [:symbol alias]] [:symbol column]]]
-    {:alias alias :column column}
+    [:partial-condition col]
+    (column-info col)
 
     ;; Column + operator (no value)
-    [:partial-condition [:column [:symbol column]] operator]
-    {:column column :operator (first operator)}
-
-    [:partial-condition [:column [:alias [:symbol alias]] [:symbol column]] operator]
-    {:alias alias :column column :operator (first operator)}
+    [:partial-condition col operator]
+    (assoc (column-info col) :operator (first operator))
 
     :else
     (throw (ex-info "Unknown partial condition" {:_ partial-condition}))))
@@ -493,10 +521,10 @@
 ;; -----
 
 (defn- -normalize-group-column [column]
-  (match column
-    [:column [:symbol c]]                       {:column c}
-    [:column [:alias [:symbol a]] [:symbol c]]  {:alias a :column c}
-    :else (throw (ex-info "Unknown GROUP column" {:_ column}))))
+  (let [info (column-info column)]
+    (when (:column-function info)
+      (throw (ex-info "Unknown GROUP column" {:_ column})))
+    info))
 
 (defmethod -normalize-op :GROUP [[_ payload]]
   (match payload
@@ -571,9 +599,9 @@
     []
     {:type :update-partial :value {:assignments [] :partial-column nil}}
 
-    [[:partial-update-column [:partial-alias [:alias [:symbol a]]]]]
+    [[:partial-update-column (partial-alias :guard partial-alias?)]]
     {:type :update-partial :value {:assignments []
-                                   :partial-column {:alias a :column ""}}}
+                                   :partial-column (parse-partial-alias partial-alias)}}
 
     [[:partial-update-column column-pattern]]
     {:type :update-partial :value {:assignments []
@@ -583,9 +611,9 @@
     {:type :update-partial :value {:assignments (mapv parse-update-assignment assignments)
                                    :partial-column nil}}
 
-    [[:update-assignments & assignments] [:partial-update-column [:partial-alias [:alias [:symbol a]]]]]
+    [[:update-assignments & assignments] [:partial-update-column (partial-alias :guard partial-alias?)]]
     {:type :update-partial :value {:assignments (mapv parse-update-assignment assignments)
-                                   :partial-column {:alias a :column ""}}}
+                                   :partial-column (parse-partial-alias partial-alias)}}
 
     [[:update-assignments & assignments] [:partial-update-column column-pattern]]
     {:type :update-partial :value {:assignments (mapv parse-update-assignment assignments)

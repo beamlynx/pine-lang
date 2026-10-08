@@ -1,5 +1,7 @@
 (ns pine.ast.select
-  (:require [pine.access-policy :as access-policy]
+  (:require [clojure.string :as s]
+            [pine.access-policy :as access-policy]
+            [pine.ast.path :as path]
             [pine.db.references :as refs]))
 
 (defn column-source
@@ -23,13 +25,17 @@
         ;; A live alias (e.g. re-bound via `as`) always wins over a stale |= snapshot
         resolve-alias #(if (contains? (:aliases state) %) % (or (get-in state [:pending-assignments % :current]) %))
         columns (mapcat (fn [col]
-                          (let [col-with-defaults (-> col
-                                                      (assoc :alias (resolve-alias (or (:alias col) current)))
+                          (let [col-with-defaults (-> (if (s/blank? (:column col))
+                                                        ;; `c.*`: there is no column to resolve.
+                                                        (assoc col :alias (resolve-alias (or (:alias col) current)))
+                                                        (path/resolve-column state col))
                                                       (assoc :operation-index i))
-                                source (column-source state (:alias col-with-defaults) (:column col))]
+                                _ (when (and (:column-function col) (:path col-with-defaults))
+                                    (throw (ex-info (str "`=> " (:column-function col) "` can't be used on a key inside a JSON column: its value is text, not a date.") {})))
+                                source (column-source state (:alias col-with-defaults) (:column col-with-defaults))]
                             (if-let [col-fn (:column-function col)]
                               ;; Column function: apply function to column
-                              [{:column (:column col)
+                              [{:column (:column col-with-defaults)
                                 :alias (:alias col-with-defaults)
                                 :column-alias (or (:column-alias col) col-fn)  ; Use custom alias or function name
                                 :col-fn col-fn                                 ; Mark which function to apply

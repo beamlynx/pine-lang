@@ -4,6 +4,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 ### Added
+- **JSON paths.** A key inside a `json` or `jsonb` column can be used wherever a column can: `customer | where: data.country = 'SE' | s: data.address.city, data.tags[0]`. A key that isn't a Pine name is quoted: `data.'home address'`. It works in `select:`, `where:`, `order:` and `group:`, on Postgres and MySQL. The result column is named after the path. `=`, `!=`, `<` and `>` compare JSON values, so `data.seats > 10` compares numbers and skips rows where `seats` isn't a number. `like`, `in` and `is null` compare text. Keys are sent as parameters. A hidden JSON column hides every key inside it. When a name could be an alias or a JSON column, the alias wins. `update!` and `=> month` refuse a path. See `docs/json-paths.md`.
 - A string can contain an apostrophe by writing it twice, as in SQL: `where: name = 'O''Brien'`. This works in values blocks too.
 - `/build` reports `writes`, whether the expression changes data, as `/eval` already did. When the SQL can't be built (a refused write, an unresolved join), `/build` still returns the AST and hints, with the reason in `query-error` and `query-error-type`. An error that has a kind now carries it as `error-type` from `/eval` too.
 - **Launch token.** When `PINE_TOKEN` is set, every `/api/` request must send `Authorization: Bearer <token>`, or it is refused with HTTP 401 and `error-type: "unauthorized"`. beamlynx-desktop will set a fresh token each launch, so web pages and other programs on the machine can no longer use its server. Without the variable the server behaves as before, and logs that anyone on the machine can use it.
@@ -11,6 +12,8 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - Date-time literals: `where: created_at > '2024-01-01 10:00'`, with optional seconds and a space or a T. They bind as timestamps. A time of day used to make the value a string, which Postgres refuses to compare with a timestamp column.
 
 ### Changed
+- A dotted name whose first part is neither an alias nor a column of the current table, like `s: nope.x`, is an error that says so. It used to reach the database.
+- A quote inside a table, column or result name is written twice in the SQL, instead of ending the name.
 - **Breaking:** each condition in `/build`'s `ast.where` is a map, `{"alias", "column", "cast", "operator", "value"}`, not a list read by position. An `or` group is still `{"or": [...]}`. This makes room for JSON paths, which add a key. beamlynx-ui's matching change reads the map.
 - **Breaking:** `/build`'s AST lists named results under `named-results`, not `variables`. "Variable" means a `$name` since 0.48.0, and its report is still `variables` in the response. Inside pine-lang, the state key and the code that passes named results between blocks are renamed the same way. beamlynx-ui's matching change reads the new key.
 - An expression or raw SQL query longer than 65 536 characters is refused with `error-type: "too-long"` before it is parsed. A request body over 1 MB is refused with HTTP 413.
