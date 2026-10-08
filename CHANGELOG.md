@@ -7,6 +7,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - A string can contain an apostrophe by writing it twice, as in SQL: `where: name = 'O''Brien'`. This works in values blocks too.
 - `/build` reports `writes`, whether the expression changes data, as `/eval` already did. When the SQL can't be built (a refused write, an unresolved join), `/build` still returns the AST and hints, with the reason in `query-error` and `query-error-type`. An error that has a kind now carries it as `error-type` from `/eval` too.
 - **Launch token.** When `PINE_TOKEN` is set, every `/api/` request must send `Authorization: Bearer <token>`, or it is refused with HTTP 401 and `error-type: "unauthorized"`. beamlynx-desktop will set a fresh token each launch, so web pages and other programs on the machine can no longer use its server. Without the variable the server behaves as before, and logs that anyone on the machine can use it.
+- **Stopping a query.** `/api/v1/eval` and `/api/v1/sql` take an optional `run-id`. `POST /api/v1/cancel` with the same `run-id` stops that run's statement in the database, and the run answers with `error-type: "cancelled"`. A stopped write is rolled back. See `docs/stopping-queries.md`. `/api/v1/sql` errors now carry an `error-type` when they have one.
 - Date-time literals: `where: created_at > '2024-01-01 10:00'`, with optional seconds and a space or a T. They bind as timestamps. A time of day used to make the value a string, which Postgres refuses to compare with a timestamp column.
 
 ### Changed

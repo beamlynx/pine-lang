@@ -16,6 +16,7 @@
    [pine.ast.effects :as effects]
    [pine.ast.main :as ast]
    [pine.db.connections :as connections] ;; Encode arrays and json results in API responses
+   [pine.db.exec :as exec]
    [pine.db.main :as db]
    [pine.eval :as eval]
    [pine.parser :as parser]
@@ -388,8 +389,7 @@
             :columns columns})
          (catch Exception e
            (log-exception "api-sql" e)
-           {:connection-id connection-name
-            :error (.getMessage e)}))))))
+           (assoc (error-body e) :connection-id connection-name)))))))
 
 (defn wrap-logger
   [handler]
@@ -589,7 +589,7 @@
 
 (defn- param-problem
   "A 400 response for the first parameter of the wrong type, or nil."
-  [{:keys [expressions expression connection-id variables query]} & {:keys [sql?]}]
+  [{:keys [expressions expression connection-id variables query run-id]} & {:keys [sql?]}]
   (cond
     (and (some? expressions) (not (and (sequential? expressions) (every? string? expressions))))
     (bad-request "`expressions` must be a list of strings.")
@@ -607,7 +607,19 @@
     (bad-request "`variables` must be an object.")
 
     (and sql? (some? query) (not (string? query)))
-    (bad-request "`query` must be a string.")))
+    (bad-request "`query` must be a string.")
+
+    (and (some? run-id) (not (and (string? run-id) (<= 1 (count run-id) 100))))
+    (bad-request "`run-id` must be a string of 1 to 100 characters.")))
+
+(defn- with-run-id
+  "Runs (f) with the request's run id bound, so /cancel can stop the
+  statements it starts. A request without one can't be stopped."
+  [run-id f]
+  (if run-id
+    (binding [exec/*run-id* run-id]
+      (try (f) (finally (exec/finish-run! run-id))))
+    (f)))
 
 (defn- connection-problem
   "An error response when there is no connection to use, or nil."
@@ -681,7 +693,8 @@
                {:error-type "unbound-variable"
                 :error (variables/missing-message unbound)
                 :unbound (vec unbound)}
-               (api-eval query-exprs connection-id rules allow-writes)))))))))
+               (with-run-id (:run-id params)
+                 #(api-eval query-exprs connection-id rules allow-writes))))))))))
 
   ;; raw SQL execution
   (POST "/api/v1/sql" {params :params}
@@ -689,7 +702,19 @@
       (or (param-problem params :sql? true)
           (response (or (too-long-response query)
                         (connection-problem connection-id)
-                        (api-sql query connection-id))))))
+                        (with-run-id (:run-id params)
+                          #(api-sql query connection-id)))))))
+
+  ;; Stop a run started with this `run-id` on /eval or /sql. The run
+  ;; answers with `error-type: "cancelled"`; a write in progress is rolled
+  ;; back. Stopping a run that has finished, or hasn't started, is not an
+  ;; error: `running` says whether a statement was stopped.
+  (POST "/api/v1/cancel" {params :params}
+    (let [{:keys [run-id]} params]
+      (or (param-problem params)
+          (if (nil? run-id)
+            (bad-request "`run-id` is required.")
+            (response {:running (exec/cancel! run-id)})))))
 
   ;; Legacy
   ;;
