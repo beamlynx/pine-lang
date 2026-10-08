@@ -495,6 +495,20 @@
              (try (generate "p.log_entry | where: id = 1 | update! message = 'x'")
                   (catch clojure.lang.ExceptionInfo e (:error-type (ex-data e))))))))
 
+  (testing "under an access policy, a table whose key it hides gets no hidden key columns"
+    ;; A rule that matches no column: every column but `id` is hidden.
+    (let [nothing [{:type "column-name" :suffix "_matches_nothing"}]
+          hidden-columns #(set (re-seq #"__[a-z]+_0__[a-z_]+" (:query %)))]
+      (is (= #{} (hidden-columns (generate "p.legacy" nothing)))
+          "the key `code` is hidden, so its value isn't sent as __l_0__code")
+      (is (= #{"__c_0__id"} (hidden-columns (generate "company" nothing)))
+          "`id` is never hidden")
+      (is (= #{"__m_0__group_code" "__m_0__member_code"}
+             (hidden-columns (generate "p.membership" [{:type "column-name" :suffix "_code"}])))
+          "a key the policy shows keeps its hidden columns")
+      (is (= #{} (hidden-columns (generate "p.membership" [{:type "column-name" :suffix "group_code"}])))
+          "hiding one column of a composite key leaves out the whole key")))
+
   (testing "hidden key columns follow the primary key"
     (is (= {:query "SELECT \"m_0\".\"group_code\" AS \"__m_0__group_code\", \"m_0\".\"member_code\" AS \"__m_0__member_code\", \"m_0\".* FROM \"p\".\"membership\" AS \"m_0\" LIMIT 250"
             :params nil}

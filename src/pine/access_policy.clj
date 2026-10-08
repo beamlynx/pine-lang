@@ -5,7 +5,7 @@
   (a string, since rules travel as JSON over HTTP -- see api.clj's
   :access-policy param). When a request's :access-policy is non-empty,
   every SELECT column is checked against it: a column is shown as-is if
-  it's the structural auto-id column, or any rule matches; otherwise it's
+  it's the hidden `id` key column, or any rule matches; otherwise it's
   rendered as a fixed literal directly in the generated SQL, so the real
   value never leaves the database.
 
@@ -119,15 +119,18 @@
   themselves (an empty/absent policy means no redaction at all, same as
   before this module existed).
 
-  Auto-generated id columns and Postgres's own catalog views
-  (information_schema/pg_catalog -- see catalog-schemas) are always exempt.
+  The hidden `id` column pine adds for editing, and Postgres's own catalog
+  views (information_schema/pg_catalog -- see catalog-schemas), are always
+  exempt. Other hidden key columns are not: a primary key can be any
+  column, `email` included. ast/select.clj leaves them out instead when the
+  policy hides them.
   Everything else is redacted unless some rule in `rules` matches --
   including columns pine can't resolve a type or table for at all, such as
   aggregates/computed expressions. Unknown defaults to protected, not
   exposed: a raw aggregate like string_agg(email, ',') would otherwise be a
   one-line bypass of the whole policy."
-  [state rules {:keys [alias source auto-id] :as col}]
-  (and (not auto-id)
+  [state rules {:keys [alias source auto-id column] :as col}]
+  (and (not (and auto-id (= "id" column)))
        (not (catalog-column? state alias source))
        (not (some #(rule-matches? state col %) rules))))
 
