@@ -327,7 +327,7 @@
     :connections (connections/list-connections)}})
 
 (defn test-connection [id]
-  (let [result (db/run-query id {:query "SELECT NOW();"})]
+  (let [result (db/run-query id {:query "SELECT CURRENT_TIMESTAMP;"})]
     {:connection-id id :time result}))
 
 (defn set-connection-pool [id]

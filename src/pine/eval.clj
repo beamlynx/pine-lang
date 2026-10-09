@@ -51,6 +51,16 @@
              "week"   (str "DATE_FORMAT(DATE_SUB(" col-ref ", INTERVAL WEEKDAY(" col-ref ") DAY), '%Y-%m-%d')")
              "hour"   (str "DATE_FORMAT(" col-ref ", '%Y-%m-%d %H')")
              "minute" (str "DATE_FORMAT(" col-ref ", '%Y-%m-%d %H:%i')"))
+    ;; SQLite has no date type: a date is text (`2024-01-31 10:00:00`), which
+    ;; strftime reads. %w counts Sunday as 0, so (%w + 6) % 7 is the days
+    ;; since Monday - the boundary Postgres's DATE_TRUNC('week') uses.
+    :sqlite (case col-fn
+              "year"   (str "strftime('%Y', " col-ref ")")
+              "month"  (str "strftime('%Y-%m', " col-ref ")")
+              "day"    (str "strftime('%Y-%m-%d', " col-ref ")")
+              "week"   (str "strftime('%Y-%m-%d', " col-ref ", '-' || ((CAST(strftime('%w', " col-ref ") AS INTEGER) + 6) % 7) || ' days')")
+              "hour"   (str "strftime('%Y-%m-%d %H', " col-ref ")")
+              "minute" (str "strftime('%Y-%m-%d %H:%M', " col-ref ")"))
     (str "TO_CHAR(DATE_TRUNC('" col-fn "', " col-ref "), '" (col-fn-format col-fn) "')")))
 
 (def ^:private mysql-cast-types
@@ -68,12 +78,29 @@
    "numeric" "DECIMAL" "decimal" "DECIMAL"
    "bool" "SIGNED" "boolean" "SIGNED"})
 
+(def ^:private sqlite-cast-types
+  "Translation table for a user's explicit `::cast` into SQLite's CAST()
+  targets. SQLite has no `::`, and a CAST target only picks an affinity, so
+  the names map to the five that matter. Dates and times map to TEXT, not
+  DATE: a cast to DATE gets NUMERIC affinity, which would turn the text
+  `2024-01-31` into the number 2024. Anything not listed is uppercased and
+  passed through, as for the other dialects."
+  {"text" "TEXT" "varchar" "TEXT" "char" "TEXT"
+   "json" "TEXT" "jsonb" "TEXT" "uuid" "TEXT"
+   "date" "TEXT" "timestamp" "TEXT" "datetime" "TEXT" "time" "TEXT"
+   "int" "INTEGER" "integer" "INTEGER" "bigint" "INTEGER" "smallint" "INTEGER"
+   "bool" "INTEGER" "boolean" "INTEGER"
+   "numeric" "NUMERIC" "decimal" "NUMERIC"
+   "real" "REAL" "float" "REAL" "double" "REAL"})
+
 (defn- render-cast
   "Apply an explicit cast to an already-rendered expression, dialect-aware:
-  Postgres's `expr::cast` suffix vs. MySQL's `CAST(expr AS TYPE)` wrapper."
+  Postgres's `expr::cast` suffix vs. MySQL's and SQLite's `CAST(expr AS
+  TYPE)` wrapper."
   [expr cast]
   (case *dialect*
     :mysql (str "CAST(" expr " AS " (get mysql-cast-types (s/lower-case cast) (s/upper-case cast)) ")")
+    :sqlite (str "CAST(" expr " AS " (get sqlite-cast-types (s/lower-case cast) (s/upper-case cast)) ")")
     (str expr "::" cast)))
 
 (defn- column-ref-with-cast
@@ -94,12 +121,17 @@
   [value-type]
   (case *dialect*
     :mysql (case value-type :jsonb "CAST(? AS JSON)" "?")
+    ;; SQLite stores what it is given: a json value is already text, a uuid
+    ;; a string, and a date is written as text by the driver.
+    :sqlite "?"
     (case value-type :jsonb "?::jsonb" :uuid "?::uuid" :date "?::timestamp" "?")))
 
 (defn- render-operator
-  "MySQL has no ILIKE/NOT ILIKE - map to the closest MySQL equivalent."
+  "MySQL and SQLite have no ILIKE/NOT ILIKE - map to LIKE. SQLite's LIKE is
+  already case-insensitive for ASCII letters (not for the rest of Unicode),
+  and MySQL's follows the column's collation."
   [operator]
-  (if (= *dialect* :mysql)
+  (if (#{:mysql :sqlite} *dialect*)
     (case operator "ILIKE" "LIKE" "NOT ILIKE" "NOT LIKE" operator)
     operator))
 
