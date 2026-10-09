@@ -91,13 +91,34 @@ ORDER BY m.name, p.cid"]
       (let [[_header & rows] (jdbc/query {:connection conn} sql opts)]
         (mapv #(update (vec %) 4 affinity-type) rows)))))
 
+(defn- get-primary-keys
+  "Each table's primary key, one row per column, in key order. pragma_table_info
+  numbers a key's columns from 1 in `pk` (0 for a column outside the key).
+  A table with no declared primary key has none here, as in the other
+  dialects: update! and delete! refuse to change it, since its rows can't be
+  told apart. (Its hidden rowid could, but a table that is copied or rebuilt
+  renumbers it.)"
+  [pool]
+  (let [opts {:as-arrays? true}
+        sql "SELECT 'main' AS table_schema,
+       m.name AS table_name,
+       p.name AS column_name,
+       p.pk AS ordinal_position
+FROM sqlite_schema m
+JOIN pragma_table_info(m.name) p
+WHERE m.type = 'table' AND p.pk > 0 AND m.name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+ORDER BY m.name, p.pk"]
+    (with-open [conn (.getConnection pool)]
+      (rest (jdbc/query {:connection conn} sql opts)))))
+
 (defn get-references-helper
-  "Return [foreign-keys columns] for a live SQLite connection."
+  "Return [foreign-keys columns primary-keys] for a live SQLite connection."
   [id]
   (let [pool (connections/get-connection-pool id)
         columns (get-columns pool)
-        foreign-keys (get-foreign-keys pool)]
-    [foreign-keys columns]))
+        foreign-keys (get-foreign-keys pool)
+        primary-keys (get-primary-keys pool)]
+    [foreign-keys columns primary-keys]))
 
 (def connection-count-sql
   "A file database has no server and so no connections to count. One is what

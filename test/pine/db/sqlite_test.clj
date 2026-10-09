@@ -25,8 +25,17 @@
    "CREATE TABLE b_comp (id INTEGER PRIMARY KEY, ax INTEGER, ay INTEGER, FOREIGN KEY (ax, ay) REFERENCES a_comp(x, y))"
    ;; No declared types at all, which SQLite allows.
    "CREATE TABLE untyped (id, note)"
+   "CREATE TABLE doc (id INTEGER PRIMARY KEY, name TEXT, data JSON)"
+   "CREATE TABLE membership (group_code TEXT, member_code TEXT, role TEXT, PRIMARY KEY (group_code, member_code))"
    "INSERT INTO company VALUES (1, 'Acme', '2024-01-31 10:00:00'), (2, 'Globex', '2024-02-15 08:30:00')"
-   "INSERT INTO person VALUES (1, 'Ann', 1, 1), (2, 'Bob', 1, 0), (3, 'Cy', 2, 1)"])
+   "INSERT INTO person VALUES (1, 'Ann', 1, 1), (2, 'Bob', 1, 0), (3, 'Cy', 2, 1)"
+   ;; Bob's age is a JSON string, not a number; Cy's country a JSON null.
+   "INSERT INTO doc VALUES
+      (1, 'Ann', '{\"country\":\"SE\",\"age\":31,\"vip\":true,\"address\":{\"city\":\"Oslo\"},\"tags\":[\"a\",\"b\"],\"home address\":\"x\"}'),
+      (2, 'Bob', '{\"country\":\"NO\",\"age\":\"31\",\"vip\":false,\"address\":{\"city\":\"Bergen\"}}'),
+      (3, 'Cy', '{\"country\":null,\"age\":20}'),
+      (4, 'Di', NULL)"
+   "INSERT INTO membership VALUES ('g1', 'm1', 'a'), ('g1', 'm2', 'a'), ('g2', 'm1', 'a')"])
 
 (def ^:dynamic *db-file* nil)
 (def ^:dynamic *id* nil)
@@ -225,3 +234,44 @@
 
   (testing "extensions can't be loaded"
     (is (thrown? Exception (db/run-sql *id* "SELECT load_extension('anything')")))))
+
+(deftest test-primary-keys
+  (testing "a table's primary key is read, in key order, so update! and delete! can tell its rows apart"
+    (let [references (db/init-references *id*)]
+      (is (= ["group_code" "member_code"] (get-in references [:schema "main" :table "membership" :primary-key])))
+      (is (= ["id"] (get-in references [:schema "main" :table "person" :primary-key])))
+      (is (nil? (get-in references [:schema "main" :table "untyped" :primary-key])))))
+
+  (testing "a composite key changes exactly the row it names"
+    (let [update (generate "membership | where: group_code = 'g1' | where: member_code = 'm1' | update! role = 'b'")]
+      (is (= [["membership" 1]] (db/run-action-queries-in-transaction *id* (:queries update)))))
+    (is (= [["a"] ["a"] ["b"]] (sort-by (comp str first) (map vector (selected "membership | select: role | order: group_code, member_code desc")))))
+    (db/run-sql *id* "UPDATE membership SET role = 'a'"))
+
+  (testing "a table with no primary key can't be updated: its rows can't be told apart"
+    (is (thrown-with-msg? Exception #"no primary key"
+                          (generate "untyped | where: id = 1 | update! note = 'x'")))))
+
+(deftest test-json-paths
+  (testing "= compares typed JSON values: a string \"31\" is not the number 31"
+    (is (= ["Ann"] (selected "doc | where: data.country = 'SE' | select: name")))
+    (is (= ["Ann"] (selected "doc | where: data.age = 31 | select: name")))
+    (is (= ["Ann"] (selected "doc | where: data.vip = true | select: name"))))
+
+  (testing "< and > skip a value that isn't a number"
+    (is (= ["Ann"] (selected "doc | where: data.age > 30 | select: name")))
+    (is (= ["Cy"] (selected "doc | where: data.age < 30 | select: name"))))
+
+  (testing "like and in compare text; is null is true for a JSON null and for a missing key"
+    (is (= ["Ann"] (selected "doc | where: data.country like 'S%' | select: name")))
+    (is (= ["Ann" "Bob"] (selected "doc | where: data.country in ('SE', 'NO') | select: name")))
+    (is (= ["Cy" "Di"] (selected "doc | where: data.country is null | select: name"))))
+
+  (testing "nested keys, indexes and quoted keys"
+    (is (= [["Ann" "Oslo" "a"] ["Bob" "Bergen" nil] ["Cy" nil nil] ["Di" nil nil]]
+           (map #(vec (take 3 %)) (rows "doc | select: name, data.address.city, data.tags[0]"))))
+    (is (= ["x" nil nil nil] (selected "doc | select: data.'home address'"))))
+
+  (testing "group by a key"
+    (is (= #{[nil 2] ["NO" 1] ["SE" 1]}
+           (set (rows "doc | select: data.country | group: data.country => count"))))))

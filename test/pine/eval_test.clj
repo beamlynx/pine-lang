@@ -1206,54 +1206,54 @@
     (is (= "\"x\".\"y\"" (binding [eval/*dialect* :sqlite] (eval/q "x" "y")))))
 
   (testing "Select and FK join"
-    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" LIMIT 250"
+    (is (= {:query "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" LIMIT 250"
             :params nil}
            (generate-sqlite "company")))
-    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"e_1\".id AS \"__e_1__id\", \"e_1\".* FROM \"company\" AS \"c_0\" JOIN \"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
+    (is (= {:query "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"e_1\".\"id\" AS \"__e_1__id\", \"e_1\".* FROM \"company\" AS \"c_0\" JOIN \"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
             :params nil}
            (generate-sqlite "company | employee"))))
 
   (testing "Heuristic join between mismatched column types casts both sides via CAST(... AS TEXT), not ::text"
-    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"o_1\".id AS \"__o_1__id\", \"o_1\".* FROM \"customer\" AS \"c_0\" JOIN \"order\" AS \"o_1\" ON CAST(\"c_0\".\"id\" AS TEXT) = CAST(\"o_1\".\"customer_id\" AS TEXT) LIMIT 250"
+    (is (= {:query "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"o_1\".\"id\" AS \"__o_1__id\", \"o_1\".* FROM \"customer\" AS \"c_0\" JOIN \"order\" AS \"o_1\" ON CAST(\"c_0\".\"id\" AS TEXT) = CAST(\"o_1\".\"customer_id\" AS TEXT) LIMIT 250"
             :params nil}
            (generate-sqlite "customer | order"))))
 
   (testing "WHERE: ILIKE/NOT ILIKE map to LIKE/NOT LIKE - SQLite has no ILIKE"
-    (is (= "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" LIKE ? LIMIT 250"
+    (is (= "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" LIKE ? LIMIT 250"
            (:query (generate-sqlite "company | where: name ilike 'acme%'"))))
-    (is (= "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" NOT LIKE ? LIMIT 250"
+    (is (= "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" NOT LIKE ? LIMIT 250"
            (:query (generate-sqlite "company | where: name not ilike 'acme%'")))))
 
   (testing "WHERE: explicit ::cast renders as CAST(expr AS TYPE); uuid is TEXT, which SQLite stores it as"
-    (is (= "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE CAST(\"c_0\".\"name\" AS TEXT) = ? LIMIT 250"
+    (is (= "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE CAST(\"c_0\".\"name\" AS TEXT) = ? LIMIT 250"
            (:query (generate-sqlite "company | where: name = 'Acme Inc.' ::text"))))
-    (is (= "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE CAST(\"c_0\".\"id\" AS TEXT) = ? LIMIT 250"
+    (is (= "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE CAST(\"c_0\".\"id\" AS TEXT) = ? LIMIT 250"
            (:query (generate-sqlite "company | where: id = '123e4567-e89b-12d3-a456-426614174000' ::uuid")))))
 
   (testing "WHERE: no automatic casts - uuid, date and jsonb values are all a bare `?`"
-    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"uuid_col\" = ? LIMIT 250"
+    (is (= {:query "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".* FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"uuid_col\" = ? LIMIT 250"
             :params (list (dt/uuid "1c50ee25-4938-4b77-b831-bc41a0ee3d0c"))}
            (generate-sqlite "customer | where: uuid_col = '1c50ee25-4938-4b77-b831-bc41a0ee3d0c'")))
-    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" = ? LIMIT 250"
+    (is (= {:query "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"created_at\" = ? LIMIT 250"
             :params (list (dt/date "2025-01-01"))}
            (generate-sqlite "company | where: created_at = '2025-01-01'")))
-    (is (= {:query "SELECT \"c_0\".id AS \"__c_0__id\", \"c_0\".* FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"data\" = ? LIMIT 250"
+    (is (= {:query "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".* FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"data\" = ? LIMIT 250"
             :params (list (dt/jsonb "{\"a\": 1}"))}
            (generate-sqlite "customer | where: data = '{\"a\": 1}'"))))
 
   (testing "Date bucketing: strftime, over the text SQLite stores a date as"
-    (is (= "SELECT strftime('%Y', \"e_0\".\"created_at\") AS \"year\", \"e_0\".id AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250"
+    (is (= "SELECT strftime('%Y', \"e_0\".\"created_at\") AS \"year\", \"e_0\".\"id\" AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250"
            (:query (generate-sqlite "employee | select: created_at => year"))))
-    (is (= "SELECT strftime('%Y-%m', \"e_0\".\"created_at\") AS \"month\", \"e_0\".id AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250"
+    (is (= "SELECT strftime('%Y-%m', \"e_0\".\"created_at\") AS \"month\", \"e_0\".\"id\" AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250"
            (:query (generate-sqlite "employee | select: created_at => month"))))
-    (is (= "SELECT strftime('%Y-%m-%d', \"e_0\".\"created_at\") AS \"day\", \"e_0\".id AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250"
+    (is (= "SELECT strftime('%Y-%m-%d', \"e_0\".\"created_at\") AS \"day\", \"e_0\".\"id\" AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250"
            (:query (generate-sqlite "employee | select: created_at => day"))))
     ;; week: back up to Monday - %w counts Sunday as 0, so (%w + 6) % 7 days.
-    (is (= "SELECT strftime('%Y-%m-%d', \"e_0\".\"created_at\", '-' || ((CAST(strftime('%w', \"e_0\".\"created_at\") AS INTEGER) + 6) % 7) || ' days') AS \"week\", \"e_0\".id AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250"
+    (is (= "SELECT strftime('%Y-%m-%d', \"e_0\".\"created_at\", '-' || ((CAST(strftime('%w', \"e_0\".\"created_at\") AS INTEGER) + 6) % 7) || ' days') AS \"week\", \"e_0\".\"id\" AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250"
            (:query (generate-sqlite "employee | select: created_at => week"))))
-    (is (= "SELECT strftime('%Y-%m-%d %H', \"e_0\".\"created_at\") AS \"hour\", \"e_0\".id AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250"
+    (is (= "SELECT strftime('%Y-%m-%d %H', \"e_0\".\"created_at\") AS \"hour\", \"e_0\".\"id\" AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250"
            (:query (generate-sqlite "employee | select: created_at => hour"))))
-    (is (= "SELECT strftime('%Y-%m-%d %H:%M', \"e_0\".\"created_at\") AS \"minute\", \"e_0\".id AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250"
+    (is (= "SELECT strftime('%Y-%m-%d %H:%M', \"e_0\".\"created_at\") AS \"minute\", \"e_0\".\"id\" AS \"__e_0__id\" FROM \"employee\" AS \"e_0\" LIMIT 250"
            (:query (generate-sqlite "employee | select: created_at => minute")))))
 
   (testing "Count and group"
@@ -1278,9 +1278,27 @@
             :params nil}
            (generate-sqlite "company | limit: 5 | delete! .id")))
     (is (= {:queries [{:table "company"
-                       :query "UPDATE \"company\" SET \"name\" = ? WHERE id IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
+                       :query "UPDATE \"company\" SET \"name\" = ? WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
                        :params (list (dt/string "John Doe") (dt/number "1"))}]}
-           (generate-sqlite "company | where: id = 1 | update! name = 'John Doe'")))))
+           (generate-sqlite "company | where: id = 1 | update! name = 'John Doe'"))))
+
+  (testing "a composite primary key: row values, which SQLite supports in IN"
+    (is (= {:queries [{:table "p.membership"
+                       :query "UPDATE \"p\".\"membership\" SET \"role\" = ? WHERE (\"group_code\", \"member_code\") IN ( SELECT \"m_0\".\"group_code\", \"m_0\".\"member_code\" FROM \"p\".\"membership\" AS \"m_0\" WHERE \"m_0\".\"role\" = ? )"
+                       :params (list (dt/string "b") (dt/string "a"))}]}
+           (generate-sqlite "p.membership | where: role = 'a' | update! role = 'b'"))))
+
+  (testing "JSON paths: json_extract with one path parameter, as for MySQL"
+    (is (= {:query "SELECT \"c_0\".\"name\", \"c_0\".\"id\" AS \"__c_0__id\" FROM \"customer\" AS \"c_0\" WHERE json_extract(\"c_0\".\"data\", ?) = json_extract(?, '$') LIMIT 250"
+            :params (list (dt/string "$.\"country\"") (assoc (dt/jsonb "\"SE\"") :json-type "string"))}
+           (generate-sqlite "customer | where: data.country = 'SE' | select: name")))
+    ;; < and > only compare values of the literal's own type; typeof names the
+    ;; SQL type json_extract produced.
+    (is (= "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".* FROM \"customer\" AS \"c_0\" WHERE (typeof(json_extract(\"c_0\".\"data\", ?)) IN ('integer', 'real') AND json_extract(\"c_0\".\"data\", ?) > json_extract(?, '$')) LIMIT 250"
+           (:query (generate-sqlite "customer | where: data.seats > 10"))))
+    (is (= {:query "SELECT \"c_0\".\"name\", json_extract(\"c_0\".\"data\", ?) AS \"data.address.city\", json_extract(\"c_0\".\"data\", ?) AS \"data.tags[0]\", \"c_0\".\"id\" AS \"__c_0__id\" FROM \"customer\" AS \"c_0\" LIMIT 250"
+            :params (list (dt/string "$.\"address\".\"city\"") (dt/string "$.\"tags\"[0]"))}
+           (generate-sqlite "customer | select: name, data.address.city, data.tags[0]")))))
 
 ;; ---------------------------------------------------------------------------
 ;; Composite foreign keys

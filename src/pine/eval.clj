@@ -137,11 +137,12 @@
 
 (defn- json-path-params
   "The parameters that name a path inside a JSON value. Postgres takes one
-  per key or index. MySQL takes one path expression, `$.\"address\".\"city\"`
-  or `$.\"tags\"[0]`, with each key quoted so it can hold any character.
-  Keys are typed by the user, so they're always parameters, never SQL text."
+  per key or index. MySQL and SQLite take one path expression,
+  `$.\"address\".\"city\"` or `$.\"tags\"[0]`, with each key quoted so it can hold
+  any character. Keys are typed by the user, so they're always parameters,
+  never SQL text."
   [path]
-  (if (= *dialect* :mysql)
+  (if (#{:mysql :sqlite} *dialect*)
     [(dt/string (apply str "$" (map #(if (integer? %) (str "[" % "]") (str "." (json/generate-string %))) path)))]
     (map #(dt/string (str %)) path)))
 
@@ -152,9 +153,17 @@
   Postgres `json` column is cast to `jsonb`, which a `jsonb` one already is."
   [as col-ref path]
   (let [params (json-path-params path)]
-    [(if (= *dialect* :mysql)
+    [(case *dialect*
+       :mysql
        (let [x (str "JSON_EXTRACT(" col-ref ", ?)")]
          (if (= as :text) (str "JSON_UNQUOTE(" x ")") x))
+
+       ;; SQLite has no JSON type. json_extract gives the value itself, as
+       ;; an SQL integer, real or text, and NULL for a missing key or a JSON
+       ;; null. An object or array comes back as JSON text, which is the
+       ;; same either way, so `as` makes no difference here.
+       :sqlite (str "json_extract(" col-ref ", ?)")
+
        (str (if (= as :text) "jsonb_extract_path_text(" "jsonb_extract_path(")
             col-ref "::jsonb, " (s/join ", " (repeat (count params) "?::text")) ")"))
      params]))
@@ -170,9 +179,31 @@
   compare them: on Postgres `true > 10` and `{\"a\":1} > 10` are true. So
   `<` and `>` only compare values of the literal's own type."
   [x json-type]
-  (if (= *dialect* :mysql)
+  (case *dialect*
+    :mysql
     (str "JSON_TYPE(" x ") IN (" (s/join ", " (map #(str "'" % "'") (mysql-json-types json-type))) ")")
+
+    ;; json_extract has already turned the value into an SQL one, so typeof
+    ;; names what it was. A JSON true or false becomes the integer 1 or 0, so
+    ;; a boolean can't be told from a number; and an object or array comes
+    ;; back as text, so it counts as a string.
+    :sqlite
+    (case json-type
+      "number" (str "typeof(" x ") IN ('integer', 'real')")
+      "string" (str "typeof(" x ") = 'text'")
+      "boolean" (str "typeof(" x ") = 'integer'"))
+
     (str "jsonb_typeof(" x ") = '" json-type "'")))
+
+(defn- json-value-placeholder
+  "The placeholder for a JSON literal compared with a key inside a JSON
+  column. SQLite compares the SQL value json_extract returned, so the literal
+  is unwrapped to its SQL value the same way: `10` to the integer 10, `\"SE\"`
+  to the text SE."
+  []
+  (if (= *dialect* :sqlite)
+    "json_extract(?, '$')"
+    (auto-cast-placeholder :jsonb)))
 
 (defn- in-subquery
   "MySQL rejects `<verb> <target> ... WHERE id IN ( SELECT ... FROM <same
@@ -372,11 +403,11 @@
         [text-x text-params] (json-extract :text ref path)]
     (cond
       (and (#{">" "<" ">=" "<="} operator) (:json-type value))
-      [(str "(" (json-type-check json-x (:json-type value)) " AND " json-x " " operator " " (auto-cast-placeholder :jsonb) ")")
+      [(str "(" (json-type-check json-x (:json-type value)) " AND " json-x " " operator " " (json-value-placeholder) ")")
        (concat json-params json-params (value-params value))]
 
       (= :jsonb (:type value))
-      [(str json-x " " operator " " (auto-cast-placeholder :jsonb)) (concat json-params (value-params value))]
+      [(str json-x " " operator " " (json-value-placeholder)) (concat json-params (value-params value))]
 
       ;; MySQL's JSON_UNQUOTE turns a JSON null into the text 'null', so
       ;; missing and null are told apart by JSON_TYPE instead.
