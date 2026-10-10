@@ -80,16 +80,16 @@
                           (state "customer | s: uuid_col.x")))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"can't be used on a key inside a JSON column"
                           (state "customer | s: data.created => month")))
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"update! can't write into a key of a JSON column"
-                          (state "customer | where: id = 1 | update! data.plan = 'pro'")))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"only be compared with a value"
                           (state "customer | where: data.plan = id")))))
 
 (deftest test-postgres
-  (testing "select: the value as text, named after its path"
+  (testing "select: the value as text, named after its path, and its JSON type in a hidden column"
     (is (= {:query (str "SELECT jsonb_extract_path_text(\"c_0\".\"data\"::jsonb, ?::text, ?::text) AS \"data.address.city\", "
-                        "\"c_0\".\"id\" AS \"__c_0__id\" FROM \"customer\" AS \"c_0\" LIMIT 250")
-            :params ["address" "city"]}
+                        "\"c_0\".\"id\" AS \"__c_0__id\", "
+                        "jsonb_typeof(jsonb_extract_path(\"c_0\".\"data\"::jsonb, ?::text, ?::text)) AS \"__c_0__data.address.city__type\" "
+                        "FROM \"customer\" AS \"c_0\" LIMIT 250")
+            :params ["address" "city" "address" "city"]}
            (sql "customer | s: data.address.city"))))
 
   (testing "= compares JSON values: the literal is sent as JSON"
@@ -130,11 +130,11 @@
                  (:query (sql "customer | group: data.plan, data.region => count")))))
 
   (testing "Params follow the order of their ? in the query: select, where, order"
-    (is (= ["a" "b" "1" "c"]
+    (is (= ["a" "a" "b" "1" "c"]
            (:params (sql "customer | s: data.a | where: data.b = 1 | o: data.c")))))
 
   (testing "Array indexes and keys that aren't names"
-    (is (= ["tags" "0" "home address" "it's"]
+    (is (= ["tags" "0" "home address" "it's" "tags" "0" "home address" "it's"]
            (:params (sql "customer | s: data.tags[0], data.'home address', data.'it''s'")))))
 
   (testing "A quote inside a key can't end the column name"
@@ -142,12 +142,14 @@
 
 (deftest test-mysql
   (testing "One path parameter, with each key quoted"
-    (is (= {:query (str "SELECT JSON_UNQUOTE(JSON_EXTRACT(`p_0`.`config`, ?)) AS `config.a.b`, `p_0`.`id` AS `__p_0__id` "
-                        "FROM `product` AS `p_0` LIMIT 250")
-            :params ["$.\"a\".\"b\""]}
+    (is (= {:query (str "SELECT JSON_UNQUOTE(JSON_EXTRACT(`p_0`.`config`, ?)) AS `config.a.b`, `p_0`.`id` AS `__p_0__id`, "
+                        "CASE JSON_TYPE(JSON_EXTRACT(`p_0`.`config`, ?)) WHEN 'INTEGER' THEN 'number' WHEN 'UNSIGNED INTEGER' THEN 'number' "
+                        "WHEN 'DOUBLE' THEN 'number' WHEN 'DECIMAL' THEN 'number' ELSE LOWER(JSON_TYPE(JSON_EXTRACT(`p_0`.`config`, ?))) END "
+                        "AS `__p_0__config.a.b__type` FROM `product` AS `p_0` LIMIT 250")
+            :params ["$.\"a\".\"b\"" "$.\"a\".\"b\"" "$.\"a\".\"b\""]}
            (sql :test-mysql "product | s: config.a.b")))
-    (is (= ["$.\"tags\"[1]"] (:params (sql :test-mysql "product | s: config.tags[1]"))))
-    (is (= ["$.\"we\\\"ird\""] (:params (sql :test-mysql "product | s: config.'we\"ird'")))))
+    (is (= "$.\"tags\"[1]" (first (:params (sql :test-mysql "product | s: config.tags[1]")))))
+    (is (= "$.\"we\\\"ird\"" (first (:params (sql :test-mysql "product | s: config.'we\"ird'"))))))
 
   (testing "= and > compare JSON values, > only within the literal's type"
     (is (re-find #"WHERE JSON_EXTRACT\(`p_0`.`config`, \?\) = CAST\(\? AS JSON\)"
@@ -190,3 +192,87 @@
           e)))
   (testing "Selecting a key doesn't use up its column"
     (is (some #{"data"} (->> (state "customer | s: data.plan, ") :hints :select (map :column))))))
+
+(defn- update-sql
+  "The one UPDATE an expression builds, with each param reduced to its value."
+  ([expression] (update-sql :test expression))
+  ([connection expression]
+   (-> (eval/build-query (state connection expression []))
+       :queries
+       first
+       (select-keys [:query :params])
+       (update :params #(map :value %)))))
+
+(deftest test-update-into-a-key
+  (testing "Postgres: jsonb_set, with the literal as a JSON value"
+    (is (= {:query (str "UPDATE \"customer\" SET \"data\" = jsonb_set(\"data\"::jsonb, ARRAY[?::text, ?::text], ?::jsonb) "
+                        "WHERE jsonb_typeof(jsonb_extract_path(\"data\"::jsonb, ?::text)) = 'array' "
+                        "AND \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )")
+            :params ["companies" "0" "\"c-42\"" "companies" 1]}
+           (update-sql "customer | where: id = 1 | update! data.companies[0] = 'c-42'"))))
+
+  (testing "A literal means the same JSON value as in where:"
+    (is (= ["plan" "5"] (butlast (:params (update-sql "customer | where: id = 1 | update! data.plan = 5")))))
+    (is (= ["plan" "-1.5"] (butlast (:params (update-sql "customer | where: id = 1 | update! data.plan = -1.5")))))
+    (is (= ["plan" "true"] (butlast (:params (update-sql "customer | where: id = 1 | update! data.plan = true")))))
+    (is (= ["plan" "null"] (butlast (:params (update-sql "customer | where: id = 1 | update! data.plan = null")))))
+    (is (= ["plan" "\"2024-01-01\""] (butlast (:params (update-sql "customer | where: id = 1 | update! data.plan = '2024-01-01'"))))))
+
+  (testing "The alias can name the table, and alias wins"
+    (is (re-find #"SET \"data\" = jsonb_set\(\"data\"::jsonb, ARRAY\[\?::text\], \?::jsonb\) WHERE"
+                 (:query (update-sql "customer as c | where: id = 1 | update! c.data.plan = 'pro'")))))
+
+  (testing "Keys of one column nest, in the order written"
+    (is (= {:query (str "UPDATE \"customer\" SET \"data\" = jsonb_set(jsonb_set(\"data\"::jsonb, ARRAY[?::text], ?::jsonb)::jsonb, "
+                        "ARRAY[?::text], ?::jsonb), \"name\" = ? "
+                        "WHERE jsonb_typeof(\"data\"::jsonb) = 'object' "
+                        "AND \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )")
+            :params ["a" "1" "b" "2" "x" 1]}
+           (update-sql "customer | where: id = 1 | update! data.a = 1, name = 'x', data.b = 2"))))
+
+  (testing "A Postgres json column gets the jsonb back as json"
+    (is (re-find #"SET \"config\" = jsonb_set\(\"config\"::jsonb, ARRAY\[\?::text\], \?::jsonb\)::json WHERE"
+                 (:query (update-sql "product | where: id = 1 | update! config.color = 'red'")))))
+
+  (testing "MySQL: JSON_SET with one path parameter"
+    (is (= {:query (str "UPDATE `product` SET `config` = JSON_SET(`config`, ?, CAST(? AS JSON)) "
+                        "WHERE JSON_TYPE(JSON_EXTRACT(`config`, ?)) = 'ARRAY' "
+                        "AND `id` IN ( SELECT * FROM ( SELECT `p_0`.`id` FROM `product` AS `p_0` WHERE `p_0`.`id` = ? ) AS `pine_sub` )")
+            :params ["$.\"tags\"[0]" "\"x\"" "$.\"tags\"" 1]}
+           (update-sql :test-mysql "product | where: id = 1 | update! config.tags[0] = 'x'"))))
+
+  (testing "SQLite: json_set, reading the value as JSON"
+    (is (re-find #"SET \"data\" = json_set\(\"data\", \?, json\(\?\)\) WHERE"
+                 (:query (update-sql :test-sqlite "customer | where: id = 1 | update! data.plan = 'pro'")))))
+
+  (testing "Refused"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"can only write a value into a key"
+                          (state "customer | where: id = 1 | update! data.plan = name")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"can't write `data` and a key inside it at once"
+                          (state "customer | where: id = 1 | update! data = '{}', data.plan = 'pro'")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`uuid_col` is not a JSON column"
+                          (state "customer | where: id = 1 | update! uuid_col.x = 'pro'")))))
+
+(deftest test-json-type-column
+  (let [columns #(->> (state %) :columns (filter :json-type-of))]
+    (testing "One hidden type column per selected path, linked to it by name"
+      (is (= [{:column "data" :alias "c_0" :path ["plan"] :column-alias "__c_0__data.plan__type"
+               :hidden true :json-type-of "data.plan"}]
+             (map #(dissoc % :operation-index) (columns "customer | s: data.plan")))))
+
+    (testing "None where there is nothing to edit"
+      (is (empty? (columns "customer | group: data.plan => count")))
+      (is (empty? (columns "customer | s: data.plan | count:"))))
+
+    (testing "None for a JSON column the access policy hides"
+      (is (empty? (->> (state :test "customer | s: data.plan" [{:column "data"}]) :columns (filter :json-type-of)))))
+
+    (testing "A named result leaves it out"
+      (let [{:keys [named-results]} (reduce (fn [{:keys [named-results]} expr]
+                                              (let [s (-> expr parse (ast/generate :test nil nil named-results []))]
+                                                {:named-results (merge named-results (:pending-assignments s))
+                                                 :last s}))
+                                            {:named-results {}}
+                                            ["customer | s: data.plan |= p"])
+            q (-> "p | s: data.plan" parse (ast/generate :test nil nil named-results []) eval/build-query :query)]
+        (is (not (re-find #"__type" q)))))))

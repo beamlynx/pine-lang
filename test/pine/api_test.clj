@@ -324,3 +324,15 @@
       (is (= 200 (:status r)))
       (is (= {:running false} (:json r))))
     (pine.db.exec/finish-run! "api-test-not-running")))
+
+(deftest test-api-build-query-without-hidden
+  (testing "/build also returns the SQL without the hidden key and JSON type columns"
+    (let [{:keys [query query-without-hidden]} (api/api-build ["customer | s: data.plan"] nil :test)]
+      (is (re-find #"__c_0__id" query))
+      (is (re-find #"__type" query))
+      (is (not (re-find #"__c_0__id|__type" query-without-hidden)))
+      (is (re-find #"AS \"data.plan\"" query-without-hidden))))
+
+  (testing "Without columns of its own, the table's own columns are shown"
+    (is (re-find #"SELECT\s+\"c_0\"\.\*\s+FROM"
+                 (:query-without-hidden (api/api-build ["customer"] nil :test))))))

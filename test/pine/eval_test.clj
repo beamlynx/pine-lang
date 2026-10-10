@@ -1296,8 +1296,11 @@
     ;; SQL type json_extract produced.
     (is (= "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".* FROM \"customer\" AS \"c_0\" WHERE (typeof(json_extract(\"c_0\".\"data\", ?)) IN ('integer', 'real') AND json_extract(\"c_0\".\"data\", ?) > json_extract(?, '$')) LIMIT 250"
            (:query (generate-sqlite "customer | where: data.seats > 10"))))
-    (is (= {:query "SELECT \"c_0\".\"name\", json_extract(\"c_0\".\"data\", ?) AS \"data.address.city\", json_extract(\"c_0\".\"data\", ?) AS \"data.tags[0]\", \"c_0\".\"id\" AS \"__c_0__id\" FROM \"customer\" AS \"c_0\" LIMIT 250"
-            :params (list (dt/string "$.\"address\".\"city\"") (dt/string "$.\"tags\"[0]"))}
+    (is (= {:query (str "SELECT \"c_0\".\"name\", json_extract(\"c_0\".\"data\", ?) AS \"data.address.city\", json_extract(\"c_0\".\"data\", ?) AS \"data.tags[0]\", \"c_0\".\"id\" AS \"__c_0__id\", "
+                        "CASE json_type(\"c_0\".\"data\", ?) WHEN 'true' THEN 'boolean' WHEN 'false' THEN 'boolean' WHEN 'integer' THEN 'number' WHEN 'real' THEN 'number' WHEN 'text' THEN 'string' ELSE json_type(\"c_0\".\"data\", ?) END AS \"__c_0__data.address.city__type\", "
+                        "CASE json_type(\"c_0\".\"data\", ?) WHEN 'true' THEN 'boolean' WHEN 'false' THEN 'boolean' WHEN 'integer' THEN 'number' WHEN 'real' THEN 'number' WHEN 'text' THEN 'string' ELSE json_type(\"c_0\".\"data\", ?) END AS \"__c_0__data.tags[0]__type\" "
+                        "FROM \"customer\" AS \"c_0\" LIMIT 250")
+            :params (map dt/string ["$.\"address\".\"city\"" "$.\"tags\"[0]" "$.\"address\".\"city\"" "$.\"address\".\"city\"" "$.\"tags\"[0]" "$.\"tags\"[0]"])}
            (generate-sqlite "customer | select: name, data.address.city, data.tags[0]")))))
 
 ;; ---------------------------------------------------------------------------

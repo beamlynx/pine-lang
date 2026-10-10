@@ -620,7 +620,7 @@
   ([state] (generate-all-column-hints state (state :current))) ;; Overload for default `a`
   ([state a]
    (let [entry (get (state :aliases) a)
-         explicit-cols (when (:ast entry) (remove :auto-id (:columns (:ast entry))))]
+         explicit-cols (when (:ast entry) (remove table/added-column? (:columns (:ast entry))))]
      (if (or (not (:ast entry)) (empty? explicit-cols))
        ;; Real table, or a variable with no explicit columns (`*`) - the CTE
        ;; implicitly selects everything, so the column list (names, types)

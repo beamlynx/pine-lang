@@ -3,6 +3,7 @@
    [cheshire.core :as json]
    [clojure.string :as s]
    [pine.access-policy :as access-policy]
+   [pine.ast.table :as table]
    [pine.data-types :as dt]
    [pine.db.connections :as connections]
    [pine.db.main :as db]))
@@ -168,6 +169,27 @@
             col-ref "::jsonb, " (s/join ", " (repeat (count params) "?::text")) ")"))
      params]))
 
+(defn- json-type-sql
+  "[sql params] naming the JSON type of the value at `path`: string, number,
+  boolean, null, object or array, and NULL when the key is missing. Each
+  database has its own names, so they are mapped to Postgres's."
+  [col-ref path]
+  (let [[x params] (json-extract :json col-ref path)]
+    (case *dialect*
+      :mysql
+      [(str "CASE JSON_TYPE(" x ") WHEN 'INTEGER' THEN 'number' WHEN 'UNSIGNED INTEGER' THEN 'number'"
+            " WHEN 'DOUBLE' THEN 'number' WHEN 'DECIMAL' THEN 'number' ELSE LOWER(JSON_TYPE(" x ")) END")
+       (concat params params)]
+
+      ;; json_type, not json_extract: it tells true and false from 1 and 0.
+      :sqlite
+      (let [t (str "json_type(" col-ref ", ?)")]
+        [(str "CASE " t " WHEN 'true' THEN 'boolean' WHEN 'false' THEN 'boolean' WHEN 'integer' THEN 'number'"
+              " WHEN 'real' THEN 'number' WHEN 'text' THEN 'string' ELSE " t " END")
+         (concat params params)])
+
+      [(str "jsonb_typeof(" x ")") params])))
+
 (def ^:private mysql-json-types
   {"number" ["INTEGER" "DOUBLE" "DECIMAL" "UNSIGNED INTEGER"]
    "string" ["STRING"]
@@ -276,9 +298,10 @@
 
 (defn- column-sql
   "[sql params] for one column of a SELECT list, before its `AS` name."
-  [state rules {:keys [column alias symbol col-fn path] :as col}]
+  [state rules {:keys [column alias symbol col-fn path json-type-of] :as col}]
   (cond
     (and (seq rules) (access-policy/sensitive-column? state rules col)) [access-policy/redacted-sql-literal []]
+    json-type-of (json-type-sql (q alias column) path)
     path (json-extract :text (q alias column) path)
     ;; Column function (currently date functions)
     col-fn [(col-fn-expr col-fn (q alias column)) []]
@@ -468,12 +491,15 @@
   Returns {:query ... :params ...}."
   [ast]
   (let [current-alias    (:current ast)
-        user-columns     (remove :auto-id (:columns ast))
+        user-columns     (remove table/added-column? (:columns ast))
         has-explicit?    (some #(= (:alias %) current-alias) user-columns)
         columns          (keep (fn [col]
-                                 (if (and (:auto-id col) (= (:alias col) current-alias))
+                                 (cond
+                                   ;; Only the results grid reads a JSON type.
+                                   (:json-type-of col) nil
+                                   (and (:auto-id col) (= (:alias col) current-alias))
                                    (when has-explicit? (dissoc col :column-alias))
-                                   col))
+                                   :else col))
                                (:columns ast))]
     (build-bare-select (assoc ast :columns columns))))
 
@@ -681,30 +707,96 @@
       (refuse-write (str "update! can't change `" (table-label aliases update-alias)
                          "`: it has no primary key, so there is no way to tell its rows apart."))))
 
+(defn- json-set
+  "[sql params] for the JSON value `col-sql` with the value at `path`
+  replaced by `value`, a JSON value. A missing key is added, and an index
+  past the end adds the value at the end. The object or array holding it has
+  to be there already: see json-holder-check."
+  [col-sql path value]
+  (let [path-params (json-path-params path)]
+    [(case *dialect*
+       :mysql (str "JSON_SET(" col-sql ", ?, " (auto-cast-placeholder :jsonb) ")")
+       ;; SQLite would store the JSON text as a string; json() reads it as JSON.
+       :sqlite (str "json_set(" col-sql ", ?, json(?))")
+       (str "jsonb_set(" col-sql "::jsonb, ARRAY[" (s/join ", " (repeat (count path-params) "?::text")) "], "
+            (auto-cast-placeholder :jsonb) ")"))
+     (concat path-params [value])]))
+
+(defn- json-holder-check
+  "[sql params] that is true when the value holding the last step of `path`
+  is an object (for a key) or an array (for an index). Where it isn't, the
+  databases differ: SQLite builds the missing objects, Postgres refuses a key
+  into an array, and the others leave the value as it was while counting the
+  row as updated. Such a row is left out, so every database leaves it alone
+  and the count says so."
+  [column path]
+  (let [holder (butlast path)
+        container (if (integer? (last path)) "array" "object")
+        col-sql (q column)]
+    (case *dialect*
+      :mysql (let [[x params] (if (seq holder) (json-extract :json col-sql holder) [col-sql []])]
+               [(str "JSON_TYPE(" x ") = '" (s/upper-case container) "'") params])
+      :sqlite (if (seq holder)
+                [(str "json_type(" col-sql ", ?) = '" container "'") (json-path-params holder)]
+                [(str "json_type(" col-sql ") = '" container "'") []])
+      (let [[x params] (if (seq holder) (json-extract :json col-sql holder) [(str col-sql "::jsonb") []])]
+        [(str "jsonb_typeof(" x ") = '" container "'") params]))))
+
+(defn- assignment-value-sql
+  "[sql params] for the right of one whole-column assignment."
+  [update-alias value]
+  (case (:type value)
+    :symbol [(:value value) []]
+    :column [(update-source-column update-alias value) []]
+    [(auto-cast-placeholder (:type value)) [value]]))
+
+(defn- set-column
+  "[sql params] for `column = ...` in SET. Several keys written into one
+  JSON column nest, each jsonb_set (or JSON_SET) taking the one before it."
+  [update-alias [{{:keys [column path]} :column :keys [db-type] :as first-assignment} :as assignments]]
+  (if path
+    (let [[sql params] (reduce (fn [[sql params] {{:keys [path]} :column :keys [value]}]
+                                 (let [[sql' params'] (json-set sql path value)]
+                                   [sql' (concat params params')]))
+                               [(q column) []]
+                               assignments)
+          ;; jsonb_set gives jsonb, which a Postgres `json` column takes only cast.
+          sql (if (and (= *dialect* :postgres) (= "json" (some-> db-type s/lower-case)))
+                (str sql "::json")
+                sql)]
+      [(str (q column) " = " sql) params])
+    (let [[sql params] (assignment-value-sql update-alias (:value first-assignment))]
+      [(str (q column) " = " sql) params])))
+
+(defn- group-by-column
+  "Assignments grouped by the column they write, in the order the columns
+  first appear. Keys of one JSON column are written in one SET entry; a
+  whole column assigned twice stays two entries, which the database refuses."
+  [assignments]
+  (let [k (fn [{{:keys [column path]} :column :as a}] (if path column a))
+        groups (group-by k assignments)]
+    (map groups (distinct (map k assignments)))))
+
 (defn- build-single-update-query [state update-alias assignments]
   (check-write-allowed state "update!" update-alias)
   (let [{:keys [aliases]}              state
         {table :table schema :schema}  (get aliases update-alias)
         key-columns                    (update-key state update-alias)
-        set-clause (s/join ", "
-                           (map (fn [{:keys [column value]}]
-                                  (let [{:keys [alias column]} column]
-                                    (str (q column) " = " (cond
-                                                            (= (:type value) :symbol) (:value value)
-                                                            (= (:type value) :column) (update-source-column update-alias value)
-                                                            :else (auto-cast-placeholder (:type value))))))
-                                assignments))
+        set-entries                    (map #(set-column update-alias %) (group-by-column assignments))
+        set-clause                     (s/join ", " (map first set-entries))
+        holder-checks                  (distinct
+                                        (for [{{:keys [column path]} :column} assignments
+                                              :when (seq path)]
+                                          (json-holder-check column path)))
         state-for-subquery (-> state
                                (assoc :columns (mapv (fn [column] {:column column :alias update-alias}) key-columns))
                                (assoc :operation {:type :select :value nil}))
-        {:keys [query params]} (build-select-query state-for-subquery)
-        update-params (->> assignments
-                           (map :value)
-                           (filter #(not (or (= (:type %) :symbol) (= (:type %) :column)))))]
+        {:keys [query params]} (build-select-query state-for-subquery)]
     {:table (if schema (str schema "." table) table)
-     :query (str "UPDATE " (q schema table) " SET " set-clause " WHERE " (key-target key-columns)
-                 " IN ( " (in-subquery query) " )")
-     :params (concat update-params params)}))
+     :query (str "UPDATE " (q schema table) " SET " set-clause " WHERE "
+                 (apply str (map #(str (first %) " AND ") holder-checks))
+                 (key-target key-columns) " IN ( " (in-subquery query) " )")
+     :params (concat (mapcat second set-entries) (mapcat second holder-checks) params)}))
 
 (defn build-update-queries [state]
   "Returns a list of {:table table-name :query query :params params}, one per table being updated."
