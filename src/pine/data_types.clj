@@ -6,9 +6,17 @@
   {:type :string
    :value x})
 
-(defn number [x]
+(defn number
+  "A number written in the expression: `7`, `-2` or `1.5`. A decimal is kept
+  exact as a BigDecimal, which a double would round."
+  [x]
   {:type :number
-   :value (Long/parseLong x)})
+   :value (if (clojure.string/includes? x ".")
+            (BigDecimal. ^String x)
+            (try (Long/parseLong x)
+                 (catch NumberFormatException _
+                   (throw (ex-info (str x " is too large for a number. Write it as a string: '" x "'.")
+                                   {:error-type "parse"})))))})
 
 (defn- parse-temporal
   "A java.sql.Date for 'YYYY-MM-DD', a java.sql.Timestamp when a time
