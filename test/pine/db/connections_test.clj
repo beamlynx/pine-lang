@@ -133,6 +133,11 @@
     (is (clojure.string/starts-with? (connections/jdbc-url {:dbtype "mysql" :host "h" :port 3307 :dbname "d"})
                                      "jdbc:mysql://h:3307/d?"))))
 
+(deftest test-jdbc-url-sqlite
+  (testing "SQLite: the file path is the whole address; no host, port or options"
+    (is (= "jdbc:sqlite:/data/app.db" (connections/jdbc-url {:dbtype "sqlite" :dbname "/data/app.db"})))
+    (is (nil? (connections/default-port "sqlite")))))
+
 (deftest test-jdbc-url->label
   (testing "Postgres URL, no query string"
     (is (= "h:5432 · d" (connections/jdbc-url->label "jdbc:postgresql://h:5432/d"))))
@@ -142,19 +147,36 @@
            (connections/jdbc-url->label
             (connections/jdbc-url {:dbtype "mysql" :host "h" :dbname "pine"}))))))
 
+(deftest test-sqlite-label-and-id
+  (let [url "jdbc:sqlite:/data/my files/app.db"
+        id (fn [url] (connections/make-connection-id (fake-hikari url nil (atom false))))]
+    (testing "the label is the file name, then its folder"
+      (is (= "app.db · /data/my files" (connections/jdbc-url->label url))))
+
+    (testing "the id has no `/` (it is a route segment) and no spaces"
+      (is (re-matches #"sqlite:app\.db:[0-9a-f]{10}" (id "jdbc:sqlite:/data/a/app.db")))
+      (is (re-matches #"sqlite:my_file\.db:[0-9a-f]{10}" (id "jdbc:sqlite:/data/my file.db"))))
+
+    (testing "same file name in two folders: two ids; the same path: the same id"
+      (is (not= (id "jdbc:sqlite:/a/app.db") (id "jdbc:sqlite:/b/app.db")))
+      (is (= (id "jdbc:sqlite:/a/app.db") (id "jdbc:sqlite:/a/app.db"))))))
+
 (deftest test-get-dialect
   (testing "sentinel test connection ids resolve without touching any pool"
     (is (= :postgres (connections/get-dialect :test)))
-    (is (= :mysql (connections/get-dialect :test-mysql))))
+    (is (= :mysql (connections/get-dialect :test-mysql)))
+    (is (= :sqlite (connections/get-dialect :test-sqlite))))
 
   (testing "a registered HikariDataSource's own JDBC URL scheme wins"
     (try
       (swap! connections/pools assoc "dialect-mysql" (fake-hikari "jdbc:mysql://h:3306/d" "u" (atom false)))
       (swap! connections/pools assoc "dialect-pg" (fake-hikari "jdbc:postgresql://h:5432/d" "u" (atom false)))
+      (swap! connections/pools assoc "dialect-sqlite" (fake-hikari "jdbc:sqlite:/data/app.db" nil (atom false)))
       (is (= :mysql (connections/get-dialect "dialect-mysql")))
       (is (= :postgres (connections/get-dialect "dialect-pg")))
+      (is (= :sqlite (connections/get-dialect "dialect-sqlite")))
       (finally
-        (swap! connections/pools dissoc "dialect-mysql" "dialect-pg"))))
+        (swap! connections/pools dissoc "dialect-mysql" "dialect-pg" "dialect-sqlite"))))
 
   (testing "defaults to :postgres for anything else - an unregistered id, or a non-HikariDataSource pool"
     (is (= :postgres (connections/get-dialect "no-such-connection")))
@@ -184,7 +206,7 @@
     (is (problem (assoc ok :port 0)))
     (is (problem (assoc ok :port 70000)))
     (is (problem (assoc ok :port "abc")))
-    (is (problem (assoc ok :dbtype "sqlite")))
+    (is (problem (assoc ok :dbtype "oracle")))
     (is (problem (dissoc ok :password)))
     (is (problem (assoc ok :user 5))))
 

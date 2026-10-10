@@ -51,6 +51,16 @@
              "week"   (str "DATE_FORMAT(DATE_SUB(" col-ref ", INTERVAL WEEKDAY(" col-ref ") DAY), '%Y-%m-%d')")
              "hour"   (str "DATE_FORMAT(" col-ref ", '%Y-%m-%d %H')")
              "minute" (str "DATE_FORMAT(" col-ref ", '%Y-%m-%d %H:%i')"))
+    ;; SQLite has no date type: a date is text (`2024-01-31 10:00:00`), which
+    ;; strftime reads. %w counts Sunday as 0, so (%w + 6) % 7 is the days
+    ;; since Monday - the boundary Postgres's DATE_TRUNC('week') uses.
+    :sqlite (case col-fn
+              "year"   (str "strftime('%Y', " col-ref ")")
+              "month"  (str "strftime('%Y-%m', " col-ref ")")
+              "day"    (str "strftime('%Y-%m-%d', " col-ref ")")
+              "week"   (str "strftime('%Y-%m-%d', " col-ref ", '-' || ((CAST(strftime('%w', " col-ref ") AS INTEGER) + 6) % 7) || ' days')")
+              "hour"   (str "strftime('%Y-%m-%d %H', " col-ref ")")
+              "minute" (str "strftime('%Y-%m-%d %H:%M', " col-ref ")"))
     (str "TO_CHAR(DATE_TRUNC('" col-fn "', " col-ref "), '" (col-fn-format col-fn) "')")))
 
 (def ^:private mysql-cast-types
@@ -68,12 +78,29 @@
    "numeric" "DECIMAL" "decimal" "DECIMAL"
    "bool" "SIGNED" "boolean" "SIGNED"})
 
+(def ^:private sqlite-cast-types
+  "Translation table for a user's explicit `::cast` into SQLite's CAST()
+  targets. SQLite has no `::`, and a CAST target only picks an affinity, so
+  the names map to the five that matter. Dates and times map to TEXT, not
+  DATE: a cast to DATE gets NUMERIC affinity, which would turn the text
+  `2024-01-31` into the number 2024. Anything not listed is uppercased and
+  passed through, as for the other dialects."
+  {"text" "TEXT" "varchar" "TEXT" "char" "TEXT"
+   "json" "TEXT" "jsonb" "TEXT" "uuid" "TEXT"
+   "date" "TEXT" "timestamp" "TEXT" "datetime" "TEXT" "time" "TEXT"
+   "int" "INTEGER" "integer" "INTEGER" "bigint" "INTEGER" "smallint" "INTEGER"
+   "bool" "INTEGER" "boolean" "INTEGER"
+   "numeric" "NUMERIC" "decimal" "NUMERIC"
+   "real" "REAL" "float" "REAL" "double" "REAL"})
+
 (defn- render-cast
   "Apply an explicit cast to an already-rendered expression, dialect-aware:
-  Postgres's `expr::cast` suffix vs. MySQL's `CAST(expr AS TYPE)` wrapper."
+  Postgres's `expr::cast` suffix vs. MySQL's and SQLite's `CAST(expr AS
+  TYPE)` wrapper."
   [expr cast]
   (case *dialect*
     :mysql (str "CAST(" expr " AS " (get mysql-cast-types (s/lower-case cast) (s/upper-case cast)) ")")
+    :sqlite (str "CAST(" expr " AS " (get sqlite-cast-types (s/lower-case cast) (s/upper-case cast)) ")")
     (str expr "::" cast)))
 
 (defn- column-ref-with-cast
@@ -94,22 +121,28 @@
   [value-type]
   (case *dialect*
     :mysql (case value-type :jsonb "CAST(? AS JSON)" "?")
+    ;; SQLite stores what it is given: a json value is already text, a uuid
+    ;; a string, and a date is written as text by the driver.
+    :sqlite "?"
     (case value-type :jsonb "?::jsonb" :uuid "?::uuid" :date "?::timestamp" "?")))
 
 (defn- render-operator
-  "MySQL has no ILIKE/NOT ILIKE - map to the closest MySQL equivalent."
+  "MySQL and SQLite have no ILIKE/NOT ILIKE - map to LIKE. SQLite's LIKE is
+  already case-insensitive for ASCII letters (not for the rest of Unicode),
+  and MySQL's follows the column's collation."
   [operator]
-  (if (= *dialect* :mysql)
+  (if (#{:mysql :sqlite} *dialect*)
     (case operator "ILIKE" "LIKE" "NOT ILIKE" "NOT LIKE" operator)
     operator))
 
 (defn- json-path-params
   "The parameters that name a path inside a JSON value. Postgres takes one
-  per key or index. MySQL takes one path expression, `$.\"address\".\"city\"`
-  or `$.\"tags\"[0]`, with each key quoted so it can hold any character.
-  Keys are typed by the user, so they're always parameters, never SQL text."
+  per key or index. MySQL and SQLite take one path expression,
+  `$.\"address\".\"city\"` or `$.\"tags\"[0]`, with each key quoted so it can hold
+  any character. Keys are typed by the user, so they're always parameters,
+  never SQL text."
   [path]
-  (if (= *dialect* :mysql)
+  (if (#{:mysql :sqlite} *dialect*)
     [(dt/string (apply str "$" (map #(if (integer? %) (str "[" % "]") (str "." (json/generate-string %))) path)))]
     (map #(dt/string (str %)) path)))
 
@@ -120,9 +153,17 @@
   Postgres `json` column is cast to `jsonb`, which a `jsonb` one already is."
   [as col-ref path]
   (let [params (json-path-params path)]
-    [(if (= *dialect* :mysql)
+    [(case *dialect*
+       :mysql
        (let [x (str "JSON_EXTRACT(" col-ref ", ?)")]
          (if (= as :text) (str "JSON_UNQUOTE(" x ")") x))
+
+       ;; SQLite has no JSON type. json_extract gives the value itself, as
+       ;; an SQL integer, real or text, and NULL for a missing key or a JSON
+       ;; null. An object or array comes back as JSON text, which is the
+       ;; same either way, so `as` makes no difference here.
+       :sqlite (str "json_extract(" col-ref ", ?)")
+
        (str (if (= as :text) "jsonb_extract_path_text(" "jsonb_extract_path(")
             col-ref "::jsonb, " (s/join ", " (repeat (count params) "?::text")) ")"))
      params]))
@@ -138,9 +179,31 @@
   compare them: on Postgres `true > 10` and `{\"a\":1} > 10` are true. So
   `<` and `>` only compare values of the literal's own type."
   [x json-type]
-  (if (= *dialect* :mysql)
+  (case *dialect*
+    :mysql
     (str "JSON_TYPE(" x ") IN (" (s/join ", " (map #(str "'" % "'") (mysql-json-types json-type))) ")")
+
+    ;; json_extract has already turned the value into an SQL one, so typeof
+    ;; names what it was. A JSON true or false becomes the integer 1 or 0, so
+    ;; a boolean can't be told from a number; and an object or array comes
+    ;; back as text, so it counts as a string.
+    :sqlite
+    (case json-type
+      "number" (str "typeof(" x ") IN ('integer', 'real')")
+      "string" (str "typeof(" x ") = 'text'")
+      "boolean" (str "typeof(" x ") = 'integer'"))
+
     (str "jsonb_typeof(" x ") = '" json-type "'")))
+
+(defn- json-value-placeholder
+  "The placeholder for a JSON literal compared with a key inside a JSON
+  column. SQLite compares the SQL value json_extract returned, so the literal
+  is unwrapped to its SQL value the same way: `10` to the integer 10, `\"SE\"`
+  to the text SE."
+  []
+  (if (= *dialect* :sqlite)
+    "json_extract(?, '$')"
+    (auto-cast-placeholder :jsonb)))
 
 (defn- in-subquery
   "MySQL rejects `<verb> <target> ... WHERE id IN ( SELECT ... FROM <same
@@ -340,11 +403,11 @@
         [text-x text-params] (json-extract :text ref path)]
     (cond
       (and (#{">" "<" ">=" "<="} operator) (:json-type value))
-      [(str "(" (json-type-check json-x (:json-type value)) " AND " json-x " " operator " " (auto-cast-placeholder :jsonb) ")")
+      [(str "(" (json-type-check json-x (:json-type value)) " AND " json-x " " operator " " (json-value-placeholder) ")")
        (concat json-params json-params (value-params value))]
 
       (= :jsonb (:type value))
-      [(str json-x " " operator " " (auto-cast-placeholder :jsonb)) (concat json-params (value-params value))]
+      [(str json-x " " operator " " (json-value-placeholder)) (concat json-params (value-params value))]
 
       ;; MySQL's JSON_UNQUOTE turns a JSON null into the text 'null', so
       ;; missing and null are told apart by JSON_TYPE instead.

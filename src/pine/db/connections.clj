@@ -5,7 +5,18 @@
    (com.zaxxer.hikari HikariConfig HikariDataSource)))
 
 (defn default-port [dbtype]
-  (if (= dbtype "mysql") 3306 5432))
+  (case dbtype
+    "mysql" 3306
+    "sqlite" nil
+    5432))
+
+(defn sqlite-enabled?
+  "SQLite reads a file from this machine's disk, so it is only offered where
+  the server runs as the user's own local process: the desktop app sets
+  PINE_SQLITE=1 when it launches the bundled server. A shared or Docker
+  deployment never turns it on, and a request for it is refused."
+  []
+  (= "1" (System/getenv "PINE_SQLITE")))
 
 (defn jdbc-url
   "Pure JDBC URL builder, one branch per dialect. Exposed standalone (not
@@ -31,9 +42,46 @@
                    ;; A malicious MySQL server can otherwise request any
                    ;; file pine-lang can read, during any query.
                    "&allowLoadLocalInfile=false&allowUrlInLocalInfile=false")
+      ;; The "database name" of a SQLite connection is the file's absolute
+      ;; path. validate-connection has already refused anything that could
+      ;; carry driver options (`?`, `;`) or isn't a plain file.
+      "sqlite" (str "jdbc:sqlite:" dbname)
       (str "jdbc:postgresql://" host ":" port "/" dbname))))
 
-(defn- create-hikari-config [{:keys [dbtype schema] :as config}]
+(defn- sqlite-pool-config
+  "Three connections, as for the other dialects, so one slow query doesn't
+  stall every other request. A file database has one writer at a time; a
+  write that finds the file busy waits up to busy_timeout instead of failing.
+  (WAL mode would let readers and the writer overlap, but it rewrites the
+  user's file's journal mode and leaves -wal/-shm files beside it, which a
+  query tool has no business doing.)
+  The driver's own pragmas are set as connection properties so every pooled
+  connection gets them:
+  - foreign_keys: off by default in SQLite, so a delete! would otherwise
+    ignore the constraints the schema declares.
+  - date_class/date_string_format: store dates as text. The driver's default
+    writes a java.sql.Timestamp as an epoch integer, which never compares
+    equal to the `2024-01-31 10:00:00` text a column usually holds.
+  - limit_attached 0: refuses ATTACH DATABASE, which would otherwise let a
+    query open any other file this process can read - and so step around an
+    access policy. (`PRAGMA max_attached` does not do this; the limit has
+    to be set on the connection.)"
+  [^HikariConfig hc config]
+  (doto hc
+    (.setJdbcUrl (jdbc-url config))
+    (.setDriverClassName "org.sqlite.JDBC")
+    (.setMaximumPoolSize 3)
+    (.setMinimumIdle 1)
+    (.setConnectionTimeout 10000)
+    (.setAutoCommit true)
+    (.setReadOnly false)
+    (.addDataSourceProperty "foreign_keys" "true")
+    (.addDataSourceProperty "busy_timeout" "5000")
+    (.addDataSourceProperty "date_class" "TEXT")
+    (.addDataSourceProperty "date_string_format" "yyyy-MM-dd HH:mm:ss")
+    (.addDataSourceProperty "limit_attached" "0")))
+
+(defn- server-pool-config [{:keys [dbtype schema] :as config}]
   (let [hc (doto (HikariConfig.)
              (.setJdbcUrl (jdbc-url config))
              (.setUsername (:user config))
@@ -57,6 +105,11 @@
       (.setSchema hc schema))
     hc))
 
+(defn- create-hikari-config [{:keys [dbtype] :as config}]
+  (if (= dbtype "sqlite")
+    (sqlite-pool-config (HikariConfig.) config)
+    (server-pool-config config)))
+
 (defn- bad-connection [message]
   (throw (ex-info message {:error-type "bad-connection"})))
 
@@ -68,32 +121,64 @@
 (def ^:private host-pattern #"^(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])$")
 (def ^:private name-pattern #"^[\p{L}\p{N}_.$-]+$")
 
+(defn- validate-sqlite-connection
+  "A SQLite connection is just a file: the config's :dbname is its absolute
+  path, and there is no host, port, user, password or schema. Only an
+  existing regular file is accepted, so a connection can't create files, and
+  nothing that jdbc-url would read as driver options (`?`, `;`) or as a
+  special database (`:memory:`, `file:` URIs - none of them absolute paths).
+  The path is canonicalised so two spellings of one file share a pool."
+  [{:keys [dbname] :as config}]
+  (when-not (sqlite-enabled?)
+    (bad-connection "SQLite connections are only available in the desktop app."))
+  (when-not (and (string? dbname) (not (s/blank? dbname)))
+    (bad-connection "The database file path is required."))
+  (when (re-find #"[?;\u0000]" dbname)
+    (bad-connection "The database file path may not contain ? or ;"))
+  (let [file (java.io.File. ^String dbname)]
+    (when-not (.isAbsolute file)
+      (bad-connection "The database file path must be absolute."))
+    (when-not (.isFile file)
+      (bad-connection "The database file doesn't exist."))
+    (assoc config
+           :dbtype "sqlite"
+           :dbname (.getCanonicalPath file)
+           :host nil :port nil :schema nil :user nil :password nil)))
+
+(defn- validate-server-connection
+  "The Postgres/MySQL half of validate-connection: host, port, database,
+  schema, user and password all checked."
+  [{:keys [host port dbname schema user password] :as config} dbtype]
+  (when-not (and (string? host) (re-matches host-pattern host))
+    (bad-connection "The host must be a hostname or an IP address, with no port, path or options."))
+  (when-not (and (string? dbname) (re-matches name-pattern dbname))
+    (bad-connection "The database name may contain only letters, digits, and _ . $ -"))
+  (when-not (or (nil? schema) (= "" schema) (and (string? schema) (re-matches name-pattern schema)))
+    (bad-connection "The schema name may contain only letters, digits, and _ . $ -"))
+  (when-not (string? user)
+    (bad-connection "The user is required."))
+  (when-not (string? password)
+    (bad-connection "The password is required."))
+  (let [port (cond
+               (or (nil? port) (= "" port)) nil
+               (integer? port) port
+               (and (string? port) (re-matches #"[0-9]{1,5}" port)) (Long/parseLong port)
+               :else (bad-connection "The port must be a number."))]
+    (when (and port (not (<= 1 port 65535)))
+      (bad-connection "The port must be between 1 and 65535."))
+    (assoc config :dbtype dbtype :port port :schema (not-empty schema))))
+
 (defn validate-connection
   "The connection config with its port as an integer (or nil for the
   default), or an ex-info with :error-type \"bad-connection\" naming the
   field that's wrong. Never puts the password in ex-data."
-  [{:keys [dbtype host port dbname schema user password] :as config}]
-  (let [dbtype (or dbtype "postgres")]
-    (when-not (#{"postgres" "mysql"} dbtype)
-      (bad-connection (str "Unknown database type `" dbtype "`. Use postgres or mysql.")))
-    (when-not (and (string? host) (re-matches host-pattern host))
-      (bad-connection "The host must be a hostname or an IP address, with no port, path or options."))
-    (when-not (and (string? dbname) (re-matches name-pattern dbname))
-      (bad-connection "The database name may contain only letters, digits, and _ . $ -"))
-    (when-not (or (nil? schema) (= "" schema) (and (string? schema) (re-matches name-pattern schema)))
-      (bad-connection "The schema name may contain only letters, digits, and _ . $ -"))
-    (when-not (string? user)
-      (bad-connection "The user is required."))
-    (when-not (string? password)
-      (bad-connection "The password is required."))
-    (let [port (cond
-                 (or (nil? port) (= "" port)) nil
-                 (integer? port) port
-                 (and (string? port) (re-matches #"[0-9]{1,5}" port)) (Long/parseLong port)
-                 :else (bad-connection "The port must be a number."))]
-      (when (and port (not (<= 1 port 65535)))
-        (bad-connection "The port must be between 1 and 65535."))
-      (assoc config :dbtype dbtype :port port :schema (not-empty schema)))))
+  [config]
+  (let [dbtype (or (:dbtype config) "postgres")]
+    (when-not (#{"postgres" "mysql" "sqlite"} dbtype)
+      (bad-connection (str "Unknown database type `" dbtype "`. Use postgres, mysql or sqlite.")))
+    (if (= dbtype "sqlite")
+      (validate-sqlite-connection config)
+      (validate-server-connection config dbtype))))
 
 (defn create-pool [config]
   (HikariDataSource. (create-hikari-config (validate-connection config))))
@@ -110,7 +195,8 @@
   below) checks the one predicate instead of each hardcoding the ids
   separately."
   {:test :postgres
-   :test-mysql :mysql})
+   :test-mysql :mysql
+   :test-sqlite :sqlite})
 
 (defn test-connection? [id]
   (contains? test-connection-ids id))
@@ -126,9 +212,11 @@
   [id]
   (or (get test-connection-ids id)
       (let [pool (@pools id)]
-        (when (and (instance? HikariDataSource pool)
-                   (s/starts-with? (.getJdbcUrl ^HikariDataSource pool) "jdbc:mysql:"))
-          :mysql))
+        (when (instance? HikariDataSource pool)
+          (let [url (.getJdbcUrl ^HikariDataSource pool)]
+            (cond
+              (s/starts-with? url "jdbc:mysql:") :mysql
+              (s/starts-with? url "jdbc:sqlite:") :sqlite))))
       :postgres))
 
 (defn get-connection-pool [id]
@@ -151,6 +239,27 @@
   (let [[_ host-port dbname] (re-find #"^jdbc:[^:]+://([^/]+)/([^?;]*)" url)]
     {:host-port host-port :dbname dbname}))
 
+(def ^:private sqlite-url-prefix "jdbc:sqlite:")
+
+(defn- sqlite-url? [url]
+  (s/starts-with? url sqlite-url-prefix))
+
+(defn- sqlite-path [url]
+  (subs url (count sqlite-url-prefix)))
+
+(defn- sqlite-id
+  "sqlite:<file name>:<10 hex of the path's SHA-1>. A path can't be the id
+  (its `/`s would split the route), and the file name alone would clash for
+  two `app.db` files in different folders, so the hash of the full path is
+  folded in. The name is cleaned to what a route segment can hold."
+  [path]
+  (let [file-name (.getName (java.io.File. ^String path))
+        clean (s/replace file-name #"[^A-Za-z0-9._-]" "_")
+        digest (.digest (java.security.MessageDigest/getInstance "SHA-1")
+                        (.getBytes ^String path "UTF-8"))
+        hex (subs (apply str (map #(format "%02x" (bit-and % 0xff)) digest)) 0 10)]
+    (str "sqlite:" clean ":" hex)))
+
 (defn make-connection-id
   "host:port alone can't identify a connection -- two different databases on
   the same server need distinct ids so both can be registered at once, so
@@ -160,12 +269,18 @@
   is also why dbname is joined with `:` rather than `/`: a literal `/` would
   split into two path segments and 404."
   [pool]
-  (let [{:keys [host-port dbname]} (parse-jdbc-url (.getJdbcUrl pool))]
-    (str host-port ":" dbname)))
+  (let [url (.getJdbcUrl pool)]
+    (if (sqlite-url? url)
+      (sqlite-id (sqlite-path url))
+      (let [{:keys [host-port dbname]} (parse-jdbc-url url)]
+        (str host-port ":" dbname)))))
 
 (defn jdbc-url->label [url]
-  (let [{:keys [host-port dbname]} (parse-jdbc-url url)]
-    (str host-port " · " dbname)))
+  (if (sqlite-url? url)
+    (let [file (java.io.File. ^String (sqlite-path url))]
+      (str (.getName file) " · " (.getParent file)))
+    (let [{:keys [host-port dbname]} (parse-jdbc-url url)]
+      (str host-port " · " dbname))))
 
 (defn make-connection-label [pool]
   (jdbc-url->label (.getJdbcUrl pool)))

@@ -3,7 +3,8 @@
             [pine.db.fixtures :as fixtures]
             [pine.db.mysql :as mysql]
             [pine.db.postgres :as postgres]
-            [pine.db.references :as refs]))
+            [pine.db.references :as refs]
+            [pine.db.sqlite :as sqlite]))
 
 ;; Application state
 (def connection-id "Currently selected connection" (atom nil))
@@ -19,6 +20,7 @@
 (defn- get-references-helper [id]
   (case (connections/get-dialect id)
     :mysql (mysql/get-references-helper id)
+    :sqlite (sqlite/get-references-helper id)
     (postgres/get-references-helper id)))
 
 (defn get-indexed-references
@@ -74,27 +76,32 @@
 ;;
 (defn run-query [id query]
   (case (connections/get-dialect id)
+    :sqlite (sqlite/run-query id query)
     :mysql (mysql/run-query id query)
     (postgres/run-query id query)))
 
 (defn run-action-query [id query]
   (case (connections/get-dialect id)
+    :sqlite (sqlite/run-action-query id query)
     :mysql (mysql/run-action-query id query)
     (postgres/run-action-query id query)))
 
 (defn run-action-queries-in-transaction [id queries]
   (case (connections/get-dialect id)
+    :sqlite (sqlite/run-action-queries-in-transaction id queries)
     :mysql (mysql/run-action-queries-in-transaction id queries)
     (postgres/run-action-queries-in-transaction id queries)))
 
 (defn run-sql [id sql-query]
   (case (connections/get-dialect id)
+    :sqlite (sqlite/run-sql id sql-query)
     :mysql (mysql/run-sql id sql-query)
     (postgres/run-sql id sql-query)))
 
 (defn get-connection-count [id]
   (let [count-sql (case (connections/get-dialect id)
                     :mysql mysql/connection-count-sql
+                    :sqlite sqlite/connection-count-sql
                     postgres/connection-count-sql)
         result (run-query id {:query count-sql :params []})]
     (-> result second first)))

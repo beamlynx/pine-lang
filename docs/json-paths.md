@@ -98,6 +98,26 @@ SELECT JSON_UNQUOTE(JSON_EXTRACT(`p_0`.`config`, ?)) AS `config.a.b`, ... FROM `
 
 MySQL takes the whole path as one parameter. Each key is quoted as a JSON string, so a key can hold any character.
 
+### SQLite
+
+```
+product | s: config.a.b
+```
+
+```sql
+SELECT json_extract("p_0"."config", ?) AS "config.a.b", ... FROM "product" AS "p_0"
+-- params: '$."a"."b"'
+```
+
+SQLite takes the path as MySQL does. `json_extract` returns the value itself, as an SQL integer, real or text, and NULL
+for a missing key or a JSON null (so `is null` covers both, as on Postgres). A JSON literal in a comparison is unwrapped
+the same way, `json_extract(?, '$')`, so `data.age = 31` compares the integer 31. Three differences:
+
+- `<` and `>` tell types apart with `typeof`: a JSON `true` or `false` arrives as the integer 1 or 0, so a boolean is not
+  told from a number, and an object or array arrives as text, so it counts as a string.
+- `order:` sorts by SQLite's own order for the extracted values, which puts text after numbers.
+- A column must hold valid JSON text. `json_extract` on text that isn't JSON is an error.
+
 ## How it works
 
 - **Grammar.** A column may end in path steps: `.key`, `.'quoted key'`, `[n]`. The grammar doesn't know the aliases,
@@ -167,9 +187,9 @@ returns no hints while `in-json-path?`.
 
 | Function | Role |
 |---|---|
-| `json-path-params` | One `?::text` parameter per step on Postgres; one `$."a"[0]` path on MySQL |
-| `json-extract` | `jsonb_extract_path(_text)(col::jsonb, ...)` or `JSON_(UNQUOTE(JSON_)EXTRACT(col, ?)` |
-| `json-type-check` | `jsonb_typeof(x) = 'number'` or `JSON_TYPE(x) IN (...)`, for `<` and `>` |
+| `json-path-params` | One `?::text` parameter per step on Postgres; one `$."a"[0]` path on MySQL and SQLite |
+| `json-extract` | `jsonb_extract_path(_text)(col::jsonb, ...)`, `JSON_(UNQUOTE(JSON_)EXTRACT(col, ?)`, or `json_extract(col, ?)` |
+| `json-type-check` | `jsonb_typeof(x) = 'number'`, `JSON_TYPE(x) IN (...)` or `typeof(x) IN (...)`, for `<` and `>` |
 | `render-path-condition` | A condition on a path, as `[sql params]` |
 | `column-sql`, `build-columns-clause`, `build-order-clause`, `build-where-clause` | Return SQL with its params |
 
