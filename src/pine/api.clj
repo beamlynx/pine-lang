@@ -78,7 +78,11 @@
   the whole build, and :query says why as an SQL comment."
   [state]
   (try
-    {:query (-> state eval/build-query eval/formatted-query)}
+    {:query (-> state eval/build-query eval/formatted-query)
+     ;; The same SQL without the hidden columns Pine adds for the results
+     ;; grid (each table's key, each JSON value's type). Shorter to read; the
+     ;; grid still needs :query's.
+     :query-without-hidden (-> state (update :columns #(vec (remove :hidden %))) eval/build-query eval/formatted-query)}
     (catch Exception e
       (when-not (instance? clojure.lang.ExceptionInfo e)
         (log-exception "api-build query" e))

@@ -2,7 +2,8 @@
   (:require
    [clojure.string :as s]
    [pine.ast.path :as path]
-   [pine.ast.select :as select]))
+   [pine.ast.select :as select]
+   [pine.ast.table :as table]))
 
 (defn handle [state value]
   (let [i (state :index)
@@ -12,7 +13,7 @@
         ;; Get existing columns from state (e.g., from previous select with date extraction)
         existing-columns (state :columns)
         ;; Filter out auto-id columns from existing columns
-        non-auto-existing (filter #(not (:auto-id %)) existing-columns)
+        non-auto-existing (remove table/added-column? existing-columns)
 
         ;; Resolve what each name means first: `data.plan` is a path into
         ;; `data`, not alias `data`. Its alias may still be replaced below by

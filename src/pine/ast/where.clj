@@ -2,6 +2,7 @@
   (:require [cheshire.core :as json]
             [clojure.string :as s]
             [pine.ast.path :as path]
+            [pine.ast.table :as table]
             [pine.data-types :as dt]))
 
 (defn- convert-condition-value
@@ -25,7 +26,7 @@
   [text json-type]
   (cond-> (dt/jsonb text) json-type (assoc :json-type json-type)))
 
-(defn- json-literal
+(defn json-literal
   "A literal compared with a value inside a JSON column. `=`, `!=`, `<` and
   `>` compare JSON values, so the literal becomes one: 10 the JSON number 10,
   'SE' the JSON string \"SE\", true the JSON true. `like`, `in` and `is`
@@ -93,7 +94,7 @@
   every column or more than one."
   [state n]
   (let [var-ast (or (get-in state [:named-results n]) (get-in state [:pending-assignments n]))
-        columns (remove :auto-id (:columns var-ast))
+        columns (remove table/added-column? (:columns var-ast))
         column-name #(or (:column-alias %) (:column %))]
     (cond
       (nil? var-ast)

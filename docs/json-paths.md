@@ -85,6 +85,46 @@ customer | group: data.plan => count
 `order:` sorts JSON values, so numbers sort as numbers. Values of different JSON types sort by type first.
 `group:` names each path in its inner query and groups by that name, so two paths into one column stay apart.
 
+### Writing into a key
+
+```
+customer | where: id = 7 | update! data.plan = 'pro', data.seats = 12
+documents_package as dp | where: id = 3 | update! dp.companies[0].id = 'c-42'
+```
+
+```sql
+UPDATE "customer" SET "data" = jsonb_set(jsonb_set("data"::jsonb, ARRAY[?::text], ?::jsonb)::jsonb, ARRAY[?::text], ?::jsonb)
+WHERE jsonb_typeof("data"::jsonb) = 'object' AND "id" IN ( SELECT "c_0"."id" FROM "customer" AS "c_0" WHERE ... )
+-- params: 'plan', '"pro"', 'seats', '12', ...
+```
+
+`update!` replaces the value at the path and leaves the rest of the JSON value as it was. A literal means the same JSON
+value it means in `where:`: `'pro'` is the string `"pro"`, `12` and `-1.5` are numbers, `true` and `false` are booleans,
+and `null` is the JSON null. Several keys of one column are written in one go, each `jsonb_set` taking the one before it.
+
+- A missing key is added. An index past the end of an array adds the value at the end.
+- The object (for a key) or array (for an index) that holds the value must already be there. A row where it isn't is
+  left as it is, and isn't counted as updated. The databases would otherwise differ: SQLite builds the missing objects,
+  Postgres refuses a key into an array, and MySQL changes nothing but counts the row.
+- A Postgres `json` column gets the result cast back with `::json`.
+- MySQL writes `JSON_SET(col, ?, CAST(? AS JSON))` and SQLite `json_set(col, ?, json(?))`, each with one path parameter.
+
+### The type of a selected value
+
+A selected path's value is text, so `5` and `"5"` look the same in the results. When the table's rows can be edited
+(it has a primary key), each path column gets a hidden companion that holds the value's JSON type:
+
+```sql
+jsonb_typeof(jsonb_extract_path("c_0"."data"::jsonb, ?::text)) AS "__c_0__data.plan__type"
+```
+
+The type is one of `string`, `number`, `boolean`, `null`, `object` and `array`, or NULL when the key is missing. MySQL's
+and SQLite's own names are mapped to these. SQLite's `json_type` is used rather than `typeof`, because it tells `true`
+from `1`. beamlynx-ui reads the type to write an edited cell back as the type it was.
+
+`/build` returns the SQL twice: `query`, which is what runs, and `query-without-hidden`, the same SQL without the hidden
+key and type columns, which is shorter to read.
+
 ### MySQL
 
 ```
@@ -142,10 +182,10 @@ the same way, `json_extract(?, '$')`, so `data.age = 31` compares the integer 31
 
 ## Constraints
 
-- **Read only.** `update!` refuses a path. A result column with `path` is computed, so beamlynx-ui doesn't edit it.
+- **`update!` writes values, not columns.** `update! data.plan = name` is refused, and so is writing `data` and a key
+  inside it in one `update!`. Pine has no literal for an object or an array, so neither can be written into a key.
 - **No column function on a path.** `data.created => month` is refused: the value is text.
 - **The value must be on the right.** `where: data.plan = other_column` and a path on the right are refused.
-- **Whole numbers only.** `number` is `[0-9]+` in all of Pine, so `> 4.5` and `> -1` don't parse yet.
 - **A path on a column that isn't JSON** is an error: "`uuid_col` is not a JSON column". A column whose type Pine
   can't trace (some named-result columns) is let through, and the database reports it.
 - **A name that is neither an alias nor a column** of the current table is an error. It used to reach the database.
@@ -179,6 +219,11 @@ a path (`c.data.`) as `{:column "data" :alias "c" :path [] :json-partial true}`.
  :value {:type :jsonb :value "10" :json-type "number"}}
 ```
 
+`update!` resolves each assignment the same way. One into a key keeps `:path`, gets its literal from `json-literal`,
+and keeps the column's `:db-type`, so a Postgres `json` column is cast back. `select/add-json-type-columns` adds the
+hidden type columns, marked `:json-type-of` with the name of their path column, after the key columns. Wherever Pine
+skips the columns it added (a named result's own columns, its CTE, `group:`), `table/added-column?` covers both.
+
 Because `:column` stays the real column, type lookup, `access-policy/sensitive-column?` and
 `access-policy/check-references` work unchanged. `hints/exclude-columns` ignores path columns, and `hints/handle`
 returns no hints while `in-json-path?`.
@@ -191,6 +236,9 @@ returns no hints while `in-json-path?`.
 | `json-extract` | `jsonb_extract_path(_text)(col::jsonb, ...)`, `JSON_(UNQUOTE(JSON_)EXTRACT(col, ?)`, or `json_extract(col, ?)` |
 | `json-type-check` | `jsonb_typeof(x) = 'number'`, `JSON_TYPE(x) IN (...)` or `typeof(x) IN (...)`, for `<` and `>` |
 | `render-path-condition` | A condition on a path, as `[sql params]` |
+| `json-type-sql` | The hidden type column: `jsonb_typeof(...)`, or a `CASE` over `JSON_TYPE` or `json_type` |
+| `json-set`, `set-column` | `update!` into a key: `jsonb_set`, `JSON_SET` or `json_set`, nested for several keys |
+| `json-holder-check` | The `WHERE` condition that the object or array holding the key is there |
 | `column-sql`, `build-columns-clause`, `build-order-clause`, `build-where-clause` | Return SQL with its params |
 
 `build-bare-select` joins the params as SELECT, then WHERE, then ORDER BY: the order their `?` appear.

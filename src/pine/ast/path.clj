@@ -13,6 +13,7 @@
   reachable through its own table's alias: `e.data.plan`. See
   docs/json-paths.md."
   (:require [clojure.string :as s]
+            [pine.ast.table :as table]
             [pine.data-types :as dt]))
 
 (defn- in-scope?
@@ -65,7 +66,7 @@
   (let [ast (get-in state [:aliases alias :ast])
         named (path-text column path)]
     (if (and ast (seq path)
-             (some #(= named (or (:column-alias %) (:column %))) (remove :auto-id (:columns ast))))
+             (some #(= named (or (:column-alias %) (:column %))) (remove table/added-column? (:columns ast))))
       (-> col (assoc :column named) (dissoc :path :column-alias))
       col)))
 

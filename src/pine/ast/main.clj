@@ -355,6 +355,8 @@
       select/add-row-keys
       ;; Add auto-ID columns based on final operation type
       select/add-auto-id-columns
+      ;; After the key columns: only a table that has them is editable
+      select/add-json-type-columns
       (assoc :selected-tables (let [tables (state :tables)
                                     type (-> state :operation :type)]
                                 (if

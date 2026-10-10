@@ -2,6 +2,12 @@
   (:require
    [clojure.string :as s]))
 
+(defn added-column?
+  "A hidden column Pine added for the results grid, not one the user
+  selected: a table's key (:auto-id) or a JSON value's type (:json-type-of)."
+  [col]
+  (boolean (or (:auto-id col) (:json-type-of col))))
+
 (defn resolve-table
   "Given a table-alias entry (as found in state's :aliases), return the real
   source table(s) it resolves to for join purposes: itself, unchanged, if it's
@@ -28,7 +34,7 @@
   same-source-hints/self-source-hint in ast/hints.clj)."
   [{:keys [table schema ast]}]
   (if ast
-    (let [columns (remove :auto-id (:columns ast))]
+    (let [columns (remove added-column? (:columns ast))]
       (if (empty? columns)
         (when-let [current-alias (:current ast)]
           (resolve-table (get (:aliases ast) current-alias)))

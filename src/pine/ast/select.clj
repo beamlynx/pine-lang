@@ -116,3 +116,30 @@
                                        keyed)]
       (update state :columns into auto-id-columns))
     state))
+
+(defn- json-type-column
+  "A hidden column carrying the JSON type of a selected path's value:
+  string, number, boolean, null, object or array, and NULL when the key is
+  missing. A path's value is shown as text, where 5 and \"5\" look the same;
+  the results grid reads this to write an edit back as the type it was."
+  [{:keys [alias column path column-alias operation-index]}]
+  {:column column
+   :alias alias
+   :path path
+   :column-alias (str "__" alias "__" column-alias "__type")
+   :hidden true
+   :json-type-of column-alias
+   :operation-index operation-index})
+
+(defn add-json-type-columns
+  "Add a hidden type column for each selected JSON path of a table whose
+  rows can be edited: one that got hidden key columns. The type is only
+  used to write an edit back."
+  [state]
+  (let [editable (set (keep #(when (:auto-id %) (:alias %)) (:columns state)))
+        rules (:access-policy state)
+        type-columns (for [col (:columns state)
+                           :when (and (seq (:path col)) (editable (:alias col)))
+                           :when (not (and (seq rules) (access-policy/sensitive-column? state rules col)))]
+                       (json-type-column col))]
+    (update state :columns into type-columns)))
