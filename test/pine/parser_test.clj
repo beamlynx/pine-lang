@@ -182,7 +182,18 @@
     (is (= [{:type :where, :value [(dt/column "age") "IN" [(dt/string "24")]]}]                  (p "age in ('24')")))
     (is (= [{:type :where, :value [(dt/column "age") "IN" [(dt/string "24")]]}]                  (p "age in ('24' ) ")))
     (is (= [{:type :where, :value [(dt/column "age") "IN" [(dt/string "24") (dt/string "36")]]}] (p "age in (  '24' ,'36' )")))
-    (is (= [{:type :where, :value [(dt/column "age") "IN" [(dt/string "24") (dt/string "36")]]}] (p "age in ('24' '36')"))))
+    (is (= [{:type :where, :value [(dt/column "age") "IN" [(dt/string "24") (dt/string "36")]]}] (p "age in ('24' '36')")))
+    (is (= [{:type :where, :value [(dt/column "age") "IN" [(dt/number "24") (dt/number "-1.5")]]}] (p "age in (24, -1.5)")))
+    (is (= [{:type :where, :value [(dt/column "age") "NOT IN" [(dt/string "a") (dt/number "2")]]}] (p "age not in ('a', 2)"))))
+
+  (testing "Parse `where` with >= and <="
+    (is (= [{:type :where, :value [(dt/column "age") ">=" (dt/number "18")]}] (p "age >= 18")))
+    (is (= [{:type :where, :value [(dt/column "age") "<=" (dt/number "65")]}] (p "age <= 65")))
+    (is (= [{:type :where, :value [(dt/column "created_at") ">=" (dt/date "2025-01-01")]}] (p "created_at >= '2025-01-01'")))
+    (is (= [{:type :where, :value [(dt/column "name") "<=" (dt/string "m")]}] (p "name <= 'm'")))
+    (is (= [{:type :where, :value [(dt/column "age") ">=" (dt/variable "min")]}] (p "age >= $min")))
+    (is (= {:column "age" :operator :greater-than-equal}
+           (-> (p "w: age >= ") first :value :partial-condition))))
 
   (testing "Parse `where` expressions with dates"
     (is (= [{:type :where, :value [(dt/column "created_at") "=" (dt/date "2025-01-01")]}] (p "created_at = '2025-01-01'")))

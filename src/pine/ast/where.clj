@@ -32,8 +32,16 @@
   'SE' the JSON string \"SE\", true the JSON true. `like`, `in` and `is`
   compare text, so their literals stay as they are."
   [operator value]
-  (if-not (json-comparisons operator)
+  (cond
+    ;; `in` compares the key's value as text, so a number in the list is
+    ;; compared as the text it is written as: data.n in (1, 2).
+    (sequential? value)
+    (map #(if (= :number (:type %)) (dt/string (str (:value %))) %) value)
+
+    (not (json-comparisons operator))
     value
+
+    :else
     (case (:type value)
       :number (json-value (str (:value value)) "number")
       :string (json-value (json/generate-string (:value value)) "string")

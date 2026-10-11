@@ -155,6 +155,19 @@
             :params (map dt/string ["PK", "DK"])}
            (generate "company | where: country in ('PK' 'DK')"))))
 
+  (testing "Condition : IN with numbers, typed by the column"
+    (is (= {:query "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" IN (?, ?) LIMIT 250",
+            :params (map dt/number ["1", "2"])}
+           (generate "company | where: id in (1, 2)")))
+    ;; order.customer_id is varchar in the fixtures: a number is compared as text.
+    (is (= [(dt/string "7") (dt/string "x")]
+           (:params (generate "order | where: customer_id not in (7, 'x')")))))
+
+  (testing "Condition : >= and <="
+    (is (= {:query "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" >= ? AND \"c_0\".\"id\" <= ? LIMIT 250",
+            :params (map dt/number ["1", "9"])}
+           (generate "company | where: id >= 1 | where: id <= 9"))))
+
   (testing "Condition : OR (conditions joined with `or` inside one where: segment)"
     (is (= {:query "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE (\"c_0\".\"id\" = ? OR \"c_0\".\"id\" = ?) LIMIT 250",
             :params (map dt/number ["1", "2"])}
