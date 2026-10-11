@@ -258,16 +258,25 @@
   (or (variable-operators op)
       (throw (ex-info (str "A $variable can't follow `" (name op) "`.") {:operator op}))))
 
+(defn- parse-in-item
+  "One value of an `in` list: a string or a number. pine.ast.where types it
+  by the column, as it does any other literal."
+  [[kind value :as item]]
+  (case kind
+    :string (parse-strings item)
+    :number (dt/number value)))
+
 (defn- in-list-condition
-  "`in ('a', 'b')`, with an optional cast at the end. The cast applies to the
-  column, as with every other operator; it is never one of the values."
+  "`in ('a', 'b')` or `in (1, 2)`, with an optional cast at the end. The cast
+  applies to the column, as with every other operator; it is never one of
+  the values."
   [column-pattern operator items]
   (let [[cast-type items] (if (= :cast (first (last items)))
                             [(second (last items)) (butlast items)]
                             [nil items])]
-    (when-not (every? #(= :string (first %)) items)
-      (throw (ex-info (str "`" (s/lower-case operator) "` takes a list of strings, a $variable or a named result.") {:_ items})))
-    (make-condition column-pattern operator (map parse-strings items) cast-type)))
+    (when-not (every? #(#{:string :number} (first %)) items)
+      (throw (ex-info (str "`" (s/lower-case operator) "` takes a list of strings or numbers, a $variable or a named result.") {:_ items})))
+    (make-condition column-pattern operator (map parse-in-item items) cast-type)))
 
 (defn- parse-in-condition
   "`in` and `not in` conditions, or nil for any other operator. Kept out of

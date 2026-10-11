@@ -111,6 +111,7 @@
   (testing "like, in and is null compare text"
     (is (re-find #"jsonb_extract_path_text\(.*\) LIKE \?" (:query (sql "customer | where: data.name like 'A%'"))))
     (is (= ["plan" "a" "b"] (:params (sql "customer | where: data.plan in ('a', 'b')"))))
+    (is (= ["seats" "1" "2"] (:params (sql "customer | where: data.seats in (1, 2)"))))
     (is (re-find #"jsonb_extract_path_text\(\"c_0\".\"data\"::jsonb, \?::text\) IS NULL"
                  (:query (sql "customer | where: data.cancelled_at is null")))))
 
