@@ -20,6 +20,7 @@
    [pine.db.main :as db]
    [pine.eval :as eval]
    [pine.parser :as parser]
+   [pine.sql.transpile :as sql-transpile]
    [pine.variables :as variables]
    [pine.version :as v]
    [ring.middleware.cors :refer [wrap-cors]]
@@ -708,6 +709,18 @@
                         (connection-problem connection-id)
                         (with-run-id (:run-id params)
                           #(api-sql query connection-id)))))))
+
+  ;; One SQL SELECT as a Pine expression: {:expression :warnings}, or an
+  ;; error with error-type sql-parse-error, sql-unsupported or internal.
+  ;; Nothing runs, so it needs no connection. `connection-id` is accepted
+  ;; for when the conversion reads the schema (see
+  ;; docs/sql-to-pine.md). Not on the MCP surface: agents write Pine.
+  (POST "/api/v1/sql-to-pine" {params :params}
+    (let [{:keys [query]} params]
+      (or (param-problem params :sql? true)
+          (when-not (string? query) (bad-request "`query` is required."))
+          (response (or (too-long-response query)
+                        (sql-transpile/sql->pine query))))))
 
   ;; Stop a run started with this `run-id` on /eval or /sql. The run
   ;; answers with `error-type: "cancelled"`; a write in progress is rolled
