@@ -1,0 +1,121 @@
+(* The part of SQL that pine.sql.transpile can turn into Pine: one SELECT,
+   with joins, WHERE, GROUP BY, ORDER BY and LIMIT. See docs/sql-to-pine.md.
+
+   Keywords are case-insensitive regexes ending in \b, so `selected` is never
+   `select` followed by `ed`. Every keyword is excluded from bare
+   identifiers, including ones this grammar never uses (OFFSET, DISTINCT,
+   HAVING, ...): otherwise `FROM t OFFSET 5` would read OFFSET as t's alias,
+   and the error would land on `5` instead of on the word Pine can't say.
+   pine.sql.parser names that word in its error.
+
+   Nothing here decides whether Pine can express a query. A few things are
+   read only so the transpiler can refuse them by name, with their line:
+   `= NULL`, a comparison with no column, ORDER BY a position, a cast Pine
+   doesn't have. *)
+
+statement     := <ws?> select <ws?> (<";"> <ws?>)?
+
+select        := <SELECT> <ws> select-list <ws> from join* where? group? order? limit?
+
+select-list   := select-item (<ws?> <","> <ws?> select-item)*
+select-item   := star | alias-star | count-star as-alias? | column as-alias?
+star          := <"*">
+alias-star    := identifier <ws?> <"."> <ws?> <"*">
+count-star    := <COUNT> <ws?> <"("> <ws?> (<"*"> | <"1">) <ws?> <")">
+<as-alias>    := <ws> (<AS> <ws>)? alias
+alias         := identifier
+
+from          := <FROM> <ws> table-ref
+table-ref     := table-name as-alias?
+table-name    := identifier (<ws?> <"."> <ws?> identifier)?
+
+join          := <ws> join-type <JOIN> <ws> table-ref <ws> (on | using)
+join-type     := (<INNER> <ws>)? | left <ws> (<OUTER> <ws>)? | right <ws> (<OUTER> <ws>)?
+left          := <LEFT>
+right         := <RIGHT>
+on            := <ON> <ws?> predicate
+using         := <USING> <ws?> <"("> <ws?> identifier (<ws?> <","> <ws?> identifier)* <ws?> <")">
+
+where         := <ws> <WHERE> <ws?> predicate
+
+(* OR below AND below NOT below a comparison. A run of the same connective
+   is one node, so `a and b and c` has three children, not a nested pair. *)
+predicate     := or-expr
+<or-expr>     := or | and-expr
+or            := and-expr (<ws?> <OR> <ws?> and-expr)+
+<and-expr>    := and | not-expr
+and           := not-expr (<ws?> <AND> <ws?> not-expr)+
+<not-expr>    := not | paren | comparison
+not           := <NOT> <ws?> not-expr
+<paren>       := <"("> <ws?> or-expr <ws?> <")">
+
+<comparison>  := compare | like | is-null | in | between | truthy
+compare       := operand <ws?> cmp-op <ws?> operand
+cmp-op        := "=" | "<>" | "!=" | ">=" | "<=" | ">" | "<"
+like          := operand <ws> negated? like-op <ws> operand
+like-op       := LIKE | ILIKE
+is-null       := operand <ws> <IS> <ws> negated? <NULL>
+in            := operand <ws> negated? <IN> <ws?> <"("> <ws?> operand (<ws?> <","> <ws?> operand)* <ws?> <")">
+between       := operand <ws> negated? <BETWEEN> <ws> operand <ws> <AND> <ws> operand
+(* `WHERE active`: a column on its own is a boolean test. *)
+truthy        := column
+negated       := <NOT> <ws>
+
+operand       := (column | string | number | boolean | null | variable) cast? | cast-fn
+cast          := <ws?> <"::"> <ws?> type-name
+cast-fn       := <CAST> <ws?> <"("> <ws?> (column | string | number) <ws> <AS> <ws> type-name <ws?> <")">
+type-name     := #"(?i)[A-Za-z_][A-Za-z0-9_]*(?:\s+(?:with|without)\s+time\s+zone)?"
+
+group         := <ws> <GROUP> <ws> <BY> <ws> column (<ws?> <","> <ws?> column)*
+order         := <ws> <ORDER> <ws> <BY> <ws> order-item (<ws?> <","> <ws?> order-item)*
+order-item    := (column | count-star | position) (<ws> direction)?
+position      := #"[0-9]+"
+direction     := ASC | DESC
+limit         := <ws> <LIMIT> <ws> #"[0-9]+"
+
+column        := (identifier <ws?> <"."> <ws?>)? identifier
+
+<identifier>  := bare-identifier | quoted-identifier
+bare-identifier   := #"(?!(?i:select|from|where|join|inner|left|right|full|outer|cross|natural|on|using|and|or|not|in|is|null|like|ilike|between|group|order|by|limit|offset|fetch|having|union|intersect|except|distinct|all|as|asc|desc|true|false|case|when|then|else|end|exists|with|escape|similar|window|over|nulls|lateral|cast|returning|into|values)\b)[A-Za-z_][A-Za-z0-9_]*"
+(* "name" in Postgres, `name` in MySQL. "" inside "..." is one quote. *)
+quoted-identifier := <"\""> #"(?:[^\"]|\"\")+" <"\""> | <"`"> #"[^`]+" <"`">
+
+string        := <"'"> #"(?:[^']|'')*+" <"'">
+number        := #"-?[0-9]+(?:\.[0-9]+)?"
+boolean       := TRUE | FALSE
+null          := <NULL>
+variable      := <"$"> #"[A-Za-z_][A-Za-z0-9_]*"
+
+(* Spaces and comments, one token, as in pine.bnf (see the note there). *)
+ws            := #"(?s)(?:[ \t\r\n]++|--[^\r\n]*+|/\*.*?\*/)++"
+
+SELECT  := #"(?i)select\b"
+FROM    := #"(?i)from\b"
+WHERE   := #"(?i)where\b"
+JOIN    := #"(?i)join\b"
+INNER   := #"(?i)inner\b"
+LEFT    := #"(?i)left\b"
+RIGHT   := #"(?i)right\b"
+OUTER   := #"(?i)outer\b"
+ON      := #"(?i)on\b"
+USING   := #"(?i)using\b"
+AND     := #"(?i)and\b"
+OR      := #"(?i)or\b"
+NOT     := #"(?i)not\b"
+IN      := #"(?i)in\b"
+IS      := #"(?i)is\b"
+NULL    := #"(?i)null\b"
+LIKE    := #"(?i)like\b"
+ILIKE   := #"(?i)ilike\b"
+BETWEEN := #"(?i)between\b"
+GROUP   := #"(?i)group\b"
+ORDER   := #"(?i)order\b"
+BY      := #"(?i)by\b"
+LIMIT   := #"(?i)limit\b"
+AS      := #"(?i)as\b"
+ASC     := #"(?i)asc\b"
+DESC    := #"(?i)desc\b"
+TRUE    := #"(?i)true\b"
+FALSE   := #"(?i)false\b"
+COUNT   := #"(?i)count\b"
+CAST    := #"(?i)cast\b"
