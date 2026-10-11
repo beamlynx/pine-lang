@@ -720,4 +720,5 @@
     (is (re-find #"^A string is missing its closing quote" (error "user | where: name = 'abc")))
     (is (re-find #"^Join conditions in one where: with `or`" (error "user | where: a = 1, b = 2")))
     (is (re-find #"^Join conditions in one where: with `or`" (error "user | where: a = 1 and b = 2")))
-    (is (re-find #"^Unknown operation `zzzzz:`\.\n" (error "user | zzzzz: id")))))
+    (is (re-find #"^Unknown operation `zzzzz:`\.\n" (error "user | zzzzz: id")))
+    (is (re-find #"^This looks like SQL\. Paste it in the SQL panel" (error "SELECT *\nFROM user WHERE id = 1")))))

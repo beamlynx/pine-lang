@@ -336,3 +336,25 @@
   (testing "Without columns of its own, the table's own columns are shown"
     (is (re-find #"SELECT\s+\"c_0\"\.\*\s+FROM"
                  (:query-without-hidden (api/api-build ["customer"] nil :test))))))
+
+(deftest test-sql-to-pine
+  (let [post (fn [body]
+               (let [r (api/app {:request-method :post
+                                 :uri "/api/v1/sql-to-pine"
+                                 :headers {"content-type" "application/json"}
+                                 :body (java.io.ByteArrayInputStream. (.getBytes (json/generate-string body) "UTF-8"))})]
+                 (assoc (json/parse-string (:body r) true) :status (:status r))))]
+    (testing "converts one SELECT"
+      (is (= {:status 200
+              :expression "company as c\n | employee as e .company_id = .id\n | where: name = 'Acme'"
+              :warnings []}
+             (post {:query "select e.* from company c join employee e on e.company_id = c.id where e.name = 'Acme'"}))))
+    (testing "names what Pine can't say"
+      (is (= {:status 200 :error "Line 1: OFFSET isn't in Pine." :error-type "sql-unsupported"}
+             (post {:query "select * from t offset 5"}))))
+    (testing "query is required, and must be a string"
+      (is (= 400 (:status (post {}))))
+      (is (= 400 (:status (post {:query 1})))))
+    (testing "the length cap applies"
+      (is (= "too-long" (:error-type (post {:query (str "select * from t where a = '" (apply str (repeat 70000 "a")) "'")})))))))
+

@@ -706,6 +706,9 @@
         after  (subs expression index)
         word   (second (re-find #"([A-Za-z]+!?)\s*$" before))]
     (cond
+      (re-find #"(?is)^\s*select\b.*\bfrom\b" expression)
+      "This looks like SQL. Paste it in the SQL panel, and it converts to Pine as you type."
+
       (odd? (count (re-seq #"'" (s/replace expression "''" ""))))
       "A string is missing its closing quote. To put an apostrophe inside a string, write it twice: 'O''Brien'."
 
