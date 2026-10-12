@@ -61,9 +61,9 @@
              :on {:op :compare :operator "="
                   :left {:kind :column :column {:name "company_id" :qualifier "e"}}
                   :right {:kind :column :column {:name "id" :qualifier "c"}}}}
-            {:type nil :table {:table "invoice"} :using ["company_id"]}
-            {:type :right :table {:table "x"} :using ["a" "b"]}]
-           (:joins (strip-at (p "select * from company c left outer join employee e on e.company_id = c.id join invoice using (company_id) right join x using (a, b)"))))))
+            {:type nil :table {:table "invoice"} :using [{:name "company_id"}]}
+            {:type :right :table {:table "x"} :using [{:name "a"} {:name "B" :quoted true}]}]
+           (:joins (strip-at (p "select * from company c left outer join employee e on e.company_id = c.id join invoice using (company_id) right join x using (a, \"B\")"))))))
 
   (testing "Connectives: a run of one connective is one node"
     (is (= {:op :or
@@ -111,12 +111,14 @@
     (is (= (strip-at (p "select * from t where a = 1 order by a desc"))
            (strip-at (p "SeLeCt * FROM t WhErE a = 1 ORDER BY a DESC")))))
 
-  (testing "A bare identifier is folded to lowercase, as Postgres reads it. A quoted one keeps its case"
+  (testing "A bare identifier is folded to lowercase, as Postgres reads it. A quoted one keeps its case, and is marked"
     (is (= {:table "users" :alias "u"} (dissoc (:from (p "select * from Users U")) :at)))
-    (is (= {:table "Users"} (dissoc (:from (p "select * from \"Users\"")) :at)))
-    (is (= {:table "Order"} (dissoc (:from (p "select * from `Order`")) :at)))
-    (is (= {:table "a\"b"} (dissoc (:from (p "select * from \"a\"\"b\"")) :at)))
-    (is (= {:name "email" :qualifier "u"} (dissoc (-> (p "select U.EMAIL from users u") :select first :column) :at)))))
+    (is (= {:table "Users" :quoted true} (dissoc (:from (p "select * from \"Users\"")) :at)))
+    (is (= {:table "Order" :quoted true} (dissoc (:from (p "select * from `Order`")) :at)))
+    (is (= {:table "a\"b" :quoted true} (dissoc (:from (p "select * from \"a\"\"b\"")) :at)))
+    (is (= {:schema "App" :schema-quoted true :table "users"} (dissoc (:from (p "select * from \"App\".Users")) :at)))
+    (is (= {:name "email" :qualifier "u"} (dissoc (-> (p "select U.EMAIL from users u") :select first :column) :at)))
+    (is (= {:name "tenantId" :qualifier "u" :quoted true} (dissoc (-> (p "select U.\"tenantId\" from users u") :select first :column) :at)))))
 
 (deftest test-positions
   (testing ":at is the offset a refusal points at"

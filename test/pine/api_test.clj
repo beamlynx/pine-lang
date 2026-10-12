@@ -1,7 +1,9 @@
 (ns pine.api-test
   (:require [cheshire.core :as json]
             [clojure.test :refer [deftest is testing]]
-            [pine.api :as api]))
+            [pine.api :as api]
+            [pine.db.main :as db]
+            [pine.db.references :as refs]))
 
 (defn- assert-clean-table [table]
   (is (= #{:schema :table :alias} (set (keys table)))
@@ -356,5 +358,15 @@
       (is (= 400 (:status (post {}))))
       (is (= 400 (:status (post {:query 1})))))
     (testing "the length cap applies"
-      (is (= "too-long" (:error-type (post {:query (str "select * from t where a = '" (apply str (repeat 70000 "a")) "'")})))))))
+      (is (= "too-long" (:error-type (post {:query (str "select * from t where a = '" (apply str (repeat 70000 "a")) "'")})))))
+    (testing "a bare name takes the selected connection's spelling"
+      (let [schema (refs/index-references [[] [["public" "company" "tenantId" 1 "text" nil "YES" nil]] []])
+            sql "select * from company where tenantid = 'x'"]
+        (with-redefs [db/connection-id (atom :test)
+                      db/init-references (fn [_] schema)]
+          (is (= "company\n | where: tenantId = 'x'" (:expression (post {:query sql})))))
+        (testing "and converts without it when the schema can't be read"
+          (with-redefs [db/connection-id (atom :test)
+                        db/init-references (fn [_] (throw (ex-info "down" {})))]
+            (is (= "company\n | where: tenantid = 'x'" (:expression (post {:query sql}))))))))))
 

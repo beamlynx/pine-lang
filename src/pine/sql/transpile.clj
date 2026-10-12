@@ -23,7 +23,11 @@
   A column is referred to internally as {:t <table index> :name <column>}.
   It is written bare when it belongs to the table the pipe ends on, since
   Pine reads a bare column as that table's, and as alias.column otherwise.
-  A table gets an alias only when something refers to it by one."
+  A table gets an alias only when something refers to it by one.
+
+  With the connection's schema, a bare name takes the database's spelling:
+  `c.tenantId` is written `.tenantId` when the table has a `tenantId`
+  column, though Postgres would fold it to `tenantid`. See `spelling`."
   (:require [clojure.string :as s]
             [pine.parser :as pine]
             [pine.sql.parser :as sp]))
@@ -50,6 +54,42 @@
     (refuse at (str "`" n "` can't be written as a name in Pine.")))
   n)
 
+(def ^:private ^:dynamic *schema*
+  "The connection's indexed references (pine.db.references), or nil when
+  the conversion runs without a connection."
+  nil)
+
+(defn- spelling
+  "The database's spelling of the bare name `n`, written in any case. `n`
+  itself when the database has it, since that is how Postgres reads an
+  unquoted name. Otherwise the one name equal to it ignoring case. With
+  several, the SQL can't say which it means, so the conversion refuses.
+  With none, `n` as written."
+  [n candidates at]
+  (let [matches (distinct (filter #(.equalsIgnoreCase ^String n ^String %) candidates))]
+    (cond
+      (some #{n} matches) n
+      (empty? matches) n
+      (= 1 (count matches)) (first matches)
+      :else (refuse at (str "`" n "` could be " (s/join " or " (map #(str "`" % "`") (sort matches)))
+                            ". Quote the one you mean, like \"" (first (sort matches)) "\".")))))
+
+(defn- db-table
+  "The table's schema, name and columns as the database spells them, or {}
+  without a schema."
+  [{:keys [schema table quoted schema-quoted at]}]
+  (if-not *schema*
+    {}
+    (let [schema (if (and schema (not schema-quoted)) (spelling schema (keys (:schema *schema*)) at) schema)
+          tables (if schema (get-in *schema* [:schema schema :table]) (:table *schema*))
+          table (if quoted table (spelling table (keys tables) at))]
+      {:db-schema schema :db-table table :db-columns (map :column (get-in tables [table :columns]))})))
+
+(defn- column-name
+  "A column of `tbl`, in the database's spelling when it isn't quoted."
+  [tbl n quoted at]
+  (pine-name! (if quoted n (spelling n (:db-columns tbl) at)) at))
+
 (defn- table-key
   "The name SQL refers to a table by: its alias, or its own name."
   [{:keys [alias table]}]
@@ -57,16 +97,16 @@
 
 (defn- resolve-column
   "{:t :name} for a SQL column, looking only at `tables` (the ones in scope)."
-  [tables {:keys [qualifier name at]}]
+  [tables {:keys [qualifier name quoted at]}]
   (pine-name! name at)
   (cond
     qualifier
     (if-let [t (first (keep-indexed (fn [i tbl] (when (= qualifier (table-key tbl)) i)) tables))]
-      {:t t :name name}
+      {:t t :name (column-name (nth tables t) name quoted at)}
       (refuse at (str "`" qualifier "` isn't a table in this query.")))
 
     (= 1 (count tables))
-    {:t 0 :name name}
+    {:t 0 :name (column-name (first tables) name quoted at)}
 
     :else
     (refuse at (str "`" name "` could belong to "
@@ -238,7 +278,12 @@
     (if using
       (do (when (> i 1)
             (refuse at "USING after more than one table can't say which table it joins to. Write it with ON."))
-          {:anchor 0 :pairs (mapv (fn [c] (pine-name! c at) {:new c :anchor c}) using) :moved []})
+          {:anchor 0
+           :pairs (mapv (fn [{:keys [name quoted]}]
+                          {:new (column-name (nth tables i) name quoted at)
+                           :anchor (column-name (first tables) name quoted at)})
+                        using)
+           :moved []})
       (let [parts (map (fn [c] [c (join-pair in-scope i c)]) (conjuncts on))
             pairs (keep second parts)
             others (map first (remove second parts))
@@ -257,7 +302,7 @@
   "Tables in pipe order, each with its join, and the ON conditions an inner
   join moves to WHERE."
   [{:keys [from joins]}]
-  (let [tables (vec (cons from (map :table joins)))]
+  (let [tables (mapv #(merge % (db-table %)) (cons from (map :table joins)))]
     (doseq [{:keys [table schema alias at]} tables]
       (pine-name! table at)
       (some-> schema (pine-name! at))
@@ -419,9 +464,10 @@
      " | "
      (for [{:keys [op t n clause items cols] :as o} ops]
        (case op
-         :table (let [{:keys [schema table alias type pairs]} (nth tables t)]
+         :table (let [{:keys [schema table db-schema db-table alias type pairs]} (nth tables t)
+                      schema (or db-schema schema)]
                   (str (when schema (str schema "."))
-                       table
+                       (or db-table table)
                        (when (or alias (referenced t)) (str " as " (alias-of t)))
                        (when type (str " :" (name type)))
                        (when (seq pairs)
@@ -467,13 +513,7 @@
     {:expression (render tables ops current)
      :warnings (vec (distinct @warnings))}))
 
-(defn sql->pine
-  "{:expression :warnings} for one SQL SELECT, or {:error :error-type}.
-
-  error-type is sql-parse-error when the text isn't SQL this reads,
-  sql-unsupported when Pine can't say it, and internal when the Pine
-  produced doesn't parse, which is a bug here, not in the SQL."
-  [sql]
+(defn- convert [sql]
   (let [{:keys [result error error-type]} (sp/parse sql)]
     (if error
       {:error error :error-type error-type}
@@ -491,3 +531,17 @@
             {:error (str "Line " (sp/line-of sql (:at (ex-data e))) ": " (ex-message e))
              :error-type "sql-unsupported"}
             (throw e)))))))
+
+(defn sql->pine
+  "{:expression :warnings} for one SQL SELECT, or {:error :error-type}.
+
+  error-type is sql-parse-error when the text isn't SQL this reads,
+  sql-unsupported when Pine can't say it, and internal when the Pine
+  produced doesn't parse, which is a bug here, not in the SQL.
+
+  `references` is the connection's indexed schema, or nil. With it, a bare
+  name takes the database's spelling."
+  ([sql] (sql->pine sql nil))
+  ([sql references]
+   (binding [*schema* references]
+     (convert sql))))

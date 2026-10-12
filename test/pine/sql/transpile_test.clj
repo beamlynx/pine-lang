@@ -3,6 +3,7 @@
             [clojure.test :refer [deftest is testing]]
             [pine.ast.main :as ast]
             [pine.eval :as eval]
+            [pine.db.references :as refs]
             [pine.parser :as parser]
             [pine.sql.parser :as sp]
             [pine.sql.transpile :as t]))
@@ -110,6 +111,51 @@
   (testing "Self join"
     (converts-to "select m.* from employee e join employee m on m.id = e.reports_to"
                  "employee as e | employee as m .id = .reports_to")))
+
+;; A schema as pine.db.references indexes it: [schema table column ...].
+(def ^:private schema
+  (refs/index-references
+   [[]
+    (for [[sch table cols] [["public" "tenant" ["id" "name"]]
+                            ["public" "company" ["id" "tenantId" "name"]]
+                            ["public" "Invoice" ["id" "companyId"]]
+                            ["public" "payment" ["id" "CompanyId"]]
+                            ["Billing" "plan" ["id" "Name" "NAME"]]]
+          [i col] (map-indexed vector cols)]
+      [sch table col (inc i) "text" nil "YES" nil])
+    []]))
+
+(deftest test-database-spelling
+  (let [with-schema (fn [sql] (t/sql->pine sql schema))]
+    (testing "A bare name takes the database's spelling"
+      (is (= "tenant as t\n | company as c .tenantId = .id\n | select: t.*, c.*"
+             (:expression (with-schema "select * from tenant as t join company as c on t.id = c.tenantId"))))
+      (is (= {:expression "Invoice\n | where: companyId = 1" :warnings []}
+             (with-schema "select * from invoice where COMPANYID = 1")))
+      (is (= {:expression "Invoice\n | select: id" :warnings []}
+             (with-schema "select invoice.id from invoice"))))
+
+    (testing "USING spells each side from its own table"
+      (is (= "Invoice as invoice\n | payment as payment .CompanyId = .companyId\n | select: invoice.*, payment.*"
+             (:expression (with-schema "select * from invoice join payment using (companyid)")))))
+
+    (testing "A schema is spelled too"
+      (is (= "Billing.plan\n | select: id" (:expression (with-schema "select id from billing.plan")))))
+
+    (testing "The name as written, when the database has it or nothing like it"
+      (is (= "company\n | select: name, nope" (:expression (with-schema "select name, nope from company")))))
+
+    (testing "A quoted name keeps its spelling"
+      (is (= "company\n | select: tenantid" (:expression (with-schema "select \"tenantid\" from company")))))
+
+    (testing "Two names that differ only in case: the SQL can't say which"
+      (is (= {:error "Line 1: `name` could be `NAME` or `Name`. Quote the one you mean, like \"NAME\"."
+              :error-type "sql-unsupported"}
+             (with-schema "select name from billing.plan"))))
+
+    (testing "Without a schema, a bare name is folded to lowercase"
+      (is (= "tenant as t\n | company as c .tenantid = .id\n | select: t.*, c.*"
+             (:expression (t/sql->pine "select * from tenant as t join company as c on t.id = c.tenantId")))))))
 
 (deftest test-pine-preview
   (testing "Pine's own SQL reads back, without its hidden columns"

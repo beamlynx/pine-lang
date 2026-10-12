@@ -640,6 +640,16 @@
 
 ;; TODO: POST method should return 401
 
+(defn- sql-to-pine-schema
+  "The schema SQL to Pine spells names from: the connection's, or nil.
+  Converting needs no connection, so one that isn't there or can't be read
+  means converting without it, never an error."
+  [connection-id]
+  (let [conn-id (or connection-id @db/connection-id)]
+    (when (and conn-id (nil? (connection-problem conn-id)))
+      (try (db/init-references conn-id)
+           (catch Exception _ nil)))))
+
 (defroutes app-routes
   ;; connection management
   (GET "/api/v1/connection" [] (-> (get-connection) response))
@@ -716,11 +726,11 @@
   ;; for when the conversion reads the schema (see
   ;; docs/sql-to-pine.md). Not on the MCP surface: agents write Pine.
   (POST "/api/v1/sql-to-pine" {params :params}
-    (let [{:keys [query]} params]
+    (let [{:keys [query connection-id]} params]
       (or (param-problem params :sql? true)
           (when-not (string? query) (bad-request "`query` is required."))
           (response (or (too-long-response query)
-                        (sql-transpile/sql->pine query))))))
+                        (sql-transpile/sql->pine query (sql-to-pine-schema connection-id)))))))
 
   ;; Stop a run started with this `run-id` on /eval or /sql. The run
   ;; answers with `error-type: "cancelled"`; a write in progress is rolled

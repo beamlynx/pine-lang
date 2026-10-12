@@ -36,8 +36,10 @@ On failure, `error` says what and where, and `error-type` says which kind:
 | `sql-parse-error` | The text isn't SQL this reads. |
 | `internal` | The converter produced Pine that doesn't parse. That is a bug here; the message includes the Pine. |
 
-Nothing runs, so no connection is needed and no access policy applies. The request may carry
-`connection-id`; it is ignored for now. The endpoint isn't on the MCP surface, since agents write Pine.
+Nothing runs, so no connection is needed and no access policy applies. With one, names take the
+database's spelling (see [Names and case](#names-and-case)). The request may carry `connection-id`;
+without it, the selected connection is used. A connection that can't be read is skipped, never an
+error. The endpoint isn't on the MCP surface, since agents write Pine.
 
 ## What converts
 
@@ -134,10 +136,25 @@ would return only the last table's.
 
 ### Names and case
 
-Keywords may be in any case. A bare identifier is folded to lowercase, as Postgres reads it:
-`FROM Users` is the table `users`. A quoted identifier keeps its case: `"Users"` in Postgres or
+Keywords may be in any case. A quoted identifier keeps its case: `"Users"` in Postgres or
 `` `Users` `` in MySQL. A double-quoted name is always an identifier, never a string, as in Postgres
 and standard SQL. A name Pine can't write, like `"my table"`, is refused.
+
+A bare identifier takes the database's spelling, when there is a connection. For each bare table,
+schema or column name:
+
+1. If the database has the name in lowercase, that is the one. Postgres reads an unquoted name this
+   way.
+2. Otherwise, if exactly one name matches ignoring case, that is the one. `c.tenantId` becomes
+   `.tenantId` when `company` has a `tenantId` column.
+3. If several match, like `Name` and `NAME`, the conversion refuses and asks for the name in quotes.
+4. If none match, the name stays lowercase.
+
+Step 2 is more lenient than Postgres. There, `c.tenantId` means `tenantid`, and fails when the column
+is `"tenantId"`. The converter takes the column the SQL most likely means. In MySQL and SQLite, where
+column names ignore case, it is what the database does.
+
+Without a connection, a bare identifier is folded to lowercase: `FROM Users` is the table `users`.
 
 ### Pine's own SQL
 
@@ -243,6 +260,7 @@ decided once, at the end.
 Planned in `beamlynx-plans/pending/2026-10-08-sql-to-pine.md`:
 
 - With a connection: resolve an unqualified column in a join from the schema, and write a join that
-  matches a foreign key as `.column` instead of explicit pairs.
+  matches a foreign key as `.column` instead of explicit pairs. Names already take the database's
+  spelling.
 - Subqueries and `WITH` as named results.
 - Date buckets (`DATE_TRUNC`) as `=> month` and the like.

@@ -34,10 +34,17 @@
     :bare-identifier (s/lower-case value)
     :quoted-identifier (s/replace value "\"\"" "\"")))
 
-(defn- column [[_ & ids :as node]]
+(defn- quoted? [[kind]]
+  (= :quoted-identifier kind))
+
+(defn- column
+  ":quoted marks a quoted column name, which keeps its spelling. A bare one
+  may take the database's spelling (pine.sql.transpile)."
+  [[_ & ids :as node]]
   (let [names (map identifier ids)]
     (cond-> {:name (last names) :at (at node)}
-      (next names) (assoc :qualifier (first names)))))
+      (next names) (assoc :qualifier (first names))
+      (quoted? (last ids)) (assoc :quoted true))))
 
 (defn- children
   "The child nodes with tag `tag`."
@@ -98,13 +105,16 @@
   (let [names (map identifier ids)]
     (cond-> {:table (last names) :at (at node)}
       (next names) (assoc :schema (first names))
+      (quoted? (last ids)) (assoc :quoted true)
+      (and (next ids) (quoted? (first ids))) (assoc :schema-quoted true)
       alias (assoc :alias (identifier (second alias))))))
 
 (defn- join [node]
   (let [[_ [_ & type-nodes] table how] node]
     (cond-> {:type (some-> (ffirst type-nodes) name keyword) :table (table-ref table) :at (at node)}
       (= :on (first how)) (assoc :on (predicate (second how)))
-      (= :using (first how)) (assoc :using (mapv identifier (rest how))))))
+      (= :using (first how)) (assoc :using (mapv (fn [id] (cond-> {:name (identifier id)} (quoted? id) (assoc :quoted true)))
+                                                 (rest how))))))
 
 (defn- select-item [[_ [kind & args :as inner] alias :as node]]
   (cond-> (case kind
