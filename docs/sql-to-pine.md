@@ -42,7 +42,7 @@ database's spelling (see [Names and case](#names-and-case)). The request may car
 without it, the selected connection is used. A connection that can't be read is skipped, never an
 error.
 
-AI agents use it too. beamlynx-desktop's MCP tool `run_query` accepts SQL, which beamlynx-ui
+AI agents use it too. beamlynx-desktop's MCP tool `run_sql_as_pine` accepts SQL, which beamlynx-ui
 converts here and then runs as Pine through `/eval`, with the connection's access policy and writes
 refused. SQL never runs, so every query still passes the AST, where the policy applies. The agent
 gets the Pine back, not SQL.
