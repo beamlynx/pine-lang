@@ -141,7 +141,7 @@
            (generate :where "company | name = 'Acme'")))
     (is (= [(condition "c_0" "name" "text" "=" (dt/string "Acme"))]
            (generate :where "company | name = 'Acme' ::text")))
-    (is (= [(condition "c_0" "id" "uuid" "=" (dt/string "123e4567-e89b-12d3-a456-426614174000"))]
+    (is (= [(condition "c_0" "id" "uuid" "=" (dt/uuid "123e4567-e89b-12d3-a456-426614174000"))]
            (generate :where "company | id = '123e4567-e89b-12d3-a456-426614174000' ::uuid")))
     (is (= [(condition "c" "name" nil "=" (dt/string "Acme"))]
            (generate :where "company as c | name = 'Acme'")))

@@ -5,18 +5,22 @@
             [pine.ast.table :as table]
             [pine.data-types :as dt]))
 
+(defn- convert-by-type
+  "A condition value converted for a column of db-type. An `in` list is
+  converted item by item."
+  [value db-type]
+  (if (and (coll? value) (not (map? value)))
+    ;; Check for (not (map? value)) to avoid treating data type maps as collections
+    (map #(dt/convert-value-to-db-type % db-type) value)
+    (dt/convert-value-to-db-type value db-type)))
+
 (defn- convert-condition-value
   "Convert a condition value to the appropriate database type based on the column's schema"
   [value alias col state]
   (let [table-info (get (:aliases state) alias)
         db-type (dt/get-column-type (:references state) alias col table-info)]
     (if db-type
-      (if (and (coll? value) (not (map? value)))
-        ;; For collections (like IN operator values), convert each item
-        ;; Check for (not (map? value)) to avoid treating data type maps as collections
-        (map #(dt/convert-value-to-db-type % db-type) value)
-        ;; For single values, convert directly
-        (dt/convert-value-to-db-type value db-type))
+      (convert-by-type value db-type)
       value)))
 
 (def ^:private json-comparisons #{"=" "!=" ">" "<" ">=" "<="})
@@ -90,6 +94,12 @@
 
                           (#{:symbol :variable :named-result} (:type value))
                           value
+
+                          ;; A cast column is compared as the cast's type, so
+                          ;; the value takes that type, not the column's:
+                          ;; `id = '1' ::text` compares text with text.
+                          cast
+                          (convert-by-type value (s/lower-case cast))
 
                           :else
                           (convert-condition-value value alias col state))]

@@ -53,6 +53,11 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - `sum`, `avg`, `min`, `max` and `string_agg` after `=>` in `group:`. They take no column, so they computed over the constant 1: a sum equal to the count, an average of 1, and `STRING_AGG(1)`, which Postgres refuses. Only `count` remains until a column can be named.
 
 ### Fixed
+- A table written with its schema, like `public.company`, is always the table. A named result of the same name (`|= company`) used to take its place, so the query read the named result, and `update!` or `delete!` on the table was refused as a change to a named result.
+- A `group:` after a named result called `x_1` (or `x_2`, and so on) no longer fails with "WITH query name specified more than once". The group's own CTE now picks a name nothing else uses.
+- `update! active = false` on a Postgres boolean column works. The value was sent as the text `'false'`, which Postgres refused. On SQLite it was stored as that text; now it is stored as 0 or 1.
+- A cast column takes a value of the cast's type: `where: id = '1' ::text` compares text with text. The value was typed by the column instead, and Postgres refused `text = bigint`. A `::uuid` cast now sends the value as a uuid for the same reason.
+- The SQL shown for a query writes numbers unquoted, so it runs when copied. `where: score = 2.5` was shown as `score = '2.5'`, which Postgres refuses for an integer column. The query Pine runs was already right.
 - A `/build` cursor before the start of the expression, which beamlynx-ui sent with the cursor in a values block above the query, made the build fail with `"error": null`. Such a cursor is now ignored, and a failed build always says something: an exception with no message reports its type.
 - `/build`'s `doc` was empty when the tab started with a values block. It now comes from the first doc comment in the leading values blocks or the first query block.
 - Block comments after a `select:` column could take seconds to parse, or run the server out of memory: ten took 4 s, twelve exhausted a 2 GB heap. A 1 MB string literal took 7.5 s. Whitespace with comments, and each string literal, are now one token, so parsing is linear. Twelve comments now take under a millisecond and a 1 MB literal 17 ms.

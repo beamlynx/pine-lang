@@ -206,7 +206,7 @@
             :params (map dt/string ["Acme Inc."])}
            (generate "company | where: name = 'Acme Inc.' ::text")))
     (is (= {:query "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\"::uuid = ? LIMIT 250",
-            :params (map dt/string ["123e4567-e89b-12d3-a456-426614174000"])}
+            :params (map dt/uuid ["123e4567-e89b-12d3-a456-426614174000"])}
            (generate "company | where: id = '123e4567-e89b-12d3-a456-426614174000' ::uuid"))))
 
   (testing "Joins"
@@ -1515,3 +1515,35 @@
     ;; One pair is unchanged, including the deliberately-partial case.
     (is (= "JOIN \"k\".\"note_ref\" AS \"nr_1\" ON \"n_0\".\"id\" = \"nr_1\".\"note_id\""
            (join-clause "k.note | k.note_ref .note_id = .id")))))
+
+(deftest test-review-fixes
+  (testing "a schema-qualified table is never a named result of the same name"
+    (let [{:keys [query]} (generate-expressions ["company | where: id = 2 |= company"
+                                                 "x.company as c | where: id = 1"])]
+      (is (re-find #"FROM \"x\".\"company\" AS \"c\"" query))
+      (is (not (re-find #"WITH" query))))
+    (let [{:keys [queries]} (generate-expressions ["company | where: id = 2 |= company"
+                                                   "x.company | where: id = 1 | update! id = 3"])]
+      (is (re-find #"^UPDATE \"x\".\"company\"" (:query (first queries))))))
+
+  (testing "a terminal group's CTE doesn't take a named result's name"
+    (let [{:keys [query]} (generate-expressions ["company | select: id |= x_1"
+                                                 "x_1 | group: id => count"])]
+      (is (re-find #"WITH \"x_1\" AS .*, \"x_1_2\" AS" query))
+      (is (re-find #"FROM \"x_1_2\"" query))))
+
+  (testing "a cast column takes a value of the cast's type"
+    (is (= (list (dt/string "1"))
+           (:params (generate "company | where: id = '1' ::text"))))
+    (is (= (list (dt/string "1") (dt/string "2"))
+           (:params (generate "company | where: id in ('1', 2) ::text")))))
+
+  (testing "true and false for a boolean column are booleans, so the driver binds a boolean"
+    (is (= (dt/pine-boolean false) (dt/convert-value-to-db-type (dt/pine-symbol "false") "bool")))
+    (is (= (dt/pine-boolean true) (dt/convert-value-to-db-type (dt/pine-symbol "TRUE") "boolean"))))
+
+  (testing "the shown SQL writes a number as a number"
+    (is (re-find #"\"id\" = 2\.5 "
+                 (-> "company | where: id = 2.5" generate eval/formatted-query)))
+    (is (re-find #"\"id\" IN \(-1, 2\.5\)"
+                 (-> "company | where: id in (-1, 2.5)" generate eval/formatted-query)))))
