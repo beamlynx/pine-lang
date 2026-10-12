@@ -63,6 +63,7 @@
             :where           []           ;; e.g. {:alias "c" :column "name" :cast nil :operator "=" :value ...}
             :order           []           ;; e.g. [{ :alias "u" :column "name" :direction "DESC" }]
             :group           []           ;; e.g. [{ :alias "u" :column "name" }]
+            :aggregates      []           ;; group: ... => count, e.g. ["count"]
             :update          nil          ;; e.g. { :assignments [{ :column {...} :value {...} }] }
             ;; state
             :index           0
@@ -99,8 +100,12 @@
             :reserved-cte-names nil
             ;; Set after a checkpoint op (group/limit) to signal the next table op
             ;; should become a CTE instead of a direct join.
-            ;; nil | {:needs-assign true} | {:name "n" :needs-table true}
-            :pending-checkpoint nil})
+            ;; :index is the operation index of the group:/limit: step.
+            ;; nil | {:needs-assign true :index 2} | {:name "n" :needs-table true :index 2}
+            :pending-checkpoint nil
+            ;; Every checkpoint in this expression, in pipe order, for the
+            ;; client: see checkpoint-entry. Survives reset-for-cte.
+            :checkpoints []})
 
 (defn- expression-names
   "Every table alias and |= name written anywhere in ops, lower-cased."
@@ -201,20 +206,85 @@
 (defn- reset-for-cte [state]
   (assoc state
          :tables    [] :columns [] :limit nil :limit-per nil :joins  []
-         :where     [] :order   [] :group [] :update nil
+         :where     [] :order   [] :group [] :aggregates [] :update nil
          :current nil :context nil :current-index 0
          :table-count 0 :operation {:type nil :value nil}))
+
+(defn- result-columns
+  "The names of the columns a sealed state returns: what it selects, or,
+  with no select (`*`), every column of its current table. A current table
+  that is itself a named result or checkpoint returns what that one does,
+  so `group: name | l: 3` gives name and count, not the grouped table's
+  columns."
+  [snapshot]
+  (let [explicit (remove table/added-column? (:columns snapshot))
+        current  (:current snapshot)
+        entry    (get (:aliases snapshot) current)]
+    (cond
+      (seq explicit) (mapcat (fn [{:keys [alias column column-alias]}]
+                               (if (and (str/blank? column) (not column-alias))
+                                 ;; `s: c.*`
+                                 (map :column (hints/generate-all-column-hints snapshot alias))
+                                 [(or column-alias column)]))
+                             explicit)
+      (:ast entry)   (result-columns (:ast entry))
+      :else          (map :column (hints/generate-all-column-hints snapshot current)))))
+
+(defn- checkpoint-entry
+  "What the client is told about one checkpoint: enough to label it and to
+  draw the result it seals, without the snapshot itself (the client finds
+  that under :pending-assignments by :name).
+
+  - :name     the CTE name, `|= name` or the auto name (result_1, ...)
+  - :sealed   false only for a checkpoint still pending at the end of the
+              expression; its name is the one it will get when sealed
+  - :index    the operation index of its group:/limit: step
+  - :kind     \"limit\" or \"group\"
+  - :limit    N, and :per the columns after `per`, if any (limit only)
+  - :group    the grouped columns, and :aggregates e.g. [\"count\"] (group only)
+  - :tables   the aliases of the tables it seals, in pipe order
+  - :columns  the names of the columns its result has
+
+  The result columns need the schema index, so this runs while
+  :references is still on the state (post-handle drops it)."
+  [cname snapshot index sealed?]
+  (let [limit?  (boolean (or (:limit snapshot) (:limit-per snapshot)))
+        column  #(select-keys % [:alias :column :path :column-alias])]
+    (cond-> {:name    cname
+             :sealed  sealed?
+             :index   index
+             :kind    (if limit? "limit" "group")
+             :tables  (mapv :alias (:tables snapshot))
+             :columns (vec (distinct (result-columns snapshot)))}
+      limit?               (assoc :limit (or (:limit snapshot) (get-in snapshot [:limit-per :n])))
+      (:limit-per snapshot) (assoc :per (mapv column (get-in snapshot [:limit-per :columns])))
+      (not limit?)         (assoc :group (mapv column (:group snapshot))
+                                  :aggregates (vec (:aggregates snapshot))))))
 
 (defn- seal-as-cte
   "Store snapshot under cname, reset the query-building state, then inject
   cname as the first table so subsequent ops compose on top of it. Nothing
   needs seeding into :references - table/resolve-table reads cname's own
   :source-tagged :columns live, the same as any other named result."
-  [state cname snapshot]
+  [state cname snapshot index]
   (-> state
+      (update :checkpoints conj (checkpoint-entry cname snapshot index true))
       (assoc-in [:pending-assignments cname] snapshot)
       reset-for-cte
       (handle-op {:type :table :value {:table cname}})))
+
+(defn- add-pending-checkpoint
+  "Describe a checkpoint still pending at the end of the expression, under
+  the name sealing it would give it. The canvas shows it, and writes that
+  name back into the text when the user builds on it."
+  [state]
+  (if-let [{:keys [name index]} (:pending-checkpoint state)]
+    (let [cname    (or name (next-auto-cte-name state))
+          snapshot (if name
+                     (get-in state [:pending-assignments name])
+                     state)]
+      (update state :checkpoints conj (checkpoint-entry cname snapshot index false)))
+    state))
 
 (defn- flush-checkpoint
   "State-machine step: called at the start of each handle-ops iteration.
@@ -236,7 +306,7 @@
 
       ;; Explicit assign after a checkpoint op: record the user name, wait
       (and (:needs-assign checkpoint) (= op-type :assign))
-      (assoc state :pending-checkpoint {:name (:value op) :needs-table true})
+      (assoc state :pending-checkpoint {:name (:value op) :needs-table true :index (:index checkpoint)})
 
       ;; Auto-named: fire when a table or another checkpoint op arrives
       (and (:needs-assign checkpoint) fire?)
@@ -244,7 +314,7 @@
             snapshot (dissoc state :pending-assignments)]
         (-> state
             (assoc :pending-checkpoint nil)
-            (seal-as-cte cname snapshot)))
+            (seal-as-cte cname snapshot (:index checkpoint))))
 
       ;; Waiting for assign, non-triggering op (count, where, etc.) — hold
       (:needs-assign checkpoint)
@@ -256,7 +326,7 @@
             snapshot (get-in state [:pending-assignments cname])]
         (-> state
             (assoc :pending-checkpoint nil)
-            (seal-as-cte cname snapshot)))
+            (seal-as-cte cname snapshot (:index checkpoint))))
 
       :else state)))
 
@@ -302,7 +372,7 @@
                           (handle-op o)
                           (update :pending-count dec))
                 (not= (:type o) :assign) (assoc :operation o)
-                (checkpoint-op-types (:type o)) (assoc :pending-checkpoint {:needs-assign true}))))
+                (checkpoint-op-types (:type o)) (assoc :pending-checkpoint {:needs-assign true :index i}))))
           (update state :reserved-cte-names #(or % (expression-names ops)))
           (map-indexed vector ops)))
 
@@ -432,7 +502,8 @@
   ([parse-tree connection-id expression cursor named-results access-policy]
    (let [full-state (-> state
                         (pre-handle connection-id (count parse-tree) expression cursor named-results access-policy)
-                        (handle-ops parse-tree))
+                        (handle-ops parse-tree)
+                        add-pending-checkpoint)
          truncated-state (when (and cursor expression)
                            (generate-truncated-state expression cursor connection-id named-results
                                                      (:reserved-cte-names full-state)))]

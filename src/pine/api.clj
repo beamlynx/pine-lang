@@ -157,14 +157,14 @@
   a variable-of-variable chain, or the same recursive embedding reappears one level
   down."
   [var-ast]
-  (-> (select-keys var-ast [:tables :selected-tables :joins :columns])
+  (-> (select-keys var-ast [:tables :selected-tables :joins :columns :where :order :group])
       (update :tables #(mapv prune-table %))
       (update :selected-tables #(mapv prune-table %))))
 
 (defn- prune-ast
   "Prune a generated state down to the :ast value returned to the frontend."
   [state]
-  (-> (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where :group :prettified :ranges :assign])
+  (-> (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where :group :prettified :ranges :assign :checkpoints])
       (update :selected-tables #(mapv prune-table %))
       (assoc :named-results
              (into {} (for [[k v] (:named-results state)] [k (prune-var-ast v)])))

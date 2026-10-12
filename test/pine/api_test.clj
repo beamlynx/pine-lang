@@ -52,7 +52,7 @@
       (is (= #{"x" "y" "z"} (set (keys (:named-results chained-blocks)))))
       (doseq [[name var-ast] (:named-results chained-blocks)]
         (testing (str "variable " name)
-          (is (= #{:tables :selected-tables :joins :columns} (set (keys var-ast)))
+          (is (= #{:tables :selected-tables :joins :columns :where :order :group} (set (keys var-ast)))
               "should only carry the fields VariableAst (client.ts) actually uses")
           (is (not (contains? var-ast :named-results))
               "must not recursively embed earlier variables' own snapshots")

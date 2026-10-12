@@ -60,6 +60,9 @@
         select-columns (vec (concat merged-columns fn-columns))]
     (-> state
         (assoc :columns select-columns)
+        ;; The aggregates' names, e.g. ["count"], for the client's label of
+        ;; a group checkpoint (main.clj's checkpoint-entry)
+        (assoc :aggregates (mapv :column-alias fn-columns))
         ;; GROUP BY uses all the merged columns
         (assoc :group (vec merged-columns)))))
 

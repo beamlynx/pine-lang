@@ -137,6 +137,40 @@ SELECT COUNT(*) FROM x
 - Only one table-level composition step is supported per checkpoint; chaining `l: 10 | employee | document` creates one CTE for `l: 10` and then navigates normally through employee to document.
 - Checkpoint CTEs do not receive Pine's auto-id columns; those are suppressed for all CTE-backed tables.
 
+## What /build reports
+
+`/build`'s `ast.checkpoints` lists the checkpoints of the expression in pipe order. beamlynx-ui draws each one as a divider with a node named after it. Once a checkpoint is sealed, nothing else in the AST says what it was, so the list carries that.
+
+```
+company as c | employee .company_id | o: created_at desc | l: 1 per c.id | where: id = 1
+```
+
+```json
+[{"name": "result_1",
+  "sealed": true,
+  "index": 3,
+  "kind": "limit",
+  "limit": 1,
+  "per": [{"alias": "c", "column": "id"}],
+  "tables": ["c", "e_1"],
+  "columns": ["id", "company_id", "reports_to"]}]
+```
+
+| Field | What it is |
+|---|---|
+| `name` | The CTE's name: the `|= name`, or the auto name (`result_1`, ...). |
+| `sealed` | `false` only for a checkpoint still pending at the end of the expression. Its `name` is the one sealing it will give it. |
+| `index` | The operation index of its `group:` or `limit:` step, the same index as in `ast.ranges`. |
+| `kind` | `"limit"` or `"group"`. |
+| `limit`, `per` | For a limit: N, and the columns after `per` if any. Each column has its `alias`, `column`, and a JSON `path` if it has one. |
+| `group`, `aggregates` | For a group: the grouped columns, and the aggregates' names, such as `["count"]`. |
+| `tables` | The aliases of the tables it seals, in pipe order. A later checkpoint lists the earlier one's name here. |
+| `columns` | The names of the columns its result has: what it selects, or every column of its current table. After `group: t.title`, that is `title` and `count`. |
+
+A trailing checkpoint is listed even when nothing follows it, and when only `count:`, `delete!` or `update!` follows it. Those keep it pending.
+
+To draw what a sealed checkpoint seals, look up its `name` in `ast.pending-assignments`. Each entry there has the stage's `tables`, `joins`, `columns`, `where`, `order` and `group`. The tables after the last checkpoint are in the top-level AST, as before.
+
 ## Auto-generated names
 
 A checkpoint sealed without `|= name` is named `result_1`, `result_2`, and so on. The canvas shows this name on the node. Because it is a normal name, a later expression can use it like any `|=` name, for example `result_1 | s: name`.
@@ -168,7 +202,8 @@ See also: [named-results.md](named-results.md) for cross-expression named CTEs, 
 | Field | Default | Purpose |
 |---|---|---|
 | `:reserved-cte-names` | `nil` | Every table alias and `|=` name in the expression, collected by `handle-ops` before any op runs. `next-auto-cte-name` skips these. |
-| `:pending-checkpoint` | `nil` | `{:needs-assign true}` after a checkpoint op; `{:name n :needs-table true}` after an explicit `|=` |
+| `:pending-checkpoint` | `nil` | `{:needs-assign true :index i}` after a checkpoint op; `{:name n :needs-table true :index i}` after an explicit `|=`. `:index` is the checkpoint op's operation index. |
+| `:checkpoints` | `[]` | One entry per checkpoint, for `ast.checkpoints`. `reset-for-cte` keeps it. |
 
 ### Core functions (`ast/main.clj`)
 
@@ -176,6 +211,7 @@ See also: [named-results.md](named-results.md) for cross-expression named CTEs, 
 - `checkpoint-consuming-op-types` — set `#{:select :select-partial :where :where-partial :order :order-partial}`; ops that *fire* (seal) an already-pending checkpoint, alongside a TABLE op or another checkpoint op. Partial and complete forms are treated identically — a partial with a value has already fully typed whatever precedes a dangling trailing comma.
 - `reset-for-cte` — clears all query-building fields (tables, columns, joins, where, order, group, limit) while preserving references, variables, and pending-assignments
 - `seal-as-cte` — the single shared action: stores the snapshot under `cname` in `:pending-assignments`, seeds FK references for `cname` (same three passes used by cross-expression variables in `pre-handle`), resets query-building state, then injects `cname` as the first table via `handle-op`; `table/handle` resolves it via `:pending-assignments`
+- `checkpoint-entry` — builds one `ast.checkpoints` entry from a checkpoint's snapshot. `seal-as-cte` adds one for every sealed checkpoint. `add-pending-checkpoint`, run by `generate` after `handle-ops`, adds the trailing one. Both run before `post-handle` drops `:references`, which `result-columns` needs to list a `*` result's columns.
 - `next-auto-cte-name` — picks `result_N` for an auto-named checkpoint (see [Auto-generated names](#auto-generated-names))
 - `flush-checkpoint` — state-machine dispatch called at the start of each `handle-ops` reduce iteration; calls `seal-as-cte` when a TABLE op, another checkpoint op, or a checkpoint-consuming op follows the pending checkpoint, using either a freshly-snapshotted state (auto-named) or the snapshot already stored by `assign/handle` (user-named)
 
