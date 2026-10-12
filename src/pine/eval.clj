@@ -127,6 +127,32 @@
     :sqlite "?"
     (case value-type :jsonb "?::jsonb" :uuid "?::uuid" :date "?::timestamp" "?")))
 
+(defn- enum-placeholder
+  "`?::\"schema\".\"type\"` for a string compared with or written to a
+  Postgres enum column (pine.data-types/convert-value-for-column put the
+  type in :enum), or nil. Postgres has no `=` between an enum and the
+  varchar a string is bound as. Casting the parameter, not the column, keeps
+  an index on the column usable. MySQL compares its ENUM columns with
+  strings as they are, and SQLite has no enums."
+  [value]
+  (when-let [[schema type-name] (and (= *dialect* :postgres) (map? value) (:enum value))]
+    (str "?::" (q schema type-name))))
+
+(defn- value-placeholder
+  "The `?` for a value pine binds, with whatever cast its column needs."
+  [value]
+  (or (enum-placeholder value) (auto-cast-placeholder (:type value))))
+
+(def ^:private like-operators #{"LIKE" "NOT LIKE" "ILIKE" "NOT ILIKE"})
+
+(defn- enum-like-cast
+  "Postgres has no LIKE for an enum, so a Postgres enum column is compared
+  as text there: `\"type\"::text LIKE ?`. Returns the cast to use."
+  [cast operator value]
+  (if (and (nil? cast) (like-operators operator) (enum-placeholder value))
+    "text"
+    cast))
+
 (defn- render-operator
   "MySQL and SQLite have no ILIKE/NOT ILIKE - map to LIKE. SQLite's LIKE is
   already case-insensitive for ASCII letters (not for the rest of Unicode),
@@ -431,14 +457,14 @@
     ;; A map here is an unbound `in $variable` (pine.variables): one `?`
     ;; standing for the list, shown as `$name` by formatted-query.
     (str column-sql " " (render-operator operator) " ("
-         (if (map? value) "?" (s/join ", " (repeat (count value) "?"))) ")")
+         (if (map? value) "?" (s/join ", " (map #(or (enum-placeholder %) "?") value))) ")")
     :else
     (str column-sql " " (render-operator operator) " "
          (cond
            (= (:type value) :symbol) (:value value)
            (= (:type value) :column) (let [[a col] (:value value)] (q a col))
            ;; Cast the parameter/value, not the column (unless explicit cast)
-           :else (if cast "?" (auto-cast-placeholder (:type value)))))))
+           :else (if cast "?" (value-placeholder value))))))
 
 (defn- value-params
   "The parameters a condition's value binds: none for a symbol, a column or
@@ -476,7 +502,8 @@
   [{alias :alias col :column :keys [cast operator value path] :as condition}]
   (if path
     (render-path-condition condition)
-    [(render-comparison (column-ref-with-cast alias col cast) cast operator value) (value-params value)]))
+    (let [cast (enum-like-cast cast operator value)]
+      [(render-comparison (column-ref-with-cast alias col cast) cast operator value) (value-params value)])))
 
 (defn- build-where-clause
   "[sql params] for WHERE, or nil."
@@ -876,7 +903,7 @@
   (case (:type value)
     :symbol [(:value value) []]
     :column [(update-source-column update-alias value) []]
-    [(auto-cast-placeholder (:type value)) [value]]))
+    [(value-placeholder value) [value]]))
 
 (defn- set-column
   "[sql params] for `column = ...` in SET. Several keys written into one

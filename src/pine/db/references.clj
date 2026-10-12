@@ -160,10 +160,15 @@
   in the same order a real `SELECT *` would. Plain `conj` here would
   prepend (the accumulator starts from nil, and `(conj nil x)` builds a
   list, not a vector), silently reversing that order - `(fnil conj [])`
-  seeds a vector instead, so conj appends."
+  seeds a vector instead, so conj appends.
+
+  A Postgres enum column also has :enum, [schema type-name]: the type a
+  string is cast to before it's compared with the column or written to it.
+  Only Postgres reports one (a ninth value in the row)."
   [acc columns]
-  (reduce (fn [acc [schema table col _pos type _len nullable default]]
-            (let [col {:column col :type type :nullable nullable :default default}]
+  (reduce (fn [acc [schema table col _pos type _len nullable default enum-schema]]
+            (let [col (cond-> {:column col :type type :nullable nullable :default default}
+                        enum-schema (assoc :enum [enum-schema type]))]
               (-> acc
                   (update-in [:schema schema :table table :columns] (fnil conj []) col)
                   (update-in [:schema schema :table table :column-set] (fnil conj #{}) col)

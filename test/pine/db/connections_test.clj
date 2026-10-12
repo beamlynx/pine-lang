@@ -288,3 +288,13 @@
                                           ["b" "t" "x" 1 "text" nil "NO" nil]]
                                          [["a" "t" "x" 1] ["b" "t" "x" 1]])
                                   nil "t"))))))
+
+(deftest test-enum-column-type
+  ;; [schema table column position type length nullable default enum-schema]
+  (let [references (refs/index-references [[] [["app" "attachment" "id" 1 "int4" nil "NO" nil nil]
+                                               ["app" "attachment" "type" 2 "attachment_type" nil "NO" nil "types"]]])
+        columns (get-in references [:schema "app" :table "attachment" :columns])]
+    (testing "an enum column records its type as [schema name]"
+      (is (= ["types" "attachment_type"] (:enum (second columns)))))
+    (testing "any other column has none"
+      (is (not (contains? (first columns) :enum))))))
