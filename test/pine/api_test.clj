@@ -370,3 +370,21 @@
                         db/init-references (fn [_] (throw (ex-info "down" {})))]
             (is (= "company\n | where: tenantid = 'x'" (:expression (post {:query sql}))))))))))
 
+(deftest test-sql-schema
+  (let [post (fn [body]
+               (let [r (api/app {:request-method :post
+                                 :uri "/api/v1/sql-schema"
+                                 :headers {"content-type" "application/json"}
+                                 :body (java.io.ByteArrayInputStream. (.getBytes (json/generate-string body) "UTF-8"))})]
+                 (assoc (json/parse-string (:body r) true) :status (:status r))))]
+    (testing "the selected connection's tables, with their columns in order"
+      (with-redefs [db/connection-id (atom :test)]
+        (let [{:keys [status dialect default-schema tables]} (post {})]
+          (is (= 200 status))
+          (is (= "postgres" dialect))
+          (is (= "public" default-schema))
+          (is (= {:schema "x" :table "company" :columns ["id" "created_at"]}
+                 (first (filter #(= "company" (:table %)) tables)))))))
+    (testing "no connection is an empty list, not an error"
+      (with-redefs [db/connection-id (atom nil)]
+        (is (= {:status 200 :tables []} (post {})))))))

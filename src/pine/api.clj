@@ -20,6 +20,7 @@
    [pine.db.main :as db]
    [pine.eval :as eval]
    [pine.parser :as parser]
+   [pine.sql.hints :as sql-hints]
    [pine.sql.transpile :as sql-transpile]
    [pine.variables :as variables]
    [pine.version :as v]
@@ -732,7 +733,19 @@
           (response (or (too-long-response query)
                         (sql-transpile/sql->pine query (sql-to-pine-schema connection-id)))))))
 
-  ;; Stop a run started with this `run-id` on /eval or /sql. The run
+  ;; The connection's tables and columns, for completing SQL as it is typed
+  ;; (docs/sql-hints.md). No connection, or one that can't be read, is an
+  ;; empty list: the editor asks as soon as it opens. Not on the MCP surface.
+  (POST "/api/v1/sql-schema" {params :params}
+    (let [{:keys [connection-id]} params]
+      (or (param-problem params)
+          (response
+           (let [conn-id (or connection-id @db/connection-id)]
+             (if-let [references (sql-to-pine-schema conn-id)]
+               (sql-hints/schema (connections/get-dialect conn-id) references)
+               {:tables []}))))))
+
+    ;; Stop a run started with this `run-id` on /eval or /sql. The run
   ;; answers with `error-type: "cancelled"`; a write in progress is rolled
   ;; back. Stopping a run that has finished, or hasn't started, is not an
   ;; error: `running` says whether a statement was stopped.
