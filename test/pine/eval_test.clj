@@ -1542,8 +1542,8 @@
     (is (= (dt/pine-boolean false) (dt/convert-value-to-db-type (dt/pine-symbol "false") "bool")))
     (is (= (dt/pine-boolean true) (dt/convert-value-to-db-type (dt/pine-symbol "TRUE") "boolean"))))
 
-  (testing "the shown SQL writes a number as a number"
+  (testing "the shown SQL writes a decimal unquoted"
     (is (re-find #"\"id\" = 2\.5 "
                  (-> "company | where: id = 2.5" generate eval/formatted-query)))
-    (is (re-find #"\"id\" IN \(-1, 2\.5\)"
+    (is (re-find #"\"id\" IN \('-1', 2\.5\)"
                  (-> "company | where: id in (-1, 2.5)" generate eval/formatted-query)))))

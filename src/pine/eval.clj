@@ -985,9 +985,10 @@
 (defn- param-preview [{v :value :as param}]
   (case (:type param)
     :boolean (str v)
-    ;; Unquoted, so the shown SQL runs when copied: Postgres refuses the
-    ;; text '2.5' for an integer column, but takes the number 2.5.
-    :number (str v)
+    ;; A decimal is shown unquoted, so the shown SQL runs when copied:
+    ;; Postgres refuses the text '2.5' for an integer column, but takes the
+    ;; number 2.5. A whole number in quotes reads as the column's type.
+    :number (if (decimal? v) (.toPlainString ^BigDecimal v) (str "'" v "'"))
     ;; Not run, only shown: a $variable with no value yet.
     :variable (str "$" v)
     (str "'" (s/replace (str v) "'" "''") "'")))
