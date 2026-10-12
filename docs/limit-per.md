@@ -88,14 +88,14 @@ ticket_status | o: created_at desc | l: 1 per ticket_id | where: status = 'open'
 Tickets whose latest status is open. The `where:` filters the rows kept per group: it doesn't choose which rows are kept. Like a plain `limit:`, `per` is a [checkpoint](checkpoints.md). Anything that follows it, such as `where:`, `select:`, `order:`, a join or `|= name`, works on the per-group result, which is sealed into a CTE:
 
 ```sql
-WITH "__pine_0__" AS (
+WITH "result_1" AS (
   SELECT "__pine_rows__"."id", "__pine_rows__"."ticket_id", "__pine_rows__"."status", "__pine_rows__"."created_at"
   FROM ( SELECT ..., ROW_NUMBER() OVER (PARTITION BY "ts_0"."ticket_id" ORDER BY "ts_0"."created_at" DESC) AS "__pine_row__", ...
          FROM "ticket_status" AS "ts_0" ) AS "__pine_rows__"
   WHERE "__pine_rows__"."__pine_row__" <= 1
   ORDER BY "__pine_rows__"."__pine_order__"
 )
-SELECT "__pine_0__".* FROM "__pine_0__" AS "__pine_0__" WHERE "__pine_0__"."status" = ? LIMIT 250
+SELECT "result_1".* FROM "result_1" AS "result_1" WHERE "result_1"."status" = ? LIMIT 250
 ```
 
 To filter first and then rank, put the `where:` before `limit:`.

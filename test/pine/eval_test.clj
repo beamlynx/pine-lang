@@ -401,7 +401,7 @@
            (generate "company | limit: 10 | delete! .id")))
     ;; A limit: sealed into a checkpoint CTE still scopes the rows: the
     ;; employees of ten companies, not every employee.
-    (is (= {:query "DELETE FROM \"employee\" WHERE \"id\" IN ( WITH \"__pine_0__\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" LIMIT 10 ) SELECT \"e_1\".\"id\" FROM \"__pine_0__\" AS \"__pine_0__\" JOIN \"employee\" AS \"e_1\" ON \"__pine_0__\".\"id\" = \"e_1\".\"company_id\" )",
+    (is (= {:query "DELETE FROM \"employee\" WHERE \"id\" IN ( WITH \"result_1\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" LIMIT 10 ) SELECT \"e_1\".\"id\" FROM \"result_1\" AS \"result_1\" JOIN \"employee\" AS \"e_1\" ON \"result_1\".\"id\" = \"e_1\".\"company_id\" )",
             :params nil}
            (generate "company | l: 10 | employee | delete! .id"))))
 
@@ -836,7 +836,7 @@
 
 (deftest test-checkpoints
   (testing "LIMIT checkpoint: auto-CTE when a table op follows limit"
-    (is (= {:query "WITH \"__pine_0__\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ) SELECT \"e_1\".\"id\" AS \"__e_1__id\", \"e_1\".* FROM \"__pine_0__\" AS \"__pine_0__\" JOIN \"employee\" AS \"e_1\" ON \"__pine_0__\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
+    (is (= {:query "WITH \"result_1\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ) SELECT \"e_1\".\"id\" AS \"__e_1__id\", \"e_1\".* FROM \"result_1\" AS \"result_1\" JOIN \"employee\" AS \"e_1\" ON \"result_1\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
             :params nil}
            (generate "x.company | l: 10 | employee"))))
 
@@ -846,7 +846,7 @@
            (generate "x.company | l: 10 |= pg | employee"))))
 
   (testing "GROUP checkpoint: auto-CTE when a table op follows group"
-    (is (= {:query "WITH \"__pine_0__\" AS ( SELECT \"c_0\".\"id\", COUNT(1) AS \"count\" FROM \"x\".\"company\" AS \"c_0\" GROUP BY \"c_0\".\"id\" ) SELECT \"e_1\".\"id\" AS \"__e_1__id\", \"e_1\".* FROM \"__pine_0__\" AS \"__pine_0__\" JOIN \"employee\" AS \"e_1\" ON \"__pine_0__\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
+    (is (= {:query "WITH \"result_1\" AS ( SELECT \"c_0\".\"id\", COUNT(1) AS \"count\" FROM \"x\".\"company\" AS \"c_0\" GROUP BY \"c_0\".\"id\" ) SELECT \"e_1\".\"id\" AS \"__e_1__id\", \"e_1\".* FROM \"result_1\" AS \"result_1\" JOIN \"employee\" AS \"e_1\" ON \"result_1\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
             :params nil}
            (generate "x.company | group: id => count | employee"))))
 
@@ -876,7 +876,7 @@
       (is (clojure.string/ends-with? q1 "LIMIT 1"))
       (is (clojure.string/ends-with? q2 "LIMIT 1"))
       ;; Auto-named CTE uses generated name; user-named uses "grp"
-      (is (clojure.string/includes? q1 "\"__pine_0__\""))
+      (is (clojure.string/includes? q1 "\"result_1\""))
       (is (clojure.string/includes? q2 "\"grp\""))))
 
   (testing "GROUP + LIMIT cross-expression baseline matches same-expression form"
@@ -923,7 +923,7 @@
   (testing "GROUP followed by a complete select: auto-named CTE also seals correctly (no |=)"
     ;; Without an explicit |=, the checkpoint still seals — just with a generated
     ;; name instead of a user-given one.
-    (is (= "WITH \"__pine_0__\" AS ( SELECT \"c_0\".\"id\", COUNT(1) AS \"count\" FROM \"x\".\"company\" AS \"c_0\" GROUP BY \"c_0\".\"id\" ) SELECT \"__pine_0__\".\"id\" FROM \"__pine_0__\" AS \"__pine_0__\" LIMIT 250"
+    (is (= "WITH \"result_1\" AS ( SELECT \"c_0\".\"id\", COUNT(1) AS \"count\" FROM \"x\".\"company\" AS \"c_0\" GROUP BY \"c_0\".\"id\" ) SELECT \"result_1\".\"id\" FROM \"result_1\" AS \"result_1\" LIMIT 250"
            (:query (generate "x.company | group: id => count | s: id")))))
 
   (testing "Checkpoint feeding a terminal GROUP nests its own CTE (user-named via |=)"
@@ -938,25 +938,23 @@
            (generate "x.company | l: 10 |= pg | s: name | g: name => count"))))
 
   (testing "Checkpoint feeding a terminal GROUP nests its own CTE (auto-named, no |=)"
-    (is (= {:query "WITH \"__pine_0__\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ), \"x_3\" AS ( SELECT \"__pine_0__\".\"name\" AS \"name\" FROM \"__pine_0__\" AS \"__pine_0__\" ) SELECT \"x_3\".\"name\", COUNT(1) AS \"count\" FROM \"x_3\" GROUP BY \"x_3\".\"name\" LIMIT 10000"
+    (is (= {:query "WITH \"result_1\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ), \"x_3\" AS ( SELECT \"result_1\".\"name\" AS \"name\" FROM \"result_1\" AS \"result_1\" ) SELECT \"x_3\".\"name\", COUNT(1) AS \"count\" FROM \"x_3\" GROUP BY \"x_3\".\"name\" LIMIT 10000"
             :params nil}
            (generate "x.company | l: 10 | s: name | g: name => count"))))
 
   (testing "Auto-named checkpoints across separate expressions don't collide"
-    ;; Each expression starts from a fresh state, so without a session-wide
-    ;; count, two expressions that each auto-name exactly one checkpoint both
-    ;; land on "__pine_0__" - two genuinely different CTEs sharing one name.
-    ;; collect-ctes (eval.clj) dedupes by name, so the second one used to be
-    ;; silently dropped, leaving both variables reading from the first CTE.
-    ;; The generated names only need to be unique, not contiguous - a later
-    ;; expression may well skip a number (e.g. one an explicit |= name used
-    ;; up) - so this asserts non-collision, not any specific numbering.
+    ;; Each expression starts from a fresh state. If each one picked its
+    ;; auto-names without looking at earlier ones, two expressions that each
+    ;; auto-name one checkpoint would both land on "result_1": two different
+    ;; CTEs sharing one name. collect-ctes (eval.clj) dedupes by name, so the
+    ;; second one used to be silently dropped, leaving both named results
+    ;; reading from the first CTE.
     (let [query (:query (generate-expressions
                          ["company as c | employee .company_id | group: c.id => count | s: id, count as emp_count |= x"
                           "company as c | employee .company_id | group: c.id => count | s: id, count as emp_count2 |= y"
                           "x | s: emp_count, | y | s: emp_count2,"]))
-          x-name (second (re-find #"\"x\" AS \( SELECT \"(__pine_\d+__)\"" query))
-          y-name (second (re-find #"\"y\" AS \( SELECT \"(__pine_\d+__)\"" query))]
+          x-name (second (re-find #"\"x\" AS \( SELECT \"(result_\d+)\"" query))
+          y-name (second (re-find #"\"y\" AS \( SELECT \"(result_\d+)\"" query))]
       (is (some? x-name))
       (is (some? y-name))
       ;; The actual regression: x and y must not have been folded onto the
@@ -964,7 +962,56 @@
       (is (not= x-name y-name))
       ;; Each one's own checkpoint must still carry the right GROUP BY body.
       (is (clojure.string/includes? query (str "\"" x-name "\" AS ( SELECT \"c\".\"id\", COUNT(1) AS \"count\"")))
-      (is (clojure.string/includes? query (str "\"" y-name "\" AS ( SELECT \"c\".\"id\", COUNT(1) AS \"count\""))))))
+      (is (clojure.string/includes? query (str "\"" y-name "\" AS ( SELECT \"c\".\"id\", COUNT(1) AS \"count\"")))
+      ;; The exact names: the first expression has no named results yet, so
+      ;; it gets result_1; the second skips x and result_1, which are known.
+      (is (= ["result_1" "result_2"] [x-name y-name]))))
+
+  (testing "First auto-name is result_1 even when other named results exist"
+    ;; The old scheme seeded its counter from the number of named results,
+    ;; so this used to be __pine_2__.
+    (is (clojure.string/starts-with?
+         (:query (generate-expressions ["company |= a"
+                                        "employee |= b"
+                                        "x.company | l: 10 | employee"]))
+         "WITH \"result_1\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 )")))
+
+  (testing "Two checkpoints in one expression are result_1, then result_2"
+    (is (= {:query "WITH \"result_1\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ), \"result_2\" AS ( SELECT \"e_1\".* FROM \"result_1\" AS \"result_1\" JOIN \"employee\" AS \"e_1\" ON \"result_1\".\"id\" = \"e_1\".\"company_id\" LIMIT 5 ) SELECT \"result_2\".\"id\" FROM \"result_2\" AS \"result_2\" LIMIT 250"
+            :params nil}
+           (generate "x.company | l: 10 | employee | l: 5 | s: id"))))
+
+  (testing "Auto-name skips a name taken by |= in an earlier expression"
+    (is (clojure.string/starts-with?
+         (:query (generate-expressions ["company |= result_1"
+                                        "x.company | l: 10 | employee"]))
+         "WITH \"result_2\" AS (")))
+
+  (testing "Auto-name skips a name taken by |= later in the same expression"
+    (let [q (:query (generate "x.company | l: 10 | employee | l: 5 |= result_1 | s: id"))]
+      (is (clojure.string/starts-with? q "WITH \"result_2\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ), \"result_1\" AS ("))))
+
+  (testing "Auto-name skips a table alias named result_1, even one after the checkpoint"
+    (let [q (:query (generate "x.company | l: 10 | employee as result_1"))]
+      (is (clojure.string/starts-with? q "WITH \"result_2\" AS ("))
+      (is (clojure.string/includes? q "JOIN \"employee\" AS \"result_1\" ON \"result_2\".\"id\" = \"result_1\".\"company_id\""))))
+
+  (testing "Auto-name skips a real table named result_1 in the schema index"
+    ;; A CTE named result_1 would shadow that table for unqualified reads.
+    (let [refs (db/init-references :test)]
+      (with-redefs [db/init-references
+                    (fn [_id]
+                      (-> refs
+                          (assoc-in [:table "result_1" :columns] [])
+                          (assoc-in [:schema "other" :table "Result_2" :columns] [])))]
+        (is (clojure.string/starts-with?
+             (:query (generate "x.company | l: 10 | employee"))
+             "WITH \"result_3\" AS (")))))
+
+  (testing "Without a schema index, the table check is skipped"
+    (is (= "result_1"
+           (ast/next-auto-cte-name {:named-results {} :pending-assignments {}
+                                    :aliases {} :references nil})))))
 
 (def ^:private column-type-rule
   ;; Mirrors the values beamlynx-desktop seeds a new connection's default

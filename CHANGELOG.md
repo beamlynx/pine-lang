@@ -25,6 +25,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - Date-time literals: `where: created_at > '2024-01-01 10:00'`, with optional seconds and a space or a T. They bind as timestamps. A time of day used to make the value a string, which Postgres refuses to compare with a timestamp column.
 
 ### Changed
+- **Breaking:** a checkpoint without `|= name` is now named `result_1`, `result_2`, ... instead of `__pine_0__`, `__pine_1__`, .... A checkpoint is the CTE Pine makes when a table, `select:`, `where:` or `order:` follows `group:` or `limit:`. The new name shows in the generated SQL and in `/build`'s AST, which beamlynx-ui reads to label the node. Pine picks the smallest free number. It skips names already used by a named result, a table alias or `|=` name in the expression, or a real table in the connected database. Unlike `__pine_0__`, which was a parse error to type, `result_1` can be used in a later expression like any `|=` name. See `docs/checkpoints.md`.
 - A dotted name whose first part is neither an alias nor a column of the current table, like `s: nope.x`, is an error that says so. It used to reach the database.
 - A quote inside a table, column or result name is written twice in the SQL, instead of ending the name.
 - **Breaking:** each condition in `/build`'s `ast.where` is a map, `{"alias", "column", "cast", "operator", "value"}`, not a list read by position. An `or` group is still `{"or": [...]}`. This makes room for JSON paths, which add a key. beamlynx-ui's matching change reads the map.

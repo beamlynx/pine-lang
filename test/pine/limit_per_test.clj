@@ -271,15 +271,15 @@
 
 (deftest test-limit-per-checkpoint
   (testing "where: after it filters the rows kept per group"
-    (is (= {:query (str "WITH \"__pine_0__\" AS ( " sealed-body " ) "
-                        "SELECT \"__pine_0__\".* FROM \"__pine_0__\" AS \"__pine_0__\" WHERE \"__pine_0__\".\"reports_to\" = ? LIMIT 250")
+    (is (= {:query (str "WITH \"result_1\" AS ( " sealed-body " ) "
+                        "SELECT \"result_1\".* FROM \"result_1\" AS \"result_1\" WHERE \"result_1\".\"reports_to\" = ? LIMIT 250")
             :params [{:type :number :value 1}]}
            (update (sql "employee | o: id desc | l: 1 per company_id | where: reports_to = 1") :params vec))))
 
   (testing "a join after it starts from the rows kept per group"
-    (is (= {:query (str "WITH \"__pine_0__\" AS ( " sealed-body " ) "
-                        "SELECT \"d_1\".\"id\" AS \"__d_1__id\", \"d_1\".* FROM \"__pine_0__\" AS \"__pine_0__\" "
-                        "JOIN \"document\" AS \"d_1\" ON \"__pine_0__\".\"id\" = \"d_1\".\"employee_id\" LIMIT 250")
+    (is (= {:query (str "WITH \"result_1\" AS ( " sealed-body " ) "
+                        "SELECT \"d_1\".\"id\" AS \"__d_1__id\", \"d_1\".* FROM \"result_1\" AS \"result_1\" "
+                        "JOIN \"document\" AS \"d_1\" ON \"result_1\".\"id\" = \"d_1\".\"employee_id\" LIMIT 250")
             :params nil}
            (sql "employee | o: id desc | l: 1 per company_id | document"))))
 
