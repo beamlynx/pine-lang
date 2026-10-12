@@ -3,7 +3,8 @@
 
 (defn handle [state value]
   (let [i       (state :index)
-        columns (map #(-> (path/resolve-column state %1)
+        ;; A computed column's name sorts by its value (path/computed-ref).
+        columns (map #(-> (or (path/computed-ref state %1) (path/resolve-column state %1))
                           (assoc :operation-index i))
                      value)]
     (-> state

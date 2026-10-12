@@ -213,6 +213,27 @@
            (map (fn [[a b]] [a b])
                 (rows "company as c | person .company_id | s: c.id as cid, p_1.name | o: name desc | l: 1 per c.id | s: c.id, name | o: cid asc"))))))
 
+(deftest test-computed-values
+  (testing "coalesce, and concat is NULL when any part is, like ||"
+    (is (= ["SE" "NO" "none" "none"] (selected "doc | s: coalesce(data.country, 'none') as c | o: id asc")))
+    (is (= ["n:SE" "n:NO" nil nil] (selected "doc | s: concat('n:', data.country) as c | o: id asc"))))
+
+  (testing "if, and a condition as a value"
+    (is (= ["on" "off" "on"] (selected "person | s: if active = true then 'on' else 'off' as s | o: id asc")))
+    (is (= [1 0 0] (selected "person | s: name like 'A%' as a | o: id asc"))))
+
+  (testing "Its name in where:, order: and after per"
+    (is (= ["Cy"] (selected "person | s: name, if active = true then 'on' else 'off' as s | where: s = 'on' | o: name desc | l: 1")))
+    (is (= ["Bob" "Cy"] (selected "person | s: name, company_id, coalesce(company_id, 0) as c | o: name desc | l: 1 per c | o: name asc"))))
+
+  (testing "Aggregates with a filter, any and all"
+    (is (= [[1 1 1 0 1] [2 3 1 1 1]]
+           (map #(vec (take 5 %))
+                (rows "person | group: company_id => min(id) as first, any(active = true) as some_on, all(active = true) as all_on, count where active = true as n | o: company_id asc")))))
+
+  (testing "now()"
+    (is (= [[2]] (rows "company | where: created_at < now() | count:")))))
+
 (deftest test-writes
   (testing "foreign keys are enforced - this connection turns them on"
     (is (thrown-with-msg? Exception #"FOREIGN KEY constraint failed"

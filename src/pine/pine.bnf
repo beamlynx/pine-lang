@@ -7,7 +7,7 @@ OPERATION    := SELECT-PARTIAL | SELECT | WHERE-PARTIAL | WHERE | LIMIT-PARTIAL 
 TABLE             := table table-mods
 PATHS             := <"?"> <ws*> table
 
-SELECT-PARTIAL    := <select-op> aliased-columns <","> <ws*> partial-alias | <select-op> partial-alias | <select-op> aliased-columns? <",">?
+SELECT-PARTIAL    := <select-op> aliased-columns <","> <ws*> partial-alias | <select-op> partial-alias | <select-op> (aliased-columns <",">)?
 SELECT            := <select-op> aliased-columns
 
 WHERE-PARTIAL     := <where-op>         conditions <or-op> partial-condition  |  <where-op> conditions <ws+> <"or"> <ws*>  |  <where-op> partial-condition  |  <where-op>
@@ -20,12 +20,12 @@ LIMIT             := <limit-op>         integer (<per-op> columns)?  |  integer
 LIMIT-PARTIAL     := <limit-op> integer <per-op> columns <","> <ws*> partial-alias  |  <limit-op> integer <per-op> partial-alias  |  <limit-op> integer <per-op> columns <ws*> <",">  |  <limit-op> integer <ws+> <"per">
 FROM              := <from-op>          alias
 
-ORDER-PARTIAL     := <order-op> order-columns <","> <ws*> partial-alias | <order-op> partial-alias | <order-op> order-columns? <",">?
+ORDER-PARTIAL     := <order-op> order-columns <","> <ws*> partial-alias | <order-op> partial-alias | <order-op> (order-columns <",">)?
 ORDER             := <order-op>         order-columns
 
 DELETE-ACTION     := <delete-action-op> delete-columns
 <delete-columns>  := hint-column (<","> <ws*> hint-column)*
-UPDATE-PARTIAL    := <update-action-op> update-assignments <","> <ws*> partial-update-column  |  <update-action-op> partial-update-column  |  <update-action-op> update-assignments? <",">?
+UPDATE-PARTIAL    := <update-action-op> update-assignments <","> <ws*> partial-update-column  |  <update-action-op> partial-update-column  |  <update-action-op> (update-assignments <",">)?
 UPDATE-ACTION     := <update-action-op> update-assignments
 COUNT             := <count-op>
 
@@ -48,13 +48,14 @@ table-mod         := <":"> ("parent"|"child"|"left"|"right") | as-alias | hint-c
 
 group-args          := columns (<ws*> <"=>"> <ws*> aggregate-functions)?
 aggregate-functions := aggregate-function (<","> <ws*> aggregate-function)*
-(* Only count. sum, avg, min, max and string_agg were accepted but take no
-   column argument, so they computed over the constant 1: SUM(1), AVG(1).
-   They come back when a column can be named. *)
-aggregate-function  := "count"
+(* `count`, or a call over a value: min(a.id), any(a.type = 'x'). Any of
+   them may take a filter, `min(a.id) where a.type = 'x'`, and a name,
+   `as first_id`. Which functions are aggregates is pine.computed's
+   function table. See docs/computed-values.md. *)
+aggregate-function  := ("count" | call) (<ws+> <"where"> <ws+> conditions)? (<ws+> as-alias)?
 
 update-assignments := update-assignment (<","> <ws*> update-assignment)*
-update-assignment  := column <ws*> <"="> <ws*> (column|string|number|boolean|null|date|variable)
+update-assignment  := column <ws*> <"="> <ws*> (column|string|number|boolean|null|date|variable|call)
 partial-update-column := partial-alias | column
 
 conditions          := condition (<or-op> condition)*
@@ -66,7 +67,7 @@ condition           := column <ws*> (condition-default|condition-in) (<ws*> cast
 partial-condition   := partial-alias | column <ws*> operator <ws*> <"$">? | column
 (* `c.` names an alias. `c.data.` and `data.'k'.` stop inside a JSON path. *)
 partial-alias       := alias <"."> | alias <"."> symbol json-step* <"."> | symbol json-start json-step* <".">
-<condition-default> := operator <ws*> (column|string|number|boolean|null|date|variable)
+<condition-default> := operator <ws*> (column|string|number|boolean|null|date|variable|call)
 <condition-in>      := (in  | not-in) <ws*>  (<"("> in-items* <")"> | variable | named-result)
 (* A named result defined with `|= name`, used as the set of values its one column returns. *)
 named-result        := symbol
@@ -75,7 +76,31 @@ cast                := <"::"> ("text"|"uuid")
 <in-items>          := <ws*> (string | number) <ws*> <",">?
 
 aliased-columns := aliased-column (<","> <ws*> aliased-column)*
-aliased-column  := column <ws*> | column <ws+> as-alias <ws*> | alias <"."> star
+(* A keyword literal is never read as a column: `s: true as t` is the value true. *)
+aliased-column  := !literal-word column <ws*> | !literal-word column <ws+> as-alias <ws*> | alias <"."> star | computed-column
+
+(* ---------------
+   Computed values
+   ---------------
+   A value that isn't just a column: `coalesce(a, b) as k`, `id in edited as
+   was_edited`, `if x is null then 'a' else 'b' as k`. In select: it must
+   have a name. See docs/computed-values.md. *)
+computed-column  := (if-value | condition-value | call | literal | variable | cast-column | paren-value) <ws+> as-alias <ws*>
+<value>          := if-value | condition-value | operand
+<operand>        := call | literal | variable | value-column | paren-value
+(* `then` takes no bare if, so an `else` always belongs to the nearest if.
+   An if there is written in parentheses. *)
+if-value         := <"if"> <ws+> conditions <ws+> <"then"> <ws+> (condition-value | operand) (<ws+> <"else"> <ws+> value)?
+condition-value  := conditions
+paren-value      := <"("> <ws*> value <ws*> <")">
+(* A function call. Any name parses; pine.computed's table says which
+   exist. A cast after it applies to its result. *)
+call             := symbol <"("> <ws*> (value (<ws*> <","> <ws*> value)*)? <ws*> <")"> (<ws*> cast)?
+value-column     := !keyword column (<ws*> cast)?
+cast-column      := column <ws*> cast
+literal          := date | !date string | number | boolean | null
+literal-word     := #"(?:true|false|null)(?![A-Za-z0-9_-])"
+keyword          := #"(?:true|false|null|if|then|else)(?![A-Za-z0-9_-])"
 <as-alias>         := <"as"> <ws+> alias
 
 order-columns := order-column (<","> <ws*> order-column)*
@@ -86,7 +111,8 @@ hint-column     := <"."> symbol
 hint-columns       := hint-column-list | explicit-columns
 <hint-column-list> := hint-column (<","> <ws*> hint-column)*
 explicit-columns   := explicit-pair (<","> <ws*> explicit-pair)*
-explicit-pair      := hint-column <ws*> <"="> <ws*> hint-column
+(* A cast on either side: `.resourceableId = .id ::text`. *)
+explicit-pair      := hint-column (<ws*> cast)? <ws*> <"="> <ws*> hint-column (<ws*> cast)?
 
 columns            := column (<","> <ws*> column)*
 column             := qualified-symbol <ws*> <"=>"> <ws*> column-function | qualified-symbol

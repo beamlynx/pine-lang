@@ -2,50 +2,72 @@
   (:require [clojure.string :as s]
             [pine.access-policy :as access-policy]
             [pine.ast.path :as path]
+            [pine.ast.table :as table]
+            [pine.ast.value :as value]
             [pine.db.references :as refs]))
 
-(defn column-source
-  "The real table (and schema) this column ultimately traces back to - itself
-  if selecting from a real table, or copied forward from a variable's own
-  already-resolved source for the matching column if selecting from a
-  variable. Never recomputed past this one hop: a variable is always defined
-  before it's used, so whatever it's built from has already gone through this
-  same step, and its own :columns already carry a fully-real :source."
-  [state alias raw-column]
-  (let [{:keys [table schema ast]} (get (:aliases state) alias)]
-    (if ast
-      (some #(when (= raw-column (or (:column-alias %) (:column %))) (:source %))
-            (:columns ast))
-      {:table table :schema schema})))
+(def column-source
+  "See pine.ast.table/column-source."
+  table/column-source)
 
-(defn handle [state value]
-  (let [i       (state :index)
+(defn- computed-column
+  "A computed column of select:, `coalesce(a, b) as k`. It carries the
+  current table's alias, so the evaluator counts it as a column the user
+  chose for that table and doesn't add `t.*` beside it."
+  [state {:keys [computed column-alias]}]
+  (when (path/computed-column state column-alias)
+    (throw (ex-info (str "`" column-alias "` is already the name of a computed column. Give each one its own name.")
+                    {:error-type "duplicate-name" :column column-alias})))
+  (let [[state node] (value/resolve-node state computed)]
+    [state {:computed node
+            :column-alias column-alias
+            :alias (:current state)
+            :operation-index (:index state)}]))
+
+(defn- plain-column [state col]
+  (let [i (state :index)
         current (state :current)
-        ;; Process each column and handle date functions
         ;; A live alias (e.g. re-bound via `as`) always wins over a stale |= snapshot
         resolve-alias #(if (contains? (:aliases state) %) % (or (get-in state [:pending-assignments % :current]) %))
-        columns (mapcat (fn [col]
-                          (let [col-with-defaults (-> (if (s/blank? (:column col))
-                                                        ;; `c.*`: there is no column to resolve.
-                                                        (assoc col :alias (resolve-alias (or (:alias col) current)))
-                                                        (path/resolve-column state col))
-                                                      (assoc :operation-index i))
-                                _ (when (and (:column-function col) (:path col-with-defaults))
-                                    (throw (ex-info (str "`=> " (:column-function col) "` can't be used on a key inside a JSON column: its value is text, not a date.") {})))
-                                source (column-source state (:alias col-with-defaults) (:column col-with-defaults))]
-                            (if-let [col-fn (:column-function col)]
-                              ;; Column function: apply function to column
-                              [{:column (:column col-with-defaults)
-                                :alias (:alias col-with-defaults)
-                                :column-alias (or (:column-alias col) col-fn)  ; Use custom alias or function name
-                                :col-fn col-fn                                 ; Mark which function to apply
-                                :source source
-                                :operation-index i}]
-                              ;; Regular column - return as is
-                              [(assoc col-with-defaults :source source)])))
-                        value)]
-    (-> state
-        (update :columns into columns))))
+        col-with-defaults (-> (if (s/blank? (:column col))
+                                ;; `c.*`: there is no column to resolve.
+                                (assoc col :alias (resolve-alias (or (:alias col) current)))
+                                (path/resolve-column state col))
+                              (assoc :operation-index i))
+        _ (when (and (:column-function col) (:path col-with-defaults))
+            (throw (ex-info (str "`=> " (:column-function col) "` can't be used on a key inside a JSON column: its value is text, not a date.") {})))
+        source (column-source state (:alias col-with-defaults) (:column col-with-defaults))]
+    (if-let [col-fn (:column-function col)]
+      ;; Column function: apply function to column
+      {:column (:column col-with-defaults)
+       :alias (:alias col-with-defaults)
+       :column-alias (or (:column-alias col) col-fn)  ; Use custom alias or function name
+       :col-fn col-fn                                 ; Mark which function to apply
+       :source source
+       :operation-index i}
+      ;; Regular column - return as is
+      (assoc col-with-defaults :source source))))
+
+(defn handle
+  "Add the selected columns. One at a time, so a computed column can use
+  the name of one before it, and a named result after `in` inside one is
+  registered on the state."
+  [state value]
+  (reduce (fn [state col]
+            (cond
+              (:computed col)
+              (let [[state c] (computed-column state col)]
+                (update state :columns conj c))
+
+              ;; The name of a computed column already selected: it is in
+              ;; the result already.
+              (and (not (:column-alias col)) (path/computed-ref state col))
+              state
+
+              :else
+              (update state :columns conj (plain-column state col))))
+          (update state :columns vec)
+          value))
 
 (defn- key-columns
   "The primary key columns of the real table behind an alias, or nil."

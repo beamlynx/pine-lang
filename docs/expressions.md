@@ -46,6 +46,9 @@ Each pipe segment maps to a typed operation. Operations are applied left to righ
 
 See [pipeline.md](pipeline.md) for how these operations are processed internally.
 
+A step can use values that aren't just columns: `s: coalesce(a, b) as k`, `s: id in edited as was_edited`,
+`group: id => min(a.id) as first_id`. See [computed-values.md](computed-values.md).
+
 ## How evaluation works
 
 Expressions are evaluated left to right. Only the **last expression** produces output (query or result

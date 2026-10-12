@@ -14,6 +14,7 @@
    [clojure.java.io :as io]
    [clojure.string :as s]
    [instaparse.core :as insta]
+   [pine.computed :as computed]
    [pine.data-types :as dt]))
 
 (defmulti -normalize-op
@@ -24,6 +25,23 @@
 ;; ----
 ;; FROM
 ;; ----
+
+(defn- explicit-pair
+  "One `.right = .left` pair, {:left :right}, with :right-cast or :left-cast
+  for a cast after either column: `.resourceableId = .id ::text`."
+  [[tag & children :as pair]]
+  (when-not (= :explicit-pair tag)
+    (throw (ex-info "Unknown explicit join columns" {:_ pair})))
+  (let [[[right-col right-cast] [left-col left-cast]]
+        (reduce (fn [acc [t x]]
+                  (case t
+                    :hint-column (conj acc [(second x) nil])
+                    :cast (update acc (dec (count acc)) assoc 1 x)))
+                []
+                children)]
+    (cond-> {:left left-col :right right-col}
+      right-cast (assoc :right-cast right-cast)
+      left-cast (assoc :left-cast left-cast))))
 
 (defn- make-table [table-info modifiers]
   (reduce (fn [acc modifier]
@@ -45,12 +63,7 @@
               ;; each pair is stored the other way round from how it is typed.
               [:table-mod [:hint-columns [:explicit-columns & pairs]]]
               (assoc acc :join-column-pairs
-                     (mapv (fn [pair]
-                             (match pair
-                               [:explicit-pair [:hint-column [:symbol right-col]] [:hint-column [:symbol left-col]]]
-                               {:left left-col :right right-col}
-                               :else (throw (ex-info "Unknown explicit join columns" {:_ pair}))))
-                           pairs))
+                     (mapv explicit-pair pairs))
 
               ;; Hint column modifier: one or more columns naming which
               ;; relation is meant. They identify it rather than specify it -
@@ -120,8 +133,11 @@
       (seq steps) (assoc :path (mapv json-step steps))
       column-function (assoc :column-function column-function))))
 
+(declare normalize-value)
+
 (defn- -normalize-column [column]
   (match column
+    [:aliased-column [:computed-column node [:alias [:symbol ca]]]] {:computed (normalize-value node) :column-alias ca}
     [:aliased-column [:alias [:symbol a]] [:star _star]] {:alias a :column "" :symbol "*"}
     [:aliased-column col]                                (column-info col)
     [:aliased-column col [:alias [:symbol ca]]]          (assoc (column-info col) :column-alias ca)
@@ -240,6 +256,9 @@
   (let [column-info (extract-column-info column-pattern)
         column-dt (make-column column-info cast-type)
         value-dt (cond
+                   (and (vector? rhs) (= (first rhs) :call))
+                   {:type :computed :node (normalize-value rhs)}
+
                    (and (vector? rhs) (= (first rhs) :column))
                    (let [rhs-info (extract-column-info rhs)]
                      (make-column rhs-info))
@@ -318,8 +337,26 @@
 
     :else nil))
 
+(defn- call? [node]
+  (and (vector? node) (= :call (first node))))
+
+(defn- parse-call-condition
+  "A function call on the right of a comparison, `created_at > now()`, or
+  nil. Kept out of parse-condition for the same reason as
+  parse-in-condition."
+  [condition]
+  (match condition
+    [:condition column-pattern [op] (rhs :guard call?)]
+    (make-condition column-pattern (variable-operator op) rhs)
+
+    [:condition column-pattern [op] (rhs :guard call?) [:cast cast-type]]
+    (make-condition column-pattern (variable-operator op) rhs cast-type)
+
+    :else nil))
+
 (defn- parse-condition [condition]
   (or
+   (parse-call-condition condition)
    (parse-in-condition condition)
    (match condition
      [:condition column-pattern [op] [:variable n]]
@@ -566,16 +603,38 @@
       (throw (ex-info "Unknown GROUP column" {:_ column})))
     info))
 
+(declare normalize-conditions)
+
+(defn- normalize-aggregate
+  "One aggregate after `=>`: {:kind :aggregate :fn :arg :filter}, with
+  :column-alias when it is named with `as`. `count` takes no argument."
+  [[_ head & more]]
+  (let [filter-node (some #(when (= :conditions (first %)) %) more)
+        alias-node (some #(when (= :alias (first %)) %) more)
+        [fn-name args cast] (if (= "count" head)
+                              ["count" [] nil]
+                              (let [[_ [_ n] & args] head
+                                    cast (some #(when (= :cast (first %)) (second %)) args)]
+                                [n (remove #(= :cast (first %)) args) cast]))]
+    (when cast
+      (throw (ex-info (str "A cast can't follow an aggregate. Cast its argument: `" fn-name "(x::" cast ")`.") {:error-type "parse"})))
+    (computed/check-call fn-name (count args) true)
+    (cond-> {:kind :aggregate
+             :fn (s/lower-case fn-name)
+             :arg (some-> (first args) normalize-value)
+             :filter (some-> filter-node normalize-conditions)}
+      alias-node (assoc :column-alias (-> alias-node second second)))))
+
 (defmethod -normalize-op :GROUP [[_ payload]]
   (match payload
     [:group-args [:columns & columns] [:aggregate-functions & functions]]
     {:type :group
      :value {:columns (mapv -normalize-group-column columns)
-             :functions (map second functions)}}
+             :functions (mapv normalize-aggregate functions)}}
     [:group-args [:columns & columns]]
     {:type :group
      :value {:columns (mapv -normalize-group-column columns)
-             :functions ["count"]}}
+             :functions [{:kind :aggregate :fn "count" :arg nil :filter nil}]}}
     :else (throw (ex-info "Unknown GROUP operation" {:_ payload}))))
 
 ;; -----
@@ -619,6 +678,9 @@
     [:update-assignment column-pattern [:variable n]]
     {:column (extract-column-info column-pattern) :value (dt/variable n)}
 
+    [:update-assignment column-pattern (call :guard call?)]
+    {:column (extract-column-info column-pattern) :value {:type :computed :node (normalize-value call)}}
+
     ;; Column-to-column assignment: `update! name = country`. Built as a
     ;; typed column, like a column on the right of a where: comparison. It
     ;; used to be a bare {:alias :column} map with no :type, which eval
@@ -660,6 +722,51 @@
                                    :partial-column (extract-column-info column-pattern)}}
 
     :else (throw (ex-info "Unknown UPDATE-PARTIAL operation" {:_ operation}))))
+
+;; ---------------
+;; COMPUTED VALUES
+;; ---------------
+;;
+;; A tree of pine.computed nodes. Conditions stay [column operator value]
+;; triples, as parse-condition gives them; pine.ast.value resolves them the
+;; way where: does.
+
+(defn- normalize-conditions
+  "A [:conditions ...] node as a :condition node."
+  [[_ & conditions]]
+  {:kind :condition :conditions (mapv (comp :value parse-condition) conditions)})
+
+(defn- normalize-literal [[_ [kind value :as literal]]]
+  (case kind
+    :string (parse-strings literal)
+    :date (dt/date value)
+    :number (dt/number value)
+    :boolean (dt/pine-symbol value)
+    :null (dt/pine-symbol "NULL")))
+
+(defn- with-cast [node children]
+  (if-let [cast (some #(when (= :cast (first %)) (second %)) children)]
+    (assoc node :cast cast)
+    node))
+
+(defn normalize-value
+  "A parsed computed value (computed-column's value, a call's argument, ...)
+  as a pine.computed node."
+  [[tag & children :as node]]
+  (case tag
+    :paren-value (normalize-value (first children))
+    :condition-value (normalize-conditions (first children))
+    :if-value (let [[condition then else] children]
+                (cond-> {:kind :if :when (normalize-conditions condition) :then (normalize-value then)}
+                  else (assoc :else (normalize-value else))))
+    :call (let [[[_ fn-name] & args] children
+                args (remove #(= :cast (first %)) args)]
+            (computed/check-call fn-name (count args) false)
+            (with-cast {:kind :call :fn (s/lower-case fn-name) :args (mapv normalize-value args)} children))
+    (:value-column :cast-column) (with-cast (merge {:kind :column :alias nil} (extract-column-info (first children))) children)
+    :literal {:kind :literal :value (normalize-literal node)}
+    :variable {:kind :literal :value (dt/variable (first children))}
+    (throw (ex-info "Unknown computed value" {:_ node}))))
 
 ;; -----
 ;; PATHS
@@ -742,6 +849,10 @@
 
       (odd? (count (re-seq #"'" (s/replace expression "''" ""))))
       "A string is missing its closing quote. To put an apostrophe inside a string, write it twice: 'O''Brien'."
+
+      ;; `s: coalesce(a, b)` with no `as`: a computed value has to be named.
+      (and (re-find #"(?:select:|s:)[^|]*$" before) (re-find #"[)'0-9]\s*$" before) (re-find #"^\s*(?:,|\||$)" after))
+      "A computed value in select: needs a name: `coalesce(a, b) as name`."
 
       (and (re-find #"(?:where:|w:)[^|]*$" before) (re-find #"^\s*(?:,|and\b)" after))
       "Join conditions in one where: with `or`. To require several, add a where: for each: `| where: a = 1 | where: b = 2`."

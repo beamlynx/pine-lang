@@ -35,7 +35,7 @@
   ([state value per]
    (if (seq per)
      (let [i (:index state)
-           columns (mapv #(assoc (path/resolve-column state %) :operation-index i) per)]
+           columns (mapv #(assoc (or (path/computed-ref state %) (path/resolve-column state %)) :operation-index i) per)]
        (assoc state :limit-per {:n value
                                 :columns columns
                                 ;; Ranks the rows inside each group: the order:
