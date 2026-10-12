@@ -4,7 +4,8 @@ Turn one SQL `SELECT` into a Pine expression that returns the same rows.
 
 ## Why
 
-People arrive with SQL: from logs, dashboards, an ORM's debug output, a colleague's message. beamlynx
+People arrive with SQL: from logs, dashboards, an ORM's debug output, a colleague's message. AI
+agents write SQL well too. beamlynx
 draws a Pine expression on its canvas, with its tables, joins and conditions, and lets you edit it by
 clicking. Converting the SQL to Pine gives a pasted query the same view.
 
@@ -39,7 +40,12 @@ On failure, `error` says what and where, and `error-type` says which kind:
 Nothing runs, so no connection is needed and no access policy applies. With one, names take the
 database's spelling (see [Names and case](#names-and-case)). The request may carry `connection-id`;
 without it, the selected connection is used. A connection that can't be read is skipped, never an
-error. The endpoint isn't on the MCP surface, since agents write Pine.
+error.
+
+AI agents use it too. beamlynx-desktop's MCP tool `run_query` accepts SQL, which beamlynx-ui
+converts here and then runs as Pine through `/eval`, with the connection's access policy and writes
+refused. SQL never runs, so every query still passes the AST, where the policy applies. The agent
+gets the Pine back, not SQL.
 
 ## What converts
 
