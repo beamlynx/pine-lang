@@ -10,11 +10,11 @@
         {:keys [alias column]} column
         current-alias (or alias (:current state))
         table-info (get (:aliases state) current-alias)
-        db-type (dt/get-column-type (:references state) current-alias column table-info)]
+        column-info (dt/get-column (:references state) current-alias column table-info)]
     ;; An unbound $variable keeps its name; see where.clj's resolve-condition.
     ;; Another column is not a literal, so there is nothing to convert.
-    (if (and db-type (not (#{:variable :column} (:type value))))
-      (assoc assignment :value (dt/convert-value-to-db-type value db-type))
+    (if (and (:type column-info) (not (#{:variable :column} (:type value))))
+      (assoc assignment :value (dt/convert-value-for-column value column-info))
       assignment)))
 
 (defn- into-key

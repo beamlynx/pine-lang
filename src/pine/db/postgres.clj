@@ -71,7 +71,12 @@ WHERE con.contype = 'f'
   bool, timestamptz, bpchar) rather than information_schema's ANSI display
   name (integer, boolean, timestamp with time zone, character) --
   convert-value-to-db-type (data_types.clj) already matches both spellings
-  side by side for every case this mattered for."
+  side by side for every case this mattered for.
+
+  enum_schema is the schema of the column's type when that type is an enum,
+  and NULL otherwise. With data_type (the enum's own name), it names the
+  type a string is cast to before it is compared with the column: Postgres
+  has no `=` between an enum and the varchar a string is bound as."
   [pool]
   (prn (format "Loading all columns..."))
   (let [opts {:as-arrays? true}
@@ -84,11 +89,13 @@ WHERE con.contype = 'f'
   (CASE WHEN t.typname IN ('varchar', 'bpchar') AND a.atttypmod > 4
         THEN a.atttypmod - 4 END) AS character_maximum_length,
   (CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END) AS is_nullable,
-  pg_get_expr(ad.adbin, ad.adrelid) AS column_default
+  pg_get_expr(ad.adbin, ad.adrelid) AS column_default,
+  (CASE WHEN t.typtype = 'e' THEN tn.nspname END) AS enum_schema
 FROM pg_attribute a
 JOIN pg_class c ON c.oid = a.attrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
 JOIN pg_type t ON t.oid = a.atttypid
+JOIN pg_namespace tn ON tn.oid = t.typnamespace
 LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
 WHERE a.attnum > 0
   AND NOT a.attisdropped
