@@ -725,7 +725,7 @@
   ;; error with error-type sql-parse-error, sql-unsupported or internal.
   ;; Nothing runs, so it needs no connection. With `connection-id`, or the
   ;; selected connection, names take the database's spelling (see
-  ;; docs/sql-to-pine.md). An agent's SQL comes here too (MCP run_query),
+  ;; docs/sql-to-pine.md). An agent's SQL comes here too (MCP run_sql_as_pine),
   ;; and then runs as the Pine, through /eval and its access policy.
   (POST "/api/v1/sql-to-pine" {params :params}
     (let [{:keys [query connection-id]} params]
