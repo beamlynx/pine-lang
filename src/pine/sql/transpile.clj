@@ -1363,8 +1363,12 @@
                                 (= k (get-in % [:left :column :qualifier])))
                           (dissoc q :joins))
         test? (set tests)
-        others (concat (expr-columns (walk/prewalk #(if (test? %) {:kind :null} %) (dissoc q :joins)))
-                       (mapcat #(some-> (:on %) predicate-columns) (concat (take ji (:joins q)) (drop (inc ji) (:joins q)))))]
+        ;; Every mention of k outside the tests, as anti-join looks for
+        ;; them: the select list, the other joins, GROUP BY, HAVING, ORDER
+        ;; BY, DISTINCT ON and WHERE.
+        untested (walk/prewalk #(if (test? %) {:kind :null} %) q)
+        others (concat (query-columns (assoc untested :joins (vec (concat (take ji (:joins q)) (drop (inc ji) (:joins q))))))
+                       (some-> (:where untested) predicate-columns))]
     (when (and (= :left type) k-col distinct-values? (= 1 (get counts (:table k-ref)))
                ;; `WHERE k.c IS NULL` on its own is the anti-join's.
                (not-any? (fn [p] (and (= :is-null (:op p)) (not (:negated p)) (some #{p} tests)))

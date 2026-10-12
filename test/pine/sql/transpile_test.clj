@@ -974,6 +974,11 @@ COMMIT;
                          company_document as g | select: id, if id in k then 'dup' as tag, id not in k as fresh"
                         [] keyed-schema))
 
+  (testing "Mentioned anywhere else, as in ORDER BY, it stays a join, whose DISTINCT Pine can't say"
+    (refuses "with k as (select distinct e.company_id from employee e)
+              select c.id, (k.company_id is not null) as has_staff from company c left join k on k.company_id = c.id order by k.company_id"
+             "DISTINCT isn't in Pine"))
+
   (testing "Without DISTINCT the join can repeat rows, so it stays a join"
     (converts-to-blocks "with k as (select e.company_id from employee e)
                          select c.id, (k.company_id is not null) as has_staff from company c left join k on k.company_id = c.id"
