@@ -723,9 +723,10 @@
 
   ;; One SQL SELECT as a Pine expression: {:expression :warnings}, or an
   ;; error with error-type sql-parse-error, sql-unsupported or internal.
-  ;; Nothing runs, so it needs no connection. `connection-id` is accepted
-  ;; for when the conversion reads the schema (see
-  ;; docs/sql-to-pine.md). Not on the MCP surface: agents write Pine.
+  ;; Nothing runs, so it needs no connection. With `connection-id`, or the
+  ;; selected connection, names take the database's spelling (see
+  ;; docs/sql-to-pine.md). An agent's SQL comes here too (MCP run_query),
+  ;; and then runs as the Pine, through /eval and its access policy.
   (POST "/api/v1/sql-to-pine" {params :params}
     (let [{:keys [query connection-id]} params]
       (or (param-problem params :sql? true)
