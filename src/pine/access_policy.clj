@@ -219,7 +219,8 @@
           (if-let [conditions (:or entry)] conditions [entry])))
 
 (defn check-references
-  "Throws when where:, order: or group: names a column the policy hides.
+  "Throws when where:, order:, group: or `limit: N per` names a column the
+  policy hides.
   Redaction only touches the SELECT list, so filtering, sorting or grouping
   on a hidden column still read its values: `where: title like 'a%'`
   repeated letter by letter recovers a hidden title from row counts alone.
@@ -228,15 +229,16 @@
   a named result or checkpoint (its query was built under the same policy,
   so a hidden column there already holds the redacted literal), and
   catalog relations."
-  [{:keys [where order group current aliases] :as state} rules]
+  [{:keys [where order group limit-per current aliases] :as state} rules]
   (when (seq rules)
     (doseq [[alias column] (concat (mapcat #(where-columns current %) where)
                                    (map (juxt :alias :column) order)
-                                   (map (juxt :alias :column) group))
+                                   (map (juxt :alias :column) group)
+                                   (map (juxt :alias :column) (:columns limit-per)))
             :when (and (not (s/blank? column))
                        (not= "id" column)
                        (not (get-in aliases [alias :ast]))
                        (sensitive-column? state rules {:alias alias :column column}))]
       (throw (ex-info (str "`" alias "." column "` is hidden by the access policy, so it can't be used in "
-                           "where:, order: or group:.")
+                           "where:, order:, group: or after `per`.")
                       {:error-type "policy" :alias alias :column column})))))
