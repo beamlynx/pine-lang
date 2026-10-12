@@ -8,3 +8,5 @@ desktop/build
 .calva
 .nrepl-port
 scratch.clj
+# Git worktrees made by Claude Code agents. Each is its own checkout.
+.claude/worktrees/
