@@ -23,19 +23,19 @@ statement     := <ws?> with? (select | update | delete) <ws?> (<";"> <ws?>)?
 with          := <WITH> <ws> cte (<ws?> <","> <ws?> cte)* <ws?>
 cte           := identifier <ws> <AS> <ws?> <"("> <ws?> select <ws?> <")">
 
-select        := <SELECT> <ws> (distinct-on | distinct)? select-list <ws> from join* where? group? order? limit?
+select        := <SELECT> <ws> (distinct-on | distinct)? select-list <ws> from join* where? group? having? order? limit?
 distinct      := <DISTINCT> <ws>
 distinct-on   := <DISTINCT> <ws?> <ON> <ws?> <"("> <ws?> column (<ws?> <","> <ws?> column)* <ws?> <")"> <ws?>
 
 select-list   := select-item (<ws?> <","> <ws?> select-item)*
-select-item   := star | alias-star | count-star as-alias? | row-number as-alias? | column as-alias?
+select-item   := star | alias-star | count-star as-alias? | row-number as-alias? | column as-alias? | computed as-alias?
 star          := <"*">
 alias-star    := identifier <ws?> <"."> <ws?> <"*">
 count-star    := <COUNT> <ws?> <"("> <ws?> (<"*"> | <"1">) <ws?> <")">
 (* ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...): Pine's limit: N per,
    when a later query keeps rows with rn = 1 or rn <= N. *)
 row-number    := <ROW_NUMBER> <ws?> <"("> <ws?> <")"> <ws?> <OVER> <ws?> <"("> <ws?> partition? window-order? <")">
-partition     := <PARTITION> <ws> <BY> <ws> column (<ws?> <","> <ws?> column)* <ws?>
+partition     := <PARTITION> <ws> <BY> <ws> (column | computed) (<ws?> <","> <ws?> (column | computed))* <ws?>
 window-order  := <ORDER> <ws> <BY> <ws> order-item (<ws?> <","> <ws?> order-item)* <ws?>
 <as-alias>    := <ws> (<AS> <ws>)? alias
 alias         := identifier
@@ -72,8 +72,13 @@ and           := not-expr (<ws?> <AND> <ws?> not-expr)+
 not           := <NOT> <ws?> not-expr
 <paren>       := <"("> <ws?> or-expr <ws?> <")">
 
-<comparison>  := compare | like | is-null | is-distinct | in | in-select | between | truthy
-compare       := operand <ws?> cmp-op <ws?> operand
+<comparison>  := compare | like | is-null | is-distinct | in | in-select | between | truthy | call-truthy
+(* A function or a count is compared too: in HAVING (`COUNT(1) > 1`), and
+   so a function in WHERE is refused by name rather than at a parse error. *)
+compare       := cmp-operand <ws?> cmp-op <ws?> cmp-operand
+<cmp-operand> := operand | call | count-star
+(* A function that is true or false on its own: BOOL_OR(...) in HAVING. *)
+call-truthy   := call
 cmp-op        := "=" | "<>" | "!=" | ">=" | "<=" | ">" | "<"
 like          := operand <ws> negated? like-op <ws> operand
 like-op       := LIKE | ILIKE
@@ -86,19 +91,44 @@ between       := operand <ws> negated? <BETWEEN> <ws> operand <ws> <AND> <ws> op
 truthy        := column
 negated       := <NOT> <ws>
 
-operand       := (column | string | number | boolean | null | variable) cast? | cast-fn
+operand       := (column | string | number | boolean | null | variable) cast? | cast-fn | now
 cast          := <ws?> <"::"> <ws?> type-name
 cast-fn       := <CAST> <ws?> <"("> <ws?> (column | string | number) <ws> <AS> <ws> type-name <ws?> <")">
 type-name     := #"(?i)[A-Za-z_][A-Za-z0-9_]*(?:\s+(?:with|without)\s+time\s+zone)?"
 
 group         := <ws> <GROUP> <ws> <BY> <ws> column (<ws?> <","> <ws?> column)*
+having        := <ws> <HAVING> <ws?> predicate
 order         := <ws> <ORDER> <ws> <BY> <ws> order-item (<ws?> <","> <ws?> order-item)*
-order-item    := (column | count-star | position) (<ws> direction)?
+order-item    := (column | count-star | position | computed) (<ws> direction)?
 position      := #"[0-9]+"
 direction     := ASC | DESC
 limit         := <ws> <LIMIT> <ws> #"[0-9]+"
 
 column        := (identifier <ws?> <"."> <ws?>)? identifier
+
+(* ---------------------------------------------------------------------
+   Computed values: COALESCE(a, b), 'att:' || x, CASE WHEN ... END,
+   (x IS NOT NULL), MIN(x) FILTER (WHERE ...), BOOL_OR(x = 'v'). Pine says
+   these as computed values (docs/computed-values.md). A bare column or
+   literal is never a computed value here, so each reads one way.
+   --------------------------------------------------------------------- *)
+computed      := concat | call | case | paren-value | now
+<value>       := concat | value-term
+concat        := value-term (<ws?> <"||"> <ws?> value-term)+
+<value-term>  := call | case | paren-value | operand
+(* A condition in parentheses is a value, true or false: (x IS NOT NULL). *)
+paren-value   := <"("> <ws?> (strict-predicate | value) <ws?> <")">
+(* A function call. A count and NOW() have rules of their own. *)
+call          := fn-name <ws?> <"("> <ws?> (call-arg (<ws?> <","> <ws?> call-arg)*)? <ws?> <")"> filter? cast?
+fn-name       := #"(?!(?i:select|from|where|join|inner|left|right|full|outer|cross|natural|on|using|and|or|not|in|is|null|like|ilike|between|group|order|by|limit|offset|fetch|having|union|intersect|except|distinct|all|as|asc|desc|true|false|case|when|then|else|end|exists|with|escape|similar|window|over|nulls|lateral|cast|returning|into|values|set|recursive|count|now|row_number|filter|having|when|then|else|end|partition)\b)[A-Za-z_][A-Za-z0-9_]*"
+<call-arg>    := strict-predicate | value
+filter        := <ws?> <FILTER> <ws?> <"("> <ws?> <WHERE> <ws> predicate <ws?> <")">
+case          := <CASE> <ws> when+ (<ELSE> <ws> value <ws>)? <END>
+when          := <WHEN> <ws> predicate <ws> <THEN> <ws> value <ws>
+(* A condition that isn't a column or a function on its own, so an argument
+   like COALESCE(x, ...) reads as a value, not as `WHERE x`. *)
+strict-predicate := or | and | not | compare | like | is-null | is-distinct | in | in-select | between
+now           := <NOW> <ws?> <"("> <ws?> <")">
 
 <identifier>  := bare-identifier | quoted-identifier
 bare-identifier   := #"(?!(?i:select|from|where|join|inner|left|right|full|outer|cross|natural|on|using|and|or|not|in|is|null|like|ilike|between|group|order|by|limit|offset|fetch|having|union|intersect|except|distinct|all|as|asc|desc|true|false|case|when|then|else|end|exists|with|escape|similar|window|over|nulls|lateral|cast|returning|into|values|set|recursive)\b)[A-Za-z_][A-Za-z0-9_]*"
@@ -152,3 +182,11 @@ UPDATE  := #"(?i)update\b"
 SET     := #"(?i)set\b"
 DELETE  := #"(?i)delete\b"
 WITH    := #"(?i)with\b"
+HAVING  := #"(?i)having\b"
+FILTER  := #"(?i)filter\b"
+CASE    := #"(?i)case\b"
+WHEN    := #"(?i)when\b"
+THEN    := #"(?i)then\b"
+ELSE    := #"(?i)else\b"
+END     := #"(?i)end\b"
+NOW     := #"(?i)now\b"

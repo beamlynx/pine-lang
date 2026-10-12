@@ -31,6 +31,7 @@
   `c.tenantId` is written `.tenantId` when the table has a `tenantId`
   column, though Postgres would fold it to `tenantid`. See `spelling`."
   (:require [clojure.string :as s]
+            [clojure.walk :as walk]
             [pine.db.references :as refs]
             [pine.parser :as pine]
             [pine.sql.parser :as sp]))
@@ -155,7 +156,11 @@
     (:string :number :boolean :variable) (dissoc operand :at :cast)
     ;; Left for the caller, which knows whether a column can go here.
     :column (dissoc operand :at)
-    :null (refuse at "NULL can only be tested with IS NULL or IS NOT NULL.")))
+    :now {:kind :now}
+    :null (refuse at "NULL can only be tested with IS NULL or IS NOT NULL.")
+    :call (refuse at (str "Functions like " (:fn operand) "() aren't in Pine here."))
+    :count (refuse at "COUNT(*) here needs GROUP BY, with HAVING.")
+    (refuse at "A computed value here isn't in Pine. A condition compares a column with a value.")))
 
 (defn- column-cast [{:keys [cast at]}]
   (when cast
@@ -176,6 +181,11 @@
 (defn- column-operand? [o] (= :column (:kind o)))
 
 (defn- compare-atom [tables {:keys [operator left right at]}]
+  (doseq [o [left right]
+          :when (#{:call :count :concat :pred :case} (:kind o))]
+    (if (= :call (:kind o))
+      (refuse (:at o) (str "Functions like " (:fn o) "() aren't in Pine here. A condition compares a column with a value, or now()."))
+      (refuse (:at o) "A comparison here needs a column on one side and a value on the other.")))
   (let [[left right operator] (if (and (not (column-operand? left)) (column-operand? right))
                                 [right left (mirrored operator)]
                                 [left right operator])]
@@ -217,10 +227,12 @@
     :is-null {:col (left-column tables p)
               :cast (column-cast (:left p))
               :operator (if (not= (:negated p) (boolean negate)) "is not null" "is null")}
-    :in-set {:col (left-column tables p)
-             :cast (column-cast (:left p))
-             :operator (if (not= (:negated p) (boolean negate)) "not in" "in")
-             :value {:kind :set :name (:set p)}}
+    :in-set (cond-> {:col (left-column tables p)
+                     :cast (column-cast (:left p))
+                     :operator (if (not= (:negated p) (boolean negate)) "not in" "in")
+                     :value {:kind :set :name (:set p)}}
+              (:guard p) (assoc :guard true))
+    :call-truthy (refuse (:at p) (str "Functions like " (get-in p [:call :fn]) "() aren't in Pine here."))
     :in (let [_ (when (:subquery p) (refuse (:at p) "A subquery here isn't in Pine. One converts after IN in WHERE."))
               vs (mapv value (:values p))]
           (when-not (every? #(#{:string :number} (:kind %)) vs)
@@ -291,10 +303,192 @@
                        [[]]
                        (map #(cnf % at) (:or node)))))
 
+(defn- check-guards
+  "A test on a LEFT JOIN that became `x in k` (semi-joins) is exact where a
+  condition is only kept when true, unless it was negated and a NULL could
+  make `not in` unknown. Then it is refused."
+  [clauses at]
+  (doseq [clause clauses, {:keys [guard operator]} clause
+          :when (and guard (= "not in" operator))]
+    (refuse at "This IS NULL test on a LEFT JOIN can't be said exactly in Pine without knowing the columns are NOT NULL. Convert with the connection."))
+  clauses)
+
 (defn- plan-where
   "Clauses for the WHERE and for any inner-join ON conditions moved into it."
   [tables predicates]
-  (vec (mapcat (fn [p] (cnf (nnf tables p false) (:at p))) predicates)))
+  (vec (mapcat (fn [p] (check-guards (cnf (nnf tables p false) (:at p)) (:at p))) predicates)))
+
+;; ---------------
+;; COMPUTED VALUES
+;; ---------------
+;;
+;; COALESCE, ||, CASE, NOW(), a condition used as a value, and aggregates
+;; become Pine computed values (docs/computed-values.md). A value is
+;; rendered to Pine text here, against the tables in scope.
+
+(def ^:private aggregates
+  "SQL aggregate to Pine aggregate."
+  {"min" "min" "max" "max" "sum" "sum" "avg" "avg" "bool_or" "any" "bool_and" "all" "every" "all"})
+
+(defn- strip-at
+  "A value without its offsets, to compare two values as written."
+  [x]
+  (walk/postwalk #(if (map? %) (dissoc % :at) %) x))
+
+(defn- aggregate? [e]
+  (and (map? e) (or (= :count (:kind e)) (and (= :call (:kind e)) (contains? aggregates (:fn e))))))
+
+(defn- agg-key [e] (strip-at (dissoc e :as)))
+
+(defn- find-nodes
+  "Every map in `x` that `pred` is true of, not looking inside those."
+  [pred x]
+  (cond (and (map? x) (pred x)) [x]
+        (map? x) (mapcat #(find-nodes pred %) (vals x))
+        (sequential? x) (mapcat #(find-nodes pred %) x)
+        :else []))
+
+(defn- expr-columns
+  "Every column a SQL value or predicate mentions, as column maps."
+  [x]
+  (concat (map :column (find-nodes #(= :column (:kind %)) x))
+          (map :column (find-nodes #(= :truthy (:op %)) x))))
+
+(defn- rewrite
+  "`x` with each value or predicate node that `f` returns a node for
+  replaced by it, looking inside the others."
+  [f x]
+  (or (f x)
+      (let [r (partial rewrite f)]
+        (cond
+          (:op x) (cond-> x
+                    (:args x) (update :args #(mapv r %))
+                    (:arg x) (update :arg r)
+                    (:left x) (update :left r)
+                    (:right x) (update :right r)
+                    (:low x) (update :low r)
+                    (:high x) (update :high r)
+                    (:values x) (update :values #(mapv r %))
+                    (:call x) (update :call r))
+          (:kind x) (cond-> x
+                      (:args x) (update :args #(mapv r %))
+                      (:filter x) (update :filter r)
+                      (:pred x) (update :pred r)
+                      (:whens x) (update :whens #(mapv (fn [[p v]] [(r p) (r v)]) %))
+                      (:else x) (update :else r))
+          :else x))))
+
+(defn- unique-name [taken base]
+  (if (taken base) (first (remove taken (map #(str base "_" %) (iterate inc 2)))) base))
+
+(defn- make-col-ref
+  "How a column is written: bare when it belongs to the table the pipe ends
+  on, alias.column otherwise."
+  [tables current]
+  (let [alias-of (fn [t] (let [{:keys [alias table]} (nth tables t)] (or alias table)))]
+    (fn [{:keys [t name]}] (if (= t current) name (str (alias-of t) "." name)))))
+
+(declare render-atom quote-string)
+
+(defn- conditions-pine
+  "A SQL predicate as Pine conditions joined with `or`. `value?` is true
+  for a condition used as a true or false value. There a test that became
+  `x in k` (semi-joins) and could be unknown becomes `if x in k then true
+  else false`, which is never NULL, as the LEFT JOIN's test isn't."
+  [{:keys [tables col-ref]} p value?]
+  (let [clauses (cnf (nnf tables p false) (:at p))]
+    (when (next clauses)
+      (refuse (:at p) "AND inside a value isn't in Pine. The conditions of one value are joined with `or`."))
+    (let [[clause] clauses
+          guarded (some #(when (:guard %) %) clause)]
+      (if (and value? guarded)
+        (do (when (next clause)
+              (refuse (:at p) "This test on a LEFT JOIN, next to others in one value, can't be said exactly in Pine. Convert with the connection."))
+            (let [in? (= "in" (:operator guarded))]
+              (str "if " (render-atom col-ref (assoc guarded :operator "in"))
+                   " then " (if in? "true" "false") " else " (if in? "false" "true"))))
+        (do (check-guards clauses (:at p))
+            (s/join " or " (map #(render-atom col-ref %) clause)))))))
+
+(defn- literal-pine [{:keys [kind value name cast at]}]
+  (when (and cast (not (dropped-value-casts cast)))
+    (refuse at (str "A cast to " cast " isn't in Pine. Pine casts to text or uuid.")))
+  (case kind
+    :string (quote-string value)
+    :number value
+    :boolean (str value)
+    :variable (str "$" name)
+    :null "null"))
+
+(declare expr-pine)
+
+(defn- if-text? [t] (s/starts-with? t "if "))
+
+(defn- case-pine
+  "CASE WHEN a THEN x WHEN b THEN y ELSE z END as `if a then x else if b
+  then y else z`. An if right after `then` goes in parentheses."
+  [ctx {:keys [whens else]}]
+  (let [then-text (fn [v] (let [t (expr-pine ctx v)] (if (if-text? t) (str "(" t ")") t)))]
+    (str (s/join " else " (map (fn [[p v]] (str "if " (conditions-pine ctx p false) " then " (then-text v))) whens))
+         (when else (str " else " (expr-pine ctx else))))))
+
+(defn- concat-args [e]
+  (mapcat #(if (= :concat (:kind %)) (concat-args %) [%]) (:args e)))
+
+(defn- expr-pine
+  "A SQL value as a Pine computed value. `ctx` has :tables and :col-ref,
+  and :agg, a function giving an aggregate's Pine text, where aggregates
+  may appear."
+  [{:keys [tables col-ref agg] :as ctx} {:keys [kind at] :as e}]
+  (case kind
+    :column (let [c (resolve-column tables (:column e))
+                  cast (column-cast e)]
+              (str (col-ref c) (when cast (str "::" cast))))
+    (:string :number :boolean :variable :null) (literal-pine e)
+    :now "now()"
+    ;; `a || b` is NULL when either part is, and so is Pine's concat().
+    :concat (str "concat(" (s/join ", " (map #(expr-pine ctx %) (concat-args e))) ")")
+    :pred (conditions-pine ctx (:pred e) true)
+    :case (case-pine ctx e)
+    :count (if agg (agg e) (refuse at "COUNT(*) here needs GROUP BY."))
+    :call (let [{f :fn args :args cast :cast} e]
+            (when (and (:filter e) (not (aggregate? e)))
+              (refuse at (str "FILTER only goes with an aggregate, not " f "().")))
+            (cond
+              (aggregate? e)
+              (if agg (agg e) (refuse at (str "An aggregate like " f "() needs GROUP BY.")))
+
+              (= "coalesce" f)
+              (do (when (< (count args) 2) (refuse at "COALESCE() needs two or more arguments."))
+                  (str "coalesce(" (s/join ", " (map #(expr-pine ctx %) args)) ")"
+                       (when cast (str "::" (column-cast e)))))
+
+              (= "concat" f)
+              (refuse at "CONCAT() skips NULL arguments on Postgres, and Pine's concat() doesn't. Write a || b: Pine's concat() matches that.")
+
+              :else
+              (refuse at (str "Functions like " f "() aren't in Pine."))))))
+
+(defn- default-agg-name
+  "Pine's own default name for an aggregate: `min_id` for min(a.id)."
+  [e]
+  (if (= :count (:kind e))
+    "count"
+    (let [first-col (:name (first (expr-columns (:args e))))]
+      (str (aggregates (:fn e)) (when first-col (str "_" first-col))))))
+
+(defn- agg-pine
+  "An aggregate as Pine, without its name: `min(id::text) where type = 'x'`."
+  [ctx e]
+  (if (= :count (:kind e))
+    "count"
+    (let [{f :fn args :args filter-p :filter at :at} e]
+      (when (not= 1 (count args))
+        (refuse at (str (s/upper-case f) "() takes one argument in Pine.")))
+      (when (and (= :call (:kind (first args))) (aggregate? (first args)))
+        (refuse at "An aggregate inside another isn't in Pine."))
+      (str (aggregates f) "(" (expr-pine (dissoc ctx :agg) (first args)) ")"
+           (when filter-p (str " where " (conditions-pine (dissoc ctx :agg) filter-p false)))))))
 
 ;; -------
 ;; TABLES
@@ -308,14 +502,16 @@
   earlier.col, else nil."
   [tables i {:keys [op operator left right]}]
   (when (and (= :compare op) (= "=" operator)
-             (column-operand? left) (column-operand? right)
-             (not (:cast left)) (not (:cast right)))
-    (let [l (resolve-column tables (:column left))
-          r (resolve-column tables (:column right))
+             (column-operand? left) (column-operand? right))
+    (let [l (assoc (resolve-column tables (:column left)) :cast (column-cast left))
+          r (assoc (resolve-column tables (:column right)) :cast (column-cast right))
           [new old] (cond (and (= i (:t l)) (< (:t r) i)) [l r]
                           (and (= i (:t r)) (< (:t l) i)) [r l])]
       (when new
-        [(:t old) {:new (:name new) :anchor (:name old)}]))))
+        ;; A cast stays with its column: `.resourceableId = .id ::text`.
+        [(:t old) (cond-> {:new (:name new) :anchor (:name old)}
+                    (:cast new) (assoc :new-cast (:cast new))
+                    (:cast old) (assoc :anchor-cast (:cast old)))]))))
 
 (defn- plan-join
   "{:anchor :pairs :moved [predicates]} for the i-th table's join."
@@ -335,10 +531,6 @@
             others (map first (remove second parts))
             anchors (distinct (map first pairs))]
         (when (empty? pairs)
-          (when-let [cast (some (fn [{:keys [op left right]}]
-                                  (when (= :compare op) (or (:cast left) (:cast right))))
-                                (conjuncts on))]
-            (refuse at (str "A cast to " cast " in a join's ON isn't in Pine. Pine joins on columns as they are.")))
           (refuse at (str "This join needs a column of `" (table-key (nth tables i)) "` = a column of an earlier table.")))
         (when (next anchors)
           (refuse at (str "This join ties `" (table-key (nth tables i)) "` to more than one table. Pine joins a table to one other.")))
@@ -426,21 +618,37 @@
             (case (:kind target)
               :count (refuse at (str "ORDER BY COUNT(*) " what "needs GROUP BY."))
               :position (refuse at (str "ORDER BY a position " what "isn't in Pine. Name the column."))
-              :column {:col (resolve-column tables (:column (or aliased target)))
-                       :direction (sort-word direction)})))
+              :expr (refuse at (str "ORDER BY an expression " what "isn't converted yet. Select it with a name, and sort by the name."))
+              :column (if (= :expr (:kind aliased))
+                        ;; A computed value's name: Pine sorts by its value.
+                        {:name (:as aliased) :direction (sort-word direction)}
+                        {:col (resolve-column tables (:column (or aliased target)))
+                         :direction (sort-word direction)}))))
         order))
 
 (defn- window-ops
   "order: and limit: N per for a ROW_NUMBER() that a later query keeps the
-  first N rows of (see plan-windows)."
-  [tables {:keys [partition order at]} {:keys [n]}]
+  first N rows of (see plan-windows). `named` gives the name of the
+  computed column an expression in PARTITION BY or ORDER BY is selected
+  as (see plan-plain)."
+  [tables {:keys [partition order at]} {:keys [n]} named]
   (when-not n
     (refuse at "ROW_NUMBER() converts only when a later query keeps its first rows, with WHERE rn = 1 or rn <= N."))
   (when (empty? partition)
     (refuse at "ROW_NUMBER() without PARTITION BY numbers the whole result. Use ORDER BY and LIMIT."))
   (cond-> []
-    (seq order) (conj {:op :order :items (order-items tables [] order "inside ROW_NUMBER() ")})
-    true (conj {:op :limit :n n :per (mapv #(resolve-column tables %) partition)})))
+    (seq order) (conj {:op :order
+                       :items (vec (map-indexed (fn [i {:keys [target direction] :as item}]
+                                                  (if (= :expr (:kind target))
+                                                    {:name (named (:expr target) "order" (inc i)) :direction (sort-word direction)}
+                                                    (first (order-items tables [] [item] "inside ROW_NUMBER() "))))
+                                                order))})
+    true (conj {:op :limit :n n
+                :per (vec (map-indexed (fn [i p]
+                                         (if (:expr p)
+                                           {:name (named (:expr p) "partition" (inc i))}
+                                           (resolve-column tables p)))
+                                       partition))})))
 
 (defn- distinct-on-ops
   "SELECT DISTINCT ON (p) ... ORDER BY p, o keeps the first row of each p in
@@ -460,18 +668,45 @@
       (seq order) (conj {:op :order :items sorted})
       true (conj {:op :limit :n 1 :per per}))))
 
-(defn- plan-plain [tables current items {:keys [order limit distinct-on] :as stmt} window]
+(defn- expr-refs
+  "The tables a SQL value reads, by index."
+  [tables e]
+  (set (map #(:t (resolve-column tables %)) (expr-columns e))))
+
+(defn- plan-plain [tables current items {:keys [order limit distinct-on] :as stmt} window warn!]
   (let [stars (fn [] (mapv (fn [t] {:star t}) (range (count tables))))
         row-number (first (filter #(= :row-number (:kind %)) items))
-        expanded (vec (mapcat (fn [{:keys [kind qualifier column as at]}]
+        expanded (vec (mapcat (fn [{:keys [kind qualifier column as at expr]}]
                                 (case kind
                                   :star (stars)
                                   :alias-star [{:star (:t (resolve-column tables {:qualifier qualifier :name "x" :at at}))}]
                                   :row-number []
                                   :column (let [col (resolve-column tables column)]
                                             [(cond-> {:col col}
-                                               (and as (not= as (:name col))) (assoc :as (pine-name! as at)))])))
-                              items))]
+                                               (and as (not= as (:name col))) (assoc :as (pine-name! as at)))])
+                                  ;; A computed value. Pine needs its name.
+                                  :expr (do (when-not as
+                                              (refuse at "Name this value with AS, like `... AS name`: Pine's select: names every computed value."))
+                                            [{:expr expr :as (pine-name! as at) :refs (expr-refs tables expr)}])))
+                              items))
+        ;; An expression in ROW_NUMBER()'s PARTITION BY or ORDER BY is a
+        ;; computed column Pine ranks by name: the selected one with the
+        ;; same value, or a new one.
+        extras (atom [])
+        taken (set (concat (keep :as expanded) (keep (comp :name :col) expanded)))
+        named (fn [e what i]
+                (let [k (strip-at e)]
+                  (or (some #(when (and (:expr %) (= k (strip-at (:expr %)))) (:as %)) (concat expanded @extras))
+                      (let [n (unique-name (into taken (map :as @extras)) (str (or (:as row-number) "rn") "_" what "_" i))]
+                        ;; Said only where the column reaches a result: see
+                        ;; transpile-statement.
+                        (warn! (str "`" n "` is a column the SQL doesn't have. Pine ranks rows by named columns, so an expression in ROW_NUMBER()'s "
+                                    (s/upper-case what) " BY is selected as one.")
+                               :extra-column)
+                        (swap! extras conj {:expr e :as n :refs (expr-refs tables e)})
+                        n))))
+        window-steps (when row-number (window-ops tables row-number window named))
+        expanded (into expanded @extras)]
     (when (and row-number (or (seq order) limit distinct-on))
       (refuse (:at row-number) "ROW_NUMBER() next to ORDER BY, LIMIT or DISTINCT ON in the same query isn't converted."))
     (when (empty? expanded)
@@ -480,14 +715,121 @@
       (not= expanded [{:star current}])
       (conj {:op :select :items expanded})
       row-number
-      (into (window-ops tables row-number window))
+      (into window-steps)
       distinct-on
       (into (distinct-on-ops tables items stmt))
       (and (seq order) (not distinct-on))
       (conj {:op :order :items (order-items tables items order "")})
       limit (conj {:op :limit :n (:value limit)}))))
 
-(defn- plan-select [tables current {:keys [select group order limit distinct distinct-on] :as stmt} warn! {:keys [window in-set-only]}]
+(defn- plan-aggregated
+  "GROUP BY with HAVING, aggregates over a value, or a computed value over
+  them. It becomes three steps, so the result has exactly the SQL's
+  columns:
+
+    group: <grouped columns> => <each aggregate, named>
+    | where: <HAVING, by the names>
+    | select: <the SQL's columns, by the names>
+
+  The where: and select: work on the group's result, which a checkpoint
+  seals (docs/checkpoints.md), so there they name its columns bare."
+  [tables current items {:keys [group having order limit at]}]
+  (let [col-ref (make-col-ref tables current)
+        ctx {:tables tables :col-ref col-ref}
+        group-cols (mapv #(resolve-column tables %) group)
+        _ (when-let [dupe (some (fn [[k n]] (when (> n 1) k)) (frequencies (map :name group-cols)))]
+            (refuse (:at (first group)) (str "Two grouped columns are both called `" dupe "`. Pine names a grouped column by its name alone.")))
+        group-name (into {} (map (fn [c] [(select-keys c [:t :name]) (:name c)]) group-cols))
+        _ (doseq [{:keys [kind at]} items
+                  :when (not (#{:column :count :expr} kind))]
+            (refuse at "Only grouped columns, aggregates and values over them can be selected with GROUP BY."))
+        ;; Each aggregate once, in the order written. One selected on its
+        ;; own with AS takes that name; the others Pine's default, made
+        ;; unique.
+        aggs (reduce (fn [acc e] (if (some #(= (agg-key e) (agg-key %)) acc) acc (conj acc e)))
+                     [] (find-nodes aggregate? [items having]))
+        direct (into {} (for [{:keys [kind expr as] :as item} items
+                              :let [e (if (= :count kind) item expr)]
+                              :when (and as (aggregate? e))]
+                          [(agg-key e) as]))
+        taken (set (concat (map :name group-cols) (keep :as items)))
+        agg-names (reduce (fn [m e]
+                            (let [k (agg-key e)]
+                              (assoc m k (or (direct k) (unique-name (into taken (vals m)) (default-agg-name e))))))
+                          {} aggs)
+        agg-name #(get agg-names (agg-key %))
+        group-text (str "group: " (s/join ", " (map col-ref group-cols))
+                        (when (seq aggs)
+                          (str " => " (s/join ", " (map #(if (= "count" (agg-name %) (default-agg-name %))
+                                                         ;; `count` is already called count.
+                                                           (agg-pine ctx %)
+                                                           (str (agg-pine ctx %) " as " (agg-name %)))
+                                                        aggs)))))
+        refs (into (set (map :t group-cols)) (mapcat #(expr-refs tables %) aggs))
+        ;; After the group:, a column is the result's column by its name.
+        result-columns (vec (concat (map :name group-cols) (map agg-name aggs)))
+        pseudo [{:table "result" :db-columns result-columns}]
+        pseudo-ctx {:tables pseudo :col-ref :name}
+        sealed (fn [x]
+                 (rewrite (fn [n]
+                            (cond
+                              (aggregate? n) {:kind :column :column {:name (agg-name n) :at (:at n)} :at (:at n)}
+                              (and (= :call-truthy (:op n)) (aggregate? (:call n)))
+                              {:op :truthy :column {:name (agg-name (:call n)) :at (:at n)} :at (:at n)}
+                              (= :column (:kind n))
+                              (let [c (select-keys (resolve-column tables (:column n)) [:t :name])]
+                                (if-let [g (group-name c)]
+                                  (assoc n :column {:name g :at (:at n)})
+                                  (refuse (:at n) (str "`" (:name (:column n)) "` is neither grouped nor inside an aggregate."))))
+                              (= :truthy (:op n))
+                              (let [c (select-keys (resolve-column tables (:column n)) [:t :name])]
+                                (assoc n :column {:name (or (group-name c) (refuse (:at n) (str "`" (:name (:column n)) "` isn't grouped."))) :at (:at n)}))))
+                          x))
+        having-ops (when having
+                     (for [clause (plan-where pseudo [(sealed having)])]
+                       {:op :text :text (str "where: " (s/join " or " (map #(render-atom :name %) clause)))}))
+        ;; The SQL's columns, in its order, under its names.
+        outputs (mapv (fn [{:keys [kind column as expr at] :as item}]
+                        (case kind
+                          :column (let [c (select-keys (resolve-column tables column) [:t :name])
+                                        g (or (group-name c) (refuse at (str "`" (:name column) "` is selected but not grouped.")))]
+                                    {:text (str g (when (and as (not= as g)) (str " as " (pine-name! as at)))) :name (or as g)})
+                          :count {:text (agg-name item) :name (agg-name item)}
+                          :expr (if (and as (aggregate? expr))
+                                  {:text (agg-name expr) :name (agg-name expr)}
+                                  (do (when-not as
+                                        (refuse at "Name this value with AS, like `... AS name`: Pine's select: names every computed value."))
+                                      {:text (str (expr-pine pseudo-ctx (sealed expr)) " as " (pine-name! as at)) :name as}))))
+                      items)
+        names (mapv :name outputs)
+        select-needed? (not= (map :text outputs) result-columns)
+        order-op (when (seq order)
+                   {:op :order
+                    :items (mapv (fn [{:keys [target direction at]}]
+                                   {:name (case (:kind target)
+                                            :count (agg-name target)
+                                            :column (let [col (:column target)
+                                                          by-alias (when-not (:qualifier col) (some #{(:name col)} names))]
+                                                      (or by-alias
+                                                          (let [c (select-keys (resolve-column tables col) [:t :name])
+                                                                g (or (group-name c) (refuse at (str "`" (:name col) "` isn't grouped, so it can't be sorted on after GROUP BY.")))]
+                                                            (or (some (fn [{:keys [kind column as]}]
+                                                                        (when (and (= :column kind) (= c (select-keys (resolve-column tables column) [:t :name]))) (or as g)))
+                                                                      items)
+                                                                (if select-needed?
+                                                                  (refuse at (str "`" (:name col) "` isn't selected, so it can't be sorted on after the select:."))
+                                                                  g)))))
+                                            (refuse at "ORDER BY here takes a selected column or an alias."))
+                                    :direction (sort-word direction)})
+                                 order)})]
+    (cond-> [{:op :text :text group-text :refs refs}]
+      true (into having-ops)
+      select-needed? (conj {:op :text :text (str "select: " (s/join ", " (map :text outputs)))})
+      order-op (conj order-op)
+      limit (conj {:op :limit :n (:value limit)})
+      true (conj {:op :columns :columns names}))))
+
+(defn- plan-select [tables current {:keys [select group order limit distinct distinct-on having] :as stmt} warn! {:keys [window in-set-only]}]
   (let [hidden (filter hidden-column? select)
         items (vec (remove hidden-column? select))]
     (when (seq hidden)
@@ -503,7 +845,12 @@
       (refuse (:at r) "ROW_NUMBER() next to GROUP BY or COUNT(*) isn't converted."))
     (when (and distinct-on (or (seq group) (some #(= :count (:kind %)) items)))
       (refuse (:at (first distinct-on)) "DISTINCT ON next to GROUP BY or COUNT(*) isn't converted."))
+    (when (and having (empty? group))
+      (refuse (:at stmt) "HAVING without GROUP BY isn't converted."))
     (cond
+      (and (seq group) (or having (some #(= :expr (:kind %)) items)))
+      (plan-aggregated tables current items stmt)
+
       (seq group)
       (plan-grouped tables items stmt warn!)
 
@@ -517,19 +864,21 @@
           [{:op :count}])
 
       :else
-      (plan-plain tables current items stmt window))))
+      (plan-plain tables current items stmt window warn!))))
 
 (defn- output-columns
   "The names of the columns a query returns, or nil when they aren't known:
   a `*` over a table whose columns aren't known."
   [tables ops]
   (let [table-columns (fn [t] (:db-columns (nth tables t)))]
-    (if-let [sel (first (filter #(= :select (:op %)) ops))]
-      (let [cols (map (fn [item]
-                        (if (contains? item :star)
-                          (table-columns (:star item))
-                          [(or (:as item) (:name (:col item)))]))
-                      (:items sel))]
+    (if-let [sel (or (first (filter #(= :columns (:op %)) ops)) (first (filter #(= :select (:op %)) ops)))]
+      (let [cols (if (= :columns (:op sel))
+                   (map vector (:columns sel))
+                   (map (fn [item]
+                          (if (contains? item :star)
+                            (table-columns (:star item))
+                            [(or (:as item) (:name (:col item)))]))
+                        (:items sel)))]
         (when (every? some? cols) (vec (apply concat cols))))
       (cond
         (some #(= :count (:op %)) ops) ["count"]
@@ -549,6 +898,7 @@
     :number value
     :boolean (str value)
     :variable (str "$" name)
+    :now "now()"
     :column (col-ref value)))
 
 (defn- render-atom [col-ref {:keys [col operator value cast]}]
@@ -564,14 +914,18 @@
 (defn- references
   "Every table index the operations refer to by alias."
   [ops current]
-  (let [cols (fn [c] (when (not= current (:t c)) [(:t c)]))]
+  (let [cols (fn [c] (when (and (:t c) (not= current (:t c))) [(:t c)]))]
     (set (mapcat (fn [{:keys [op t clause items cols-of] :as o}]
                    (case op
                      :from [t]
+                     :text (remove #{current} (:refs o))
                      :where (mapcat (fn [{:keys [col value]}]
                                       (concat (cols col) (when (= :column (:kind value)) (cols (:col value)))))
                                     clause)
-                     :select (mapcat #(if (contains? % :star) [(:star %)] (cols (:col %))) items)
+                     :select (mapcat #(cond (contains? % :star) [(:star %)]
+                                            (:expr %) (remove #{current} (:refs %))
+                                            :else (cols (:col %)))
+                                     items)
                      :group (mapcat cols (:cols o))
                      :order (mapcat #(some-> (:col %) cols) items)
                      :limit (mapcat cols (:per o))
@@ -581,10 +935,12 @@
 (defn- render [tables ops current]
   (let [referenced (references ops current)
         alias-of (fn [t] (let [{:keys [alias table]} (nth tables t)] (or alias table)))
-        col-ref (fn [{:keys [t name]}] (if (= t current) name (str (alias-of t) "." name)))]
+        col-ref (make-col-ref tables current)
+        ctx {:tables tables :col-ref col-ref}]
     (s/join
      " | "
-     (for [{:keys [op t n clause items cols] :as o} ops]
+     (for [{:keys [op t n clause items cols] :as o} ops
+           :when (not= :columns op)]
        (case op
          :table (let [{:keys [schema table db-schema db-table alias type pairs]} (nth tables t)
                       schema (or db-schema schema)]
@@ -593,19 +949,25 @@
                        (when (or alias (referenced t)) (str " as " (alias-of t)))
                        (when type (str " :" (name type)))
                        (when (seq pairs)
-                         (str " " (s/join ", " (map #(str "." (:new %) " = ." (:anchor %)) pairs))))))
+                         (str " " (s/join ", " (map #(str "." (:new %) (when (:new-cast %) (str " ::" (:new-cast %)))
+                                                          " = ." (:anchor %) (when (:anchor-cast %) (str " ::" (:anchor-cast %))))
+                                                    pairs))))))
+         :text (:text o)
          :from (str "from: " (alias-of t))
          :where (str "where: " (s/join " or " (map #(render-atom col-ref %) clause)))
-         :select (str "select: " (s/join ", " (map #(if (contains? % :star)
-                                                      (str (alias-of (:star %)) ".*")
-                                                      (str (col-ref (:col %)) (when (:as %) (str " as " (:as %)))))
+         :select (str "select: " (s/join ", " (map #(cond
+                                                      (contains? % :star) (str (alias-of (:star %)) ".*")
+                                                      (:expr %) (str (expr-pine ctx (:expr %)) " as " (:as %))
+                                                      :else (str (col-ref (:col %)) (when (:as %) (str " as " (:as %)))))
                                                    items)))
          :group (str "group: " (s/join ", " (map col-ref cols)) " => count")
          :count "count:"
          :order (str "order: " (s/join ", " (map #(str (if (:col %) (col-ref (:col %)) (:name %)) " " (:direction %)) items)))
-         :limit (str "limit: " n (when (seq (:per o)) (str " per " (s/join ", " (map col-ref (:per o))))))
+         :limit (str "limit: " n (when (seq (:per o)) (str " per " (s/join ", " (map #(if (:t %) (col-ref %) (:name %)) (:per o))))))
          :update (str "update! " (s/join ", " (map (fn [{:keys [column value]}]
-                                                     (str column " = " (if (= :null (:kind value)) "null" (render-value value col-ref))))
+                                                     (str column " = " (case (:kind value)
+                                                                         :null "null"
+                                                                         (render-value value col-ref))))
                                                    (:assignments o))))
          :delete (str "delete! " (s/join ", " (map #(str "." %) cols))))))))
 
@@ -631,6 +993,7 @@
   [{:keys [kind at] :as operand}]
   (case kind
     :null {:kind :null}
+    :now {:kind :now}
     :column (refuse at "update! here takes a value. Setting a column from another column isn't converted.")
     (value operand)))
 
@@ -684,9 +1047,10 @@
     (when name
       (when-let [[m] (first (filter #(= :columns (second %)) @local))]
         (refuse at (str "In the WITH query `" name "`: " m " Its columns would then differ from the SQL's."))))
-    (doseq [[m] @local] (warn! m))
+    (doseq [[m kind] @local :when (not= :extra-column kind)] (warn! m))
     {:expression (render tables ops current)
-     :columns (when-not (:action query) (output-columns tables ops))}))
+     :columns (when-not (:action query) (output-columns tables ops))
+     :extra-warnings (vec (keep (fn [[m kind]] (when (= :extra-column kind) m)) @local))}))
 
 ;; ----------
 ;; STATEMENTS
@@ -836,30 +1200,28 @@
              (by-name (:name e)) (narrow (:col (by-name (:name e))) false))))))
 
 (defn- predicate-columns
-  "Every column a predicate mentions."
+  "Every column a predicate mentions, inside computed values too."
   [p]
-  (case (:op p)
-    (:and :or) (mapcat predicate-columns (:args p))
-    :not (predicate-columns (:arg p))
-    :truthy [(:column p)]
-    (keep #(when (= :column (:kind %)) (:column %))
-          (concat [(:left p) (:right p) (:low p) (:high p)] (:values p)))))
+  (expr-columns p))
 
 (defn- query-columns
   "Every column a query mentions, outside its WHERE, with `*` as
   {:star true} and `t.*` as {:star \"t\"}."
   [q]
-  (concat (mapcat (fn [{:keys [kind column qualifier partition order]}]
+  (concat (mapcat (fn [{:keys [kind column qualifier partition order expr]}]
                     (case kind
                       :star [{:star true}]
                       :alias-star [{:star qualifier}]
                       :column [column]
-                      :row-number (concat partition (keep #(get-in % [:target :column]) order))
-                      []))
+                      :expr (expr-columns expr)
+                      :row-number (concat (mapcat #(if (:expr %) (expr-columns (:expr %)) [%]) partition)
+                                          (mapcat #(expr-columns (:target %)) order))
+                      (expr-columns kind)))
                   (:select q))
           (mapcat #(some-> (:on %) predicate-columns) (:joins q))
           (:group q)
-          (keep #(get-in % [:target :column]) (:order q))
+          (some-> (:having q) expr-columns)
+          (mapcat #(expr-columns (:target %)) (:order q))
           (:distinct-on q)
           (map :column (get-in q [:action :set]))))
 
@@ -889,6 +1251,13 @@
              (let [{:keys [db-column-info db-columns]} (db-table t)
                    n (spelling (:name col) db-columns (:at col))]
                (= "NO" (some #(when (= n (:column %)) (:nullable %)) db-column-info))))))))))
+
+(defn- output-not-null?
+  "Whether the column named `c` in the result of query `q` is known never
+  to be NULL: the column it selects under that name is."
+  [entries q c at]
+  (boolean (when-let [item (output-item q c)]
+             (not-null? entries q (assoc (:column item) :at at) 0))))
 
 (defn- anti-join
   "{:join <index> :conjunct <p> :k-col :t-col} when join `ji` of `q` is
@@ -940,7 +1309,7 @@
                    c (:name k-col)
                    narrow? (and src (= 1 (get counts (:table k-ref))) (narrowable? (:query src) c))
                    right-ok (if narrow?
-                              (not-null? all (:query src) {:name c :at at} 0)
+                              (output-not-null? all (:query src) c at)
                               (not-null? all {:from k-ref :joins []} k-col 0))
                    left-ok (not-null? all q t-col 0)
                    [acc set-name] (if narrow?
@@ -967,6 +1336,79 @@
      []
      (map-indexed vector entries))))
 
+(defn- semi-join
+  "{:join <index> :k-col :t-col :set <entry name>} when join `ji` of `q` is
+  `LEFT JOIN k ON k.c = t.x`, `k` is a WITH query of distinct values of c
+  used nowhere else (`counts`), and every other mention of k in q is a
+  test `k.c IS [NOT] NULL`. Otherwise nil."
+  [entries counts q ji]
+  (let [{:keys [type on] k-ref :table} (nth (:joins q) ji)
+        k (table-key k-ref)
+        src (and (nil? (:schema k-ref)) (entry-named entries (:table k-ref)))
+        sq (:query src)
+        earlier (set (map table-key (take (inc ji) (query-tables q))))
+        [pair & more] (some-> on conjuncts)
+        {:keys [op operator left right]} pair
+        [k-col t-col] (when (and (= :compare op) (= "=" operator) (not more)
+                                 (= :column (:kind left)) (= :column (:kind right))
+                                 (not (:cast left)) (not (:cast right)))
+                        (let [[l r] [(:column left) (:column right)]]
+                          (cond (and (= k (:qualifier l)) (earlier (:qualifier r)) (not= k (:qualifier r))) [l r]
+                                (and (= k (:qualifier r)) (earlier (:qualifier l)) (not= k (:qualifier l))) [r l])))
+        [item & more-items] (:select sq)
+        distinct-values? (and sq (:distinct sq) (nil? more-items) (= :column (:kind item))
+                              (= (:name k-col) (or (:as item) (:name (:column item))))
+                              (empty? (:group sq)) (nil? (:having sq)) (nil? (:distinct-on sq)))
+        tests (find-nodes #(and (= :is-null (:op %)) (= :column (get-in % [:left :kind]))
+                                (= k (get-in % [:left :column :qualifier])))
+                          (dissoc q :joins))
+        test? (set tests)
+        others (concat (expr-columns (walk/prewalk #(if (test? %) {:kind :null} %) (dissoc q :joins)))
+                       (mapcat #(some-> (:on %) predicate-columns) (concat (take ji (:joins q)) (drop (inc ji) (:joins q)))))]
+    (when (and (= :left type) k-col distinct-values? (= 1 (get counts (:table k-ref)))
+               ;; `WHERE k.c IS NULL` on its own is the anti-join's.
+               (not-any? (fn [p] (and (= :is-null (:op p)) (not (:negated p)) (some #{p} tests)))
+                         (some-> (:where q) conjuncts))
+               (every? #(= (:name k-col) (get-in % [:left :column :name])) tests)
+               (not-any? #(or (= k (:qualifier %)) (true? (:star %)) (= k (:star %))) others)
+               (not-any? #(or (= :star (:kind %)) (and (= :alias-star (:kind %)) (= k (:qualifier %)))) (:select q)))
+      {:join ji :k-col k-col :t-col t-col :set (:name src)})))
+
+(defn- semi-joins
+  "`LEFT JOIN k ON k.c = t.x`, where k holds distinct values of c and q
+  only tests `k.c IS NOT NULL` (or IS NULL), keeps every row of t once and
+  asks whether x is in k. That is Pine's `x in k`, with no join. k then is
+  only used after `in`. When x or c could be NULL, `x in k` could be
+  unknown where the test is false, so a value uses `if x in k then true
+  else false` (see conditions-pine)."
+  [entries]
+  (let [counts (uses entries)]
+    (reduce
+     (fn [acc [i entry]]
+       (loop [acc acc entry entry]
+         (let [q (:query entry)
+               all (into acc (drop (inc i) entries))
+               found (some #(semi-join all counts q %) (range (count (:joins q))))]
+           (if-not found
+             (conj acc entry)
+             (let [{:keys [join k-col t-col set]} found
+                   k (table-key (:table (nth (:joins q) join)))
+                   src (entry-named all set)
+                   guard (not (and (not-null? all q t-col 0)
+                                   (output-not-null? all (:query src) (:name k-col) (:at k-col))))
+                   t-operand {:kind :column :column t-col :at (:at t-col)}
+                   q (-> (walk/prewalk (fn [n]
+                                         (if (and (map? n) (= :is-null (:op n)) (= k (get-in n [:left :column :qualifier])))
+                                           (cond-> {:op :in-set :negated (not (:negated n)) :left t-operand :set set :at (:at n)}
+                                             guard (assoc :guard true))
+                                           n))
+                                       (dissoc q :joins))
+                         (assoc :joins (vec (concat (take join (:joins q)) (drop (inc join) (:joins q))))))
+                   acc (mapv #(if (= (:name %) set) (assoc % :in-set-only true) %) acc)]
+               (recur acc (assoc entry :query q)))))))
+     []
+     (map-indexed vector entries))))
+
 (defn- rn-limit
   "N when conjunct `p` keeps the first N rows of each group: rn = 1,
   rn <= N or rn < N+1, on column `rn` of table `k`. Refuses another test of
@@ -988,6 +1430,30 @@
           (#{">" ">="} operator) (refuse at (str "WHERE " rn " " operator " " n " keeps the rows after the first of each group, which isn't in Pine yet."))
           :else (refuse at (str "WHERE " rn " " operator " " n " isn't converted. Pine keeps the first N rows of each group: "
                                 rn " = 1 or " rn " <= N.")))))))
+
+(defn- drop-unused-windows
+  "A ROW_NUMBER() in a WITH query that no later query mentions numbers rows
+  for nothing. It is left out, with a warning, so another ROW_NUMBER() in
+  the same query can still become limit: N per."
+  [entries warn!]
+  (mapv (fn [{:keys [name query] :as e}]
+          (if-not name
+            e
+            (let [users (filter (fn [u] (some #(and (nil? (:schema %)) (= name (:table %))) (query-tables (:query u)))) entries)
+                  mentions (mapcat #(concat (query-columns (:query %)) (some-> (:query %) :where predicate-columns)) users)
+                  mentioned (set (map :name mentions))
+                  ;; A `*` over it would return the row number: that is a use.
+                  starred? (some (fn [u] (let [ks (set (keep #(when (and (nil? (:schema %)) (= name (:table %))) (table-key %))
+                                                             (query-tables (:query u))))]
+                                           (some #(or (true? (:star %)) (ks (:star %))) (query-columns (:query u)))))
+                                 users)
+                  unused (when-not starred?
+                           (filter #(and (= :row-number (:kind %)) (:as %) (not (mentioned (:as %)))) (:select query)))]
+              (doseq [r unused]
+                (warn! (str "Left out " (:as r) ": a ROW_NUMBER() in `" name "` that no later query uses.")))
+              (cond-> e
+                (seq unused) (update-in [:query :select] #(vec (remove (set unused) %)))))))
+        entries))
 
 (defn- plan-windows
   "A query with ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn, whose
@@ -1088,12 +1554,23 @@
           [state main-q] (flatten-query state main)
           entries (-> (conj (:entries state) {:name nil :query main-q :at (:at main)})
                       narrow-in-sets
+                      semi-joins
                       anti-joins
+                      (drop-unused-windows warn!)
                       (plan-windows warn!))]
       (loop [[e & more] entries ctes {} blocks []]
         (if-not e
           blocks
-          (let [{:keys [expression columns]} (binding [*ctes* ctes] (transpile-query e warn!))]
+          (let [{:keys [expression columns extra-warnings]} (binding [*ctes* ctes] (transpile-query e warn!))
+                ;; A column Pine added reaches a result when this is the
+                ;; statement itself, or a later query selects `*` from it.
+                seen? (or (nil? (:name e))
+                          (some (fn [u] (let [ts (query-tables (:query u))
+                                              ks (set (keep #(when (and (nil? (:schema %)) (= (:name e) (:table %))) (table-key %)) ts))]
+                                          (and (seq ks)
+                                               (some #(or (true? (:star %)) (ks (:star %))) (query-columns (:query u))))))
+                                more))]
+            (when seen? (doseq [m extra-warnings] (warn! m)))
             (recur more (cond-> ctes (:name e) (assoc (:name e) {:columns columns})) (conj blocks {:pine expression :name (:name e)}))))))))
 
 (defn- script-statement

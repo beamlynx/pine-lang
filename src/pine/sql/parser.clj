@@ -69,13 +69,19 @@
     :variable {:kind :variable :name value}))
 
 (defn- operand [[_ inner cast :as node]]
-  (if (= :cast-fn (first inner))
+  (cond
+    (= :now (first inner))
+    {:kind :now :at (at node)}
+
+    (= :cast-fn (first inner))
     (let [[_ value t] inner]
       (assoc (literal value) :cast (type-name t) :at (at node)))
+
+    :else
     (cond-> (assoc (literal inner) :at (at node))
       cast (assoc :cast (type-name (second cast))))))
 
-(declare predicate select-query)
+(declare predicate select-query expr)
 
 (defn- negated? [node]
   (boolean (child node :negated)))
@@ -89,9 +95,11 @@
     :and {:op :and :args (mapv predicate args)}
     :or {:op :or :args (mapv predicate args)}
     :not {:op :not :arg (predicate (first args)) :at (at node)}
+    :strict-predicate (predicate (first args))
     :compare (let [[l [_ op] r] args]
                {:op :compare :operator (if (= op "<>") "!=" op)
-                :left (operand l) :right (operand r) :at (at node)})
+                :left (expr l) :right (expr r) :at (at node)})
+    :call-truthy {:op :call-truthy :call (expr (first args)) :at (at node)}
     :like (let [[l r] (operands node)]
             {:op :like :negated (negated? node)
              :operator (s/lower-case (second (second (child node :like-op))))
@@ -106,6 +114,41 @@
     :between (let [[l lo hi] (operands node)]
                {:op :between :negated (negated? node) :left l :low lo :high hi :at (at node)})
     :truthy {:op :truthy :column (column (first args)) :at (at node)}))
+
+(def ^:private predicate-tags
+  #{:or :and :not :compare :like :is-null :is-distinct :in :in-select :between :truthy :call-truthy :strict-predicate :predicate})
+
+(defn- expr
+  "A value: an operand, or a computed value as
+  {:kind :call :fn :args :filter :cast}, {:kind :concat :args},
+  {:kind :case :whens [[predicate value] ...] :else}, or {:kind :pred
+  :pred} for a condition used as a value. COUNT(*) is {:kind :count}."
+  [[tag & args :as node]]
+  (case tag
+    :operand (operand node)
+    :count-star {:kind :count :at (at node)}
+    :computed (expr (first args))
+    :now {:kind :now :at (at node)}
+    :concat {:kind :concat :args (mapv expr args) :at (at node)}
+    :paren-value (let [inner (first args)]
+                   (if (predicate-tags (first inner))
+                     {:kind :pred :pred (predicate inner) :at (at node)}
+                     (expr inner)))
+    :strict-predicate {:kind :pred :pred (predicate node) :at (at node)}
+    :call (let [[[_ fn-name] & more] args
+                filter-node (child node :filter)
+                cast-node (child node :cast)]
+            (cond-> {:kind :call :fn (s/lower-case fn-name)
+                     :args (mapv expr (remove #(#{:filter :cast} (first %)) more))
+                     :at (at node)}
+              filter-node (assoc :filter (predicate (second filter-node)))
+              cast-node (assoc :cast (type-name (second cast-node)))))
+    :case (let [whens (children node :when)
+                else-node (first (remove #(= :when (first %)) args))]
+            (cond-> {:kind :case
+                     :whens (mapv (fn [[_ p v]] [(predicate p) (expr v)]) whens)
+                     :at (at node)}
+              else-node (assoc :else (expr else-node))))))
 
 (defn- table-ref
   "A table, or a subquery in FROM or JOIN as {:derived <query> :alias}."
@@ -130,9 +173,14 @@
 
 (declare order-item)
 
+(defn- window-item
+  "A PARTITION BY item: a column, or {:expr <computed value>}."
+  [[tag :as node]]
+  (if (= :column tag) (column node) {:expr (expr node) :at (at node)}))
+
 (defn- row-number [node]
   {:kind :row-number
-   :partition (some->> (child node :partition) rest (mapv column))
+   :partition (some->> (child node :partition) rest (mapv window-item))
    :order (some->> (child node :window-order) rest (mapv order-item))})
 
 (defn- select-item [[_ [kind & args :as inner] alias :as node]]
@@ -141,7 +189,8 @@
             :alias-star {:kind :alias-star :qualifier (identifier (first args))}
             :count-star {:kind :count}
             :row-number (row-number inner)
-            :column {:kind :column :column (column inner)})
+            :column {:kind :column :column (column inner)}
+            :computed {:kind :expr :expr (expr inner)})
     true (assoc :at (at node))
     alias (assoc :as (identifier (second alias)))))
 
@@ -149,7 +198,8 @@
   {:target (case kind
              :column {:kind :column :column (column target)}
              :count-star {:kind :count}
-             :position {:kind :position :value value})
+             :position {:kind :position :value value}
+             :computed {:kind :expr :expr (expr target)})
    :direction (some-> direction second second s/lower-case keyword)
    :at (at node)})
 
@@ -166,6 +216,7 @@
               :join (update acc :joins conj (join node))
               :where (assoc acc :where (predicate (first args)))
               :group (assoc acc :group (mapv column args))
+              :having (assoc acc :having (predicate (first args)))
               :order (assoc acc :order (mapv order-item args))
               :limit (assoc acc :limit {:value (Long/parseLong (first args)) :at (at node)})))
           {:kind :select :joins [] :at (at node)}
@@ -208,7 +259,6 @@
   {"distinct" "DISTINCT isn't in Pine. (group: isn't the same: it adds a count.)"
    "offset" "OFFSET isn't in Pine."
    "fetch" "FETCH isn't in Pine. Use LIMIT."
-   "having" "HAVING isn't in Pine."
    "union" "UNION isn't in Pine."
    "intersect" "INTERSECT isn't in Pine."
    "except" "EXCEPT isn't in Pine."
@@ -218,7 +268,6 @@
    "recursive" "WITH RECURSIVE isn't in Pine."
    "materialized" "MATERIALIZED isn't in Pine. Remove it: Pine decides how a named result runs."
    "returning" "RETURNING isn't in Pine. update! and delete! report how many rows they changed."
-   "case" "CASE isn't in Pine."
    "exists" "EXISTS isn't in Pine."
    "over" "A window function isn't in Pine."
    "window" "A window function isn't in Pine."
@@ -324,7 +373,7 @@
 
       (and (re-find #"^\s*\(" after) (re-find #"(?is)\bset\b(?:(?!\bwhere\b).)*=\s*[A-Za-z_][A-Za-z0-9_]*\s*$" before))
       (let [f (s/lower-case (second (re-find #"([A-Za-z_][A-Za-z0-9_]*)\s*$" before)))]
-        [(str (s/upper-case f) "() isn't in Pine yet. update! writes a value: a string, a number, true, false or null.") "sql-unsupported"])
+        [(str (s/upper-case f) "() isn't in Pine yet. update! writes a value: a string, a number, true, false, null or now().") "sql-unsupported"])
 
       (and word (unsupported-words word))
       [(unsupported-words word) "sql-unsupported"]
