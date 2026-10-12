@@ -109,6 +109,35 @@ SELECT "result_1".* FROM "result_1" AS "result_1" ORDER BY "result_1"."name" DES
 
 The same applies to `select:`/`where:`, and to their `-partial` forms (e.g. `o: name desc,` with a dangling trailing comma) — a partial with a value already carries whatever was fully typed before the comma, so it seals exactly like the complete form.
 
+### A sealed table's columns
+
+After a checkpoint, the pipe is on its CTE. The tables before it are inside the CTE and are no longer
+in the query. A column written with one of their aliases means the CTE's column that kept it:
+
+```
+company as c | employee .company_id | group: c.id | s: c.id
+```
+
+```sql
+WITH "result_1" AS ( SELECT "c"."id", COUNT(1) AS "count" FROM "company" AS "c" JOIN ... GROUP BY "c"."id" )
+SELECT "result_1"."id" FROM "result_1" AS "result_1" LIMIT 250
+```
+
+- A column selected with `as` is found under that name: after `s: c.id as cid | l: 10`, `c.id` is
+  `result_1.cid`.
+- With no `select:`, a `limit:` keeps every column of its current table, and nothing of the others.
+- This works in `select:`, `where:` (on either side of a comparison), `order:`, `group:` and after
+  `per`, and through several checkpoints.
+
+Two cases are errors:
+
+- The checkpoint didn't keep the column. In `company as c | employee .company_id | l: 10 | s: c.id`,
+  the limit keeps `employee`'s columns only. The error lists what it keeps, and says to select the
+  column before the checkpoint.
+- The name is two columns of the checkpoint. After `s: c.id, id | l: 10`, `result_1` has two `id`
+  columns, so `id` or `c.id` can't pick one. The error says to name them apart with `as`. The same
+  applies to a named result.
+
 ### No checkpoint when an action op follows
 
 ```
@@ -227,3 +256,17 @@ var-ast (or (get-in state [:variables table])
 ### `add-auto-id-columns` (`ast/select.clj`)
 
 Changed the predicate from checking `variables` membership to checking `(:ast (get aliases %))`. Any alias that carries an `:ast` entry is a CTE-backed table and should not receive an auto-id column.
+
+### Sealed aliases (`ast/path.clj`)
+
+`reset-for-cte` keeps `:aliases`, because auto-naming, hints and named results read it. So a sealed
+table's alias is still known after the seal, but it is not in `:tables`. `resolve-column` (and
+`unseal-column`, for a column on the right of a `where:` comparison) treats such an alias as sealed:
+
+- `unseal` finds the CTE in `:tables` whose snapshot has the alias as a table, directly or inside a
+  checkpoint of its own.
+- `exposed` finds how a snapshot's result names `alias.column`: an explicit column with that alias and
+  column (its `as` name if it has one), an explicit `alias.*`, or, with no `select:`, the column itself
+  when the alias is the snapshot's current table.
+- `refuse-ambiguous` refuses a name that is two of a CTE's explicit columns, for a sealed column and
+  for a bare name on a named result.

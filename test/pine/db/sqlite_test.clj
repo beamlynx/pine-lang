@@ -205,7 +205,13 @@
 
   (testing "group and count"
     (is (= [[1 2] [2 1]] (rows "person | select: company_id | group: company_id => count")))
-    (is (= [[3]] (rows "person | count:")))))
+    (is (= [[3]] (rows "person | count:"))))
+
+  (testing "a sealed table's column after a checkpoint is the checkpoint's column"
+    (is (= [1 2] (selected "company as c | person .company_id | group: c.id | s: c.id | o: id asc")))
+    (is (= [[1 "Bob"] [2 "Cy"]]
+           (map (fn [[a b]] [a b])
+                (rows "company as c | person .company_id | s: c.id as cid, p_1.name | o: name desc | l: 1 per c.id | s: c.id, name | o: cid asc"))))))
 
 (deftest test-writes
   (testing "foreign keys are enforced - this connection turns them on"
