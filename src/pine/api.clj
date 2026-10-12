@@ -746,6 +746,28 @@
                (sql-hints/schema (connections/get-dialect conn-id) references)
                {:tables []}))))))
 
+    ;; After JOIN in SQL being typed, the tables that join to the query's,
+  ;; with the ON clause written (docs/sql-hints.md). `cursor` is an offset
+  ;; into `query`, in UTF-16 code units as JavaScript counts them, which is
+  ;; how Java strings count too. No connection is an empty list.
+  (POST "/api/v1/sql-join-hints" {params :params}
+    (let [{:keys [query cursor connection-id]} params]
+      (or (param-problem params :sql? true)
+          (when-not (string? query) (bad-request "`query` is required."))
+          (when-not (and (integer? cursor) (<= 0 cursor (count query)))
+            (bad-request "`cursor` must be an offset into `query`."))
+          (response
+           (or (too-long-response query)
+               (let [conn-id (or connection-id @db/connection-id)]
+                 (if-let [references (sql-to-pine-schema conn-id)]
+                   (sql-hints/join-hints
+                    {:query query
+                     :cursor cursor
+                     :dialect (connections/get-dialect conn-id)
+                     :references references
+                     :relations #(get-in (api-build [%] nil conn-id) [:ast :hints :table])})
+                   {:joins []})))))))
+
     ;; Stop a run started with this `run-id` on /eval or /sql. The run
   ;; answers with `error-type: "cancelled"`; a write in progress is rolled
   ;; back. Stopping a run that has finished, or hasn't started, is not an

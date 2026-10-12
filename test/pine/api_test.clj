@@ -388,3 +388,22 @@
     (testing "no connection is an empty list, not an error"
       (with-redefs [db/connection-id (atom nil)]
         (is (= {:status 200 :tables []} (post {})))))))
+
+(deftest test-sql-join-hints
+  (let [post (fn [body]
+               (let [r (api/app {:request-method :post
+                                 :uri "/api/v1/sql-join-hints"
+                                 :headers {"content-type" "application/json"}
+                                 :body (java.io.ByteArrayInputStream. (.getBytes (json/generate-string body) "UTF-8"))})]
+                 (assoc (json/parse-string (:body r) true) :status (:status r))))
+        sql "select * from company c join "]
+    (testing "joins for the selected connection"
+      (with-redefs [db/connection-id (atom :test)]
+        (is (= {:sql "y.employee e ON e.company_id = c.id" :schema "y" :table "employee" :resolution "fk"}
+               (first (:joins (post {:query sql :cursor (count sql)})))))))
+    (testing "cursor must be an offset into the query"
+      (is (= 400 (:status (post {:query sql}))))
+      (is (= 400 (:status (post {:query sql :cursor 999})))))
+    (testing "no connection is an empty list"
+      (with-redefs [db/connection-id (atom nil)]
+        (is (= {:status 200 :joins []} (post {:query sql :cursor (count sql)})))))))
