@@ -54,7 +54,10 @@
    "update t as d set a = 'x' from g left join k on k.id = g.id where d.id = g.id and k.id is null"
    "delete from t where id = 1"
    "delete from t d using g where d.id = g.id"
-   "with k as (select id from t) delete from u where id in (select id from k)"])
+   "with k as (select id from t) delete from u where id in (select id from k)"
+   "update company_document d set deleted_at = '2026-10-12' from sp_docs g left join keep_final kf on kf.id = g.id where d.id = g.id and kf.id is null and g.archived_at is null"
+   ;; The structure of the script in transpile_test's test-motivating-script.
+   "WITH sp_docs AS (\n    SELECT d.id, d.company_id, d.reference_id, d.created_at, d.archived_at\n    FROM company_document d\n    LEFT JOIN company_document_attachment cda ON cda.company_document_id = d.id\n    LEFT JOIN attachment a ON a.id = cda.attachment_id\n    WHERE d.tenant_id = '86b8ad91-7463-478a-aa43-43a977105bf4' AND d.deleted_at IS NULL\n      AND (a.type = 'sharepoint' OR d.reference_id IS NOT NULL)\n),\nranked AS (\n    SELECT g.*,\n        ROW_NUMBER() OVER (PARTITION BY g.company_id, g.reference_id ORDER BY g.created_at DESC, g.id ASC) AS rn\n    FROM sp_docs g WHERE g.archived_at IS NULL\n),\nkeep_final AS (SELECT id FROM ranked WHERE rn = 1)\nUPDATE company_document d SET deleted_at = '2026-10-12'\nFROM sp_docs g LEFT JOIN keep_final kf ON kf.id = g.id\nWHERE d.id = g.id AND kf.id IS NULL AND g.archived_at IS NULL"])
 
 (deftest test-one-parse
   (doseq [sql corpus]
@@ -173,7 +176,13 @@
       (is (= :other-write (sp/statement-kind "insert into t values (1)")))
       (is (= :select (sp/statement-kind "select count(*) from t"))))
     (testing "Masking keeps offsets and lines"
-      (is (= "      \nselect" (sp/mask "BEGIN;\nselect" 6 13))))))
+      (is (= "      \nselect" (sp/mask "BEGIN;\nselect" 6 13))))
+    (testing "A `;` inside a dollar-quoted body doesn't end the statement"
+      (is (= 2 (count (sp/split-script "DO $$ BEGIN UPDATE t SET a = 1; END $$; select 1 from t")))))
+    (testing "Statements that may change data never count as reads"
+      (is (= :other-write (sp/statement-kind "CALL refresh()")))
+      (is (= :other-write (sp/statement-kind "DO $$ BEGIN END $$")))
+      (is (= :other-write (sp/statement-kind "EXPLAIN ANALYZE UPDATE t SET a = 1"))))))
 
 (deftest test-errors
   (let [err (fn [sql] (select-keys (sp/parse sql) [:error :error-type]))

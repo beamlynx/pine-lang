@@ -460,15 +460,15 @@
     (converts-to-blocks "with k as (select id, name from company) select * from k where id in (select id from k where name = 'x')"
                         "company | select: id, name |= k
 
-                         k | where: name = 'x' | select: id |= k_id
+                         k | where: name = 'x' | select: id |= k_ids
 
-                         k | where: id in k_id"))
+                         k | where: id in k_ids"))
 
   (testing "A subquery on a table becomes a block"
     (converts-to-blocks "select * from employee where company_id in (select id from company where name like 'A%')"
-                        "company | where: name like 'A%' | select: id |= company_id
+                        "company | where: name like 'A%' | select: id |= company_ids
 
-                         employee | where: company_id in company_id"))
+                         employee | where: company_id in company_ids"))
 
   (testing "DISTINCT is dropped from a set used only after IN"
     (converts-to-blocks "with k as (select distinct company_id from employee) select * from company where id in (select company_id from k)"
@@ -491,9 +491,9 @@
 
   (testing "A table on the right of the LEFT JOIN gets a block of its own"
     (converts-to-blocks "select n.* from note n left join attachment a on a.id = n.id where a.id is null and n.body = 'x'"
-                        "attachment | select: id |= attachment_id
+                        "attachment | select: id |= attachment_ids
 
-                         note as n | where: body = 'x' | where: id not in attachment_id"
+                         note as n | where: body = 'x' | where: id not in attachment_ids"
                         [] keyed-schema))
 
   (testing "A LEFT JOIN whose table is used elsewhere stays a join"
@@ -544,6 +544,39 @@
       (is (= "write-refused" (:error-type response)))
       (is (re-find #"read-only" (:error response))))))
 
+(deftest test-converted-pine-builds
+  ;; Each new shape, through Pine's AST and SQL, on the test fixtures' tables.
+  (let [builds (fn [sql expected]
+                 (let [{:keys [expression error]} (t/sql->pine sql)]
+                   (is (nil? error) (str sql " => " error))
+                   (when expression
+                     (is (= expected (s/trim (runs-as-pine expression))) expression))))]
+    (testing "select: before limit: N per, with order: and per columns that aren't selected"
+      (builds "with r as (select id, row_number() over (partition by name order by created_at) as rn from company) select * from r where rn <= 3"
+              (str "WITH \"r\" AS ( SELECT \"__pine_rows__\".\"id\" FROM ( SELECT \"c_0\".\"id\", "
+                   "ROW_NUMBER() OVER (PARTITION BY \"c_0\".\"name\" ORDER BY \"c_0\".\"created_at\" ASC) AS \"__pine_row__\", "
+                   "ROW_NUMBER() OVER (ORDER BY \"c_0\".\"created_at\" ASC) AS \"__pine_order__\" FROM \"company\" AS \"c_0\" ) AS \"__pine_rows__\" "
+                   "WHERE \"__pine_rows__\".\"__pine_row__\" <= 3 ORDER BY \"__pine_rows__\".\"__pine_order__\" ) "
+                   "SELECT \"r\".* FROM \"r\" AS \"r\" LIMIT 250;")))
+    (testing "from: back to the changed table, then update!"
+      (builds "update employee e set reports_to = 1 from company c where e.company_id = c.id and c.name = 'Acme'"
+              (str "UPDATE \"employee\" SET \"reports_to\" = '1' WHERE \"id\" IN ( SELECT \"e\".\"id\" FROM \"employee\" AS \"e\" "
+                   "JOIN \"company\" AS \"c\" ON \"e\".\"company_id\" = \"c\".\"id\" WHERE \"c\".\"name\" = 'Acme' );")))
+    (testing "A subquery's block, joined by its alias"
+      (builds "select * from (select id from company where id > 1) x join employee e on e.company_id = x.id"
+              (str "WITH \"x\" AS ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" > '1' ) "
+                   "SELECT \"x\".*, \"e\".*, \"e\".\"id\" AS \"__e__id\" FROM \"x\" AS \"x\" JOIN \"employee\" AS \"e\" ON \"x\".\"id\" = \"e\".\"company_id\" LIMIT 250;")))
+    (testing "A set block, then in"
+      (builds "select * from employee where company_id in (select id from company where name like 'A%')"
+              (str "WITH \"company_ids\" AS ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" LIKE 'A%' ) "
+                   "SELECT \"e_0\".\"id\" AS \"__e_0__id\", \"e_0\".* FROM \"employee\" AS \"e_0\" "
+                   "WHERE \"e_0\".\"company_id\" IN ( SELECT \"id\" FROM \"company_ids\" ) LIMIT 250;")))
+    (testing "Rows with no match, with the NULL guards"
+      (builds "with k as (select id from company where name = 'x') select e.* from employee e left join k on k.id = e.company_id where k.id is null"
+              (str "WITH \"k\" AS ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"name\" = 'x' AND \"c_0\".\"id\" IS NOT NULL ) "
+                   "SELECT \"e\".\"id\" AS \"__e__id\", \"e\".* FROM \"employee\" AS \"e\" "
+                   "WHERE (\"e\".\"company_id\" IS NULL OR \"e\".\"company_id\" NOT IN ( SELECT \"id\" FROM \"k\" )) LIMIT 250;")))))
+
 (deftest test-scripts
   (testing "BEGIN and COMMIT are dropped, with a warning"
     (converts-to "BEGIN;\nupdate company set name = 'x' where id = 1;\nCOMMIT;"
@@ -566,6 +599,10 @@
     (is (= "Line 3: The script ends in ROLLBACK, which undoes its change. Pine's update! and delete! keep theirs, so it doesn't convert."
            (:error (t/sql->pine "begin;\nupdate a set x = 1 where id = 1;\nrollback;"))))
     (refuses "BEGIN; COMMIT;" "only BEGIN, COMMIT or ROLLBACK")
+    (refuses "call refresh_all(); update a set x = 1 where id = 1" "changes data in more than one statement")
+    (is (= "Line 1: DO doesn't convert to Pine. Only SELECT, UPDATE and DELETE do."
+           (:error (t/sql->pine "DO $$ BEGIN UPDATE t SET a = 1; END $$; select * from t"))))
+    (refuses "update a set x = 1 where id = 1; explain analyze update b set y = 2" "changes data in more than one statement")
     (is (= "Line 2: INSERT doesn't convert to Pine. Only SELECT, UPDATE and DELETE do."
            (:error (t/sql->pine "select 1 from t;\ninsert into t values (1)"))))))
 

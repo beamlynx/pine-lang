@@ -230,7 +230,9 @@
 
 (def ^:private other-statements
   "Statements that don't convert: Pine reads, updates and deletes rows."
-  #{"insert" "merge" "create" "alter" "drop" "truncate" "grant" "revoke" "copy" "upsert" "replace"})
+  #{"insert" "merge" "create" "alter" "drop" "truncate" "grant" "revoke" "copy" "upsert" "replace"
+    "do" "call" "explain" "set" "reset" "refresh" "vacuum" "analyze" "lock" "comment" "show"
+    "prepare" "execute" "deallocate" "listen" "notify" "cluster" "reindex" "discard" "savepoint" "release"})
 
 (defn- re-seq-pos
   "Each match of `re` in `text`, as {:start :end}."
@@ -389,6 +391,11 @@
                                 (= \' (.charAt text j)) (inc j)
                                 :else (recur (inc j))))
                             ends)
+            ;; A dollar-quoted string: $$ ... $$ or $tag$ ... $tag$.
+            (and (= c \$) (re-find #"^\$[A-Za-z_]*\$" (subs text i)))
+            (let [tag (re-find #"^\$[A-Za-z_]*\$" (subs text i))
+                  j (.indexOf text ^String tag (int (+ i (count tag))))]
+              (recur (if (neg? j) n (+ j (count tag))) ends))
             (= c \") (recur (skip-to "\"") ends)
             (= c \`) (recur (skip-to "`") ends)
             (and (= c \-) (= next-c \-)) (recur (skip-to "\n") ends)
@@ -422,8 +429,9 @@
 
 (defn statement-kind
   "Whether a statement reads (`:select`), changes rows (`:update`, `:delete`)
-  or is something else that writes (`:other-write`), judged from its words.
-  A statement that doesn't parse still gets a kind this way."
+  or is anything else (`:other-write`), judged from its words. Only a SELECT,
+  or a WITH whose statement is a SELECT, reads. A statement that doesn't
+  parse still gets a kind this way."
   [text]
   (let [body (s/replace text #"(?s)--[^\n]*|/\*.*?\*/|'(?:[^']|'')*'" " ")
         first-word (some-> (re-find #"^\s*([A-Za-z]+)" body) second s/lower-case)
@@ -434,8 +442,10 @@
     (case main-word
       "update" :update
       "delete" :delete
-      ("select" "with" nil) :select
-      (if (other-statements main-word) :other-write :select))))
+      "select" :select
+      ;; Anything else may change data (CALL, DO, EXPLAIN ANALYZE, SET, ...),
+      ;; so it never counts as a read.
+      :other-write)))
 
 (defn mask
   "`text` with everything outside [start, end) blanked to spaces, keeping

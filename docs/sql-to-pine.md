@@ -155,7 +155,7 @@ active
 ```
 
 A subquery in `FROM` or `JOIN` works the same, named by its alias. A subquery after `IN` becomes a
-block too, named after its table and column, like `company_id`. When it is just `SELECT c FROM w`,
+block too, named after its table and column, like `company_ids`. When it is just `SELECT c FROM w`,
 and `w` is a `WITH` query used for nothing else, `w` itself is used and selects only `c`.
 
 `DISTINCT` doesn't change which values a set holds, so it is dropped from a query that is only used
@@ -252,13 +252,15 @@ employee as e
 
 ### Scripts
 
-A script is split on `;`. `BEGIN`, `COMMIT` and `ROLLBACK` are left out, with a warning: Pine runs
+A script is split on `;`, but not on one inside a string, a quoted name, a comment or a
+dollar-quoted body (`$$ ... $$`). `BEGIN`, `COMMIT` and `ROLLBACK` are left out, with a warning: Pine runs
 each `update!` and `delete!` in a transaction of its own. A script that ends in `ROLLBACK` and changes
 data is refused, since the SQL undoes its change and Pine wouldn't.
 
 Of the other statements, the one that changes data converts, or the first one when none does. Each
 statement left out gets a warning with its line, such as a `SELECT COUNT(*)` that checks the result
-afterwards. A script with two statements that change data is refused.
+afterwards. A script with two statements that change data is refused. Only a `SELECT` counts as a
+statement that doesn't change data: a `CALL`, a `DO` block or an `EXPLAIN ANALYZE` might.
 
 ### Joins
 
@@ -349,7 +351,7 @@ Each is refused with its line.
 
 | SQL | Why |
 |---|---|
-| `INSERT`, `MERGE`, DDL | Only `SELECT`, `UPDATE` and `DELETE` convert. |
+| `INSERT`, `MERGE`, `CALL`, `DO`, DDL and other statements | Only `SELECT`, `UPDATE` and `DELETE` convert. |
 | Two statements that change data | One at a time. |
 | `ROLLBACK` after a change | Pine's `update!` keeps its change. |
 | `DISTINCT`, other than in a set used after `IN` | Not in Pine. |

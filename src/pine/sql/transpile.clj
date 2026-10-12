@@ -712,8 +712,12 @@
 (defn- query-tables [q]
   (vec (cons (:from q) (map :table (:joins q)))))
 
-(defn- fresh-name [taken base]
-  (if (taken base) (first (remove taken (map #(str base "_" %) (iterate inc 2)))) base))
+(defn- fresh-name
+  "`base`, or `base_2`, `base_3`, ..., whichever is first not taken, nor a
+  table in the connection's schema."
+  [taken base]
+  (let [taken? #(or (taken %) (contains? (:table *schema*) %))]
+    (if (taken? base) (first (remove taken? (map #(str base "_" %) (iterate inc 2)))) base)))
 
 (declare flatten-query)
 
@@ -745,7 +749,7 @@
                 src (:from sq)
                 col (:column item)
                 out (or (:as item) (:name col))
-                n (pine-name! (fresh-name (:taken state) (str (:table src) "_" out)) (:at p))
+                n (pine-name! (fresh-name (:taken state) (str (:table src) "_" out "s")) (:at p))
                 simple? (and (empty? (:joins sq)) (nil? (:where sq)) (empty? (:group sq)) (nil? (:order sq))
                              (nil? (:limit sq)) (nil? (:distinct-on sq)) (nil? (:schema src)) (nil? (:as item))
                              (or (nil? (:qualifier col)) (= (:qualifier col) (table-key src))))]
@@ -941,7 +945,7 @@
                    left-ok (not-null? all q t-col 0)
                    [acc set-name] (if narrow?
                                     [(mapv #(if (= % src) (narrow src c (not right-ok)) %) acc) (:name src)]
-                                    (let [n (pine-name! (fresh-name (set (keep :name all)) (str (:table k-ref) "_" c)) at)]
+                                    (let [n (pine-name! (fresh-name (set (keep :name all)) (str (:table k-ref) "_" c "s")) at)]
                                       [(conj acc {:name n :in-set-only true :at at
                                                   :query {:kind :select :joins [] :at at
                                                           :select [{:kind :column :column {:name c :at at} :at at}]
