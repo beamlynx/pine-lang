@@ -179,7 +179,7 @@ employee | where: id in acme_emps
   on raw tables. Two [distinct named results wrapping the same source table](#same-source-joins-not-a-general-self-join)
   (`t |= x`, `t |= y`, then `x | y`) is the one narrow exception.
 
-See also: [checkpoints.md](checkpoints.md) for same-expression anonymous CTEs after GROUP/LIMIT.
+See also: [checkpoints.md](checkpoints.md) for CTEs sealed automatically after GROUP/LIMIT, which are named `result_1`, `result_2`, ... unless you give them a name.
 
 ---
 

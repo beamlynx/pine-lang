@@ -92,37 +92,80 @@
             ;; ---
             ;; Checkpoint
             ;; ---
-            ;; Tracks auto-generated CTE names (__pine_0__, __pine_1__, ...).
-            ;; This default is immediately overridden by pre-handle, which
-            ;; derives the real starting count from already-known named results -
-            ;; see next-auto-cte-count.
-            :auto-cte-count   0
+            ;; Names an auto-named checkpoint must not take: every table alias
+            ;; and |= name written anywhere in this expression, including
+            ;; ones after the checkpoint. Filled in by handle-ops - see
+            ;; next-auto-cte-name.
+            :reserved-cte-names nil
             ;; Set after a checkpoint op (group/limit) to signal the next table op
             ;; should become a CTE instead of a direct join.
             ;; nil | {:needs-assign true} | {:name "n" :needs-table true}
             :pending-checkpoint nil})
 
-(defn- next-auto-cte-count
-  "Anonymous checkpoint CTEs (__pine_0__, __pine_1__, ...) are named from
-  :auto-cte-count, which used to always start at 0 for every expression - but
-  each blank-line-separated expression gets its own fresh state, so two
-  expressions that each auto-name exactly one checkpoint both produced
-  \"__pine_0__\". Since these are genuinely different CTEs that only share a
-  name, eval.clj's collect-ctes (which dedupes by name, correctly, for
-  explicit |= names that really are unique) silently dropped one of them.
+(defn- expression-names
+  "Every table alias and |= name written anywhere in ops, lower-cased."
+  [ops]
+  (into #{}
+        (keep (fn [{:keys [type value]}]
+                (some-> (case type
+                          :table  (:alias value)
+                          :assign value
+                          nil)
+                        str/lower-case)))
+        ops))
 
-  The names only need to be unique, not contiguous - so instead of parsing
-  __pine_N__ back out of the named results to find the highest N used, just start
-  counting from how many named results already exist. named-results only ever grows
-  across expressions (see api.clj's evaluate-expressions), and each
-  expression's own auto-names always add at least that many new keys to it -
-  every one becomes its own top-level entry, exactly like an explicit |= name
-  would - so the count after an expression is always past every number it
-  used. By induction, seeding from the current count can never collide with a
-  number a prior expression already claimed, even though later expressions
-  will end up skipping some numbers (e.g. ones used by explicit |= names)."
-  [named-results]
-  (count named-results))
+(defn- schema-table-names
+  "Every table name in the connected database's schema index, from any
+  schema, lower-cased. Empty when there is no index."
+  [references]
+  (into #{}
+        (map (comp str/lower-case name))
+        (concat (keys (:table references))
+                (mapcat (comp keys :table val) (:schema references)))))
+
+(defn next-auto-cte-name
+  "The name for a checkpoint sealed without `|= name`: `result_N`, with the
+  smallest N >= 1 that is free. The canvas shows this name on the node, and
+  the UI writes it back into the text as `|= result_N` when the user builds
+  on it, so it has to read like a name a person would pick.
+
+  A name is taken, and skipped, if it is any of these:
+
+  - A named result already known, from this or an earlier expression
+    (:named-results). Each blank-line-separated expression starts from a
+    fresh state, and its auto-names become top-level named results just
+    like explicit |= names. eval.clj's collect-ctes dedupes CTEs by name,
+    so if two expressions both produced `result_1`, it would silently drop
+    one of two different CTEs. (This happened with the old `__pine_0__`
+    names before they were seeded from the named-result count.)
+  - A name already used in this expression (:pending-assignments). That
+    covers both explicit |= names written earlier and the auto-names of
+    earlier checkpoints, so a second checkpoint gets `result_2`.
+  - A table alias or |= name written anywhere in this expression
+    (:reserved-cte-names), including after the checkpoint. The CTE is also
+    used as its own alias (`FROM result_1 AS result_1`), so a later
+    `employee as result_1` would give two relations one alias, and a later
+    `|= result_1` would overwrite this checkpoint.
+  - The name of a real table in the connected database, in any schema. A
+    CTE shadows an unqualified table of the same name, so the query would
+    silently read the CTE instead of the table. When there is no schema
+    index (some tests), this check finds nothing to skip.
+
+  Names are compared lower-cased, so a table `Result_1` also blocks
+  `result_1`: some databases fold or ignore identifier case. The result
+  depends only on the expression, the earlier named results and the
+  schema, so it is the same every time the same text is evaluated."
+  [state]
+  (let [taken (into (or (:reserved-cte-names state) #{})
+                    (comp cat (map str/lower-case))
+                    [(keys (:named-results state))
+                     (keys (:pending-assignments state))
+                     (keys (:aliases state))
+                     (schema-table-names (:references state))])]
+    (->> (iterate inc 1)
+         (map #(str "result_" %))
+         (remove taken)
+         first)))
 
 (defn pre-handle
   ([state connection-id ops-count expression cursor named-results]
@@ -135,8 +178,7 @@
        (assoc :expression expression)
        (assoc :cursor cursor)
        (assoc :named-results named-results)
-       (assoc :access-policy (or access-policy []))
-       (assoc :auto-cte-count (next-auto-cte-count named-results)))))
+       (assoc :access-policy (or access-policy [])))))
 
 ;; ---------------------------------------------------------------------------
 ;; Checkpoint helpers
@@ -198,11 +240,9 @@
 
       ;; Auto-named: fire when a table or another checkpoint op arrives
       (and (:needs-assign checkpoint) fire?)
-      (let [n        (:auto-cte-count state)
-            cname    (str "__pine_" n "__")
+      (let [cname    (next-auto-cte-name state)
             snapshot (dissoc state :pending-assignments)]
         (-> state
-            (update :auto-cte-count inc)
             (assoc :pending-checkpoint nil)
             (seal-as-cte cname snapshot)))
 
@@ -248,7 +288,11 @@
     :no-op state
     (update state :errors conj [type "Unknown operation type in parse tree"])))
 
-(defn handle-ops [state ops]
+(defn handle-ops
+  "Folds ops into state. :reserved-cte-names is filled from ops unless the
+  caller already set it: the cursor-truncated parse passes the full
+  expression's names, so both name a checkpoint the same way."
+  [state ops]
   (reduce (fn [s [i o]]
             ;; flush-checkpoint runs before handle-op; it may reset state and inject
             ;; a synthetic CTE table — the :index must be set first so the injected
@@ -259,7 +303,7 @@
                           (update :pending-count dec))
                 (not= (:type o) :assign) (assoc :operation o)
                 (checkpoint-op-types (:type o)) (assoc :pending-checkpoint {:needs-assign true}))))
-          state
+          (update state :reserved-cte-names #(or % (expression-names ops)))
           (map-indexed vector ops)))
 
 (declare generate)
@@ -297,7 +341,7 @@
 (defn- generate-truncated-state
   "Generate state for truncated expression at cursor position.
    Keep references for hint generation."
-  [expression cursor connection-id named-results]
+  [expression cursor connection-id named-results reserved-cte-names]
   (let [truncated-expr (truncate-at-cursor expression cursor)
         {:keys [result error]} (parser/parse truncated-expr)]
     (if (or error (nil? result))
@@ -307,6 +351,7 @@
       ;; to preserve references for hint generation
       (-> state
           (pre-handle connection-id (count result) nil nil named-results)
+          (assoc :reserved-cte-names reserved-cte-names)
           (handle-ops result)))))
 
 (defn- offset->position
@@ -389,7 +434,8 @@
                         (pre-handle connection-id (count parse-tree) expression cursor named-results access-policy)
                         (handle-ops parse-tree))
          truncated-state (when (and cursor expression)
-                           (generate-truncated-state expression cursor connection-id named-results))]
+                           (generate-truncated-state expression cursor connection-id named-results
+                                                     (:reserved-cte-names full-state)))]
      (-> (post-handle full-state truncated-state)
          ;; Every operation's type, in order - not just the terminal one that
          ;; :operation holds and that build-query dispatches on. Callers that
