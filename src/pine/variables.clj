@@ -177,7 +177,7 @@
 (def ^:private values-parser
   (insta/parser
    "VALUES      := <ws?> assignment (<ws> assignment)* <ws?>
-    assignment  := <'$'> name <ws?> <'='> <ws?> value
+    assignment  := <'$'> name <ws?> <'='> (<ws?> value)?
     name        := #'[A-Za-z_][A-Za-z0-9_]*'
     <value>     := string | number | boolean | list
     list        := <'('> <ws?> scalar (<ws?> <','> <ws?> scalar)* <ws?> <')'>
@@ -219,8 +219,11 @@
               "A values block holds only `$name = value` lines. Put a blank line between the values and the query."
               (str "Couldn't read this values block. Each line is `$name = value`, where the value is like 'text', 42, true or ('a', 'b'):\n"
                    (with-out-str (println (insta/get-failure tree))))))
+      ;; `$name =` with no value yet - a line the canvas adds for a new
+      ;; variable - defines nothing: the variable stays without a value.
       (into {}
-            (for [[_ [_ n] v] (rest tree)]
+            (for [[_ [_ n] v] (rest tree)
+                  :when v]
               [n (if (= :list (first v)) (mapv literal (rest v)) (literal v))])))))
 
 (defn text-values

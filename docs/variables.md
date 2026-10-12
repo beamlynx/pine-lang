@@ -51,6 +51,9 @@ request | where: status in $statuses | where: amount > $min_amount
 
 - **A value is written like a literal:** `'text'`, a number, `true` or `false`. A date is a string, `'2026-09-01'`, read
   as a date by a date column. A list is in brackets, `('a', 'b')` or `(17, 23)`.
+- **A line can have no value yet:** `$status =`. The variable then has no value, as if the line weren't there: `/build`
+  lists it as unbound, and `/eval` refuses until it has one. beamlynx's canvas writes such a line for a variable typed
+  in its where editor.
 - **Its values apply to every query in the request.** A later values block overrides an earlier one with the same name.
 - **A values block holds nothing else.** Writing a query in the same block is an error asking for a blank line between
   them: a value is its own expression, like a named result.
