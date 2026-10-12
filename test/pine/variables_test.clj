@@ -204,8 +204,13 @@
     (is (thrown-with-msg? Exception #"Put a blank line between the values and the query"
                           (v/parse-values-block "$a = 'x'\ncompany | where: name = $a"))))
 
+  (testing "a line with no value yet leaves that variable without one"
+    (is (= {} (v/parse-values-block "$a = ")))
+    (is (= {"b" 1} (v/parse-values-block "$a =\n$b = 1")))
+    (is (= {"a" 1} (v/parse-values-block "$a = 1\n$b = -- not set yet"))))
+
   (testing "anything else that isn't `$name = value` says what a line should look like"
-    (is (thrown-with-msg? Exception #"Each line is `\$name = value`" (v/parse-values-block "$a = ")))
+    (is (thrown-with-msg? Exception #"Each line is `\$name = value`" (v/parse-values-block "$a = 'x")))
     (is (thrown-with-msg? Exception #"Each line is `\$name = value`" (v/parse-values-block "$a = null")))))
 
 (deftest test-values-blocks-in-requests
