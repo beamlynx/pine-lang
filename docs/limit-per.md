@@ -106,7 +106,7 @@ To filter first and then rank, put the `where:` before `limit:`.
 - A row number can't be filtered on in the query that computes it, so that query becomes a derived table, `__pine_rows__`. An outer query keeps the rows numbered up to N.
 - The outer query lists its columns one by one, so the row numbers never reach the result. `*` is spelled out from the schema index.
 - The result keeps the `order:` as its order. The columns `order:` names may not be in the result, so the inner query adds a second row number in that order, `__pine_order__`, and the outer query sorts by it. The partition columns are not put first.
-- The default cap of 250 rows applies to the outer query.
+- The result is capped at 250 rows, like any query. The cap applies to the outer query, after the per-group cut. To raise it, add a plain limit after it: `| limit: 1000`.
 - A derived table can't have two columns with the same name. When names clash, for example `c.id` next to `o.*`, each clashing column is named after its position inside (`__pine_c0__`) and gets its own name back outside.
 - `ROW_NUMBER()` works on Postgres, MySQL 8 and SQLite. Pine doesn't use `DISTINCT ON`, which only Postgres has.
 
@@ -116,7 +116,8 @@ To filter first and then rank, put the `where:` before `limit:`.
 - A table that isn't in the schema index can't be used with `*`: its columns can't be listed. Re-index the connection, or name the columns with `select:` first.
 - A `delete!` or `update!` after `per` changes the rows kept per group.
 - A column the access policy hides can't follow `per`. Grouping by it would give its values away, as `group:` would.
-- Ties in the `order:` are broken by the database, as with a plain `limit:`.
+- Ties in the `order:` are broken by the database, as with a plain `limit:`. No key is added to break them.
+- The SQL of a `per` query doesn't convert back to Pine in the SQL panel yet: it has a subquery, which [SQL to Pine](sql-to-pine.md) refuses.
 - Steps after `per` don't keep its order, as after a plain `limit:`. Add an `order:` after them to sort the final result.
 
 See also: [checkpoints.md](checkpoints.md), [named-results.md](named-results.md).

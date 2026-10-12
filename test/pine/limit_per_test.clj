@@ -3,9 +3,11 @@
   docs/limit-per.md."
   (:require [clojure.string :as s]
             [clojure.test :refer [deftest is testing]]
+            [pine.api :as api]
             [pine.ast.main :as ast]
             [pine.eval :as eval]
-            [pine.parser :as parser]))
+            [pine.parser :as parser]
+            [pine.sql.transpile :as transpile]))
 
 (defn- p [e] (parser/parse-or-fail e))
 
@@ -365,3 +367,18 @@
       (let [{:keys [query]} (sql "report | l: 1 per id")]
         (is (s/includes? query "'xxxxx' AS \"title\""))
         (is (s/starts-with? query "SELECT \"__pine_rows__\".\"__r_0__id\", \"__pine_rows__\".\"id\", \"__pine_rows__\".\"title\" FROM ( "))))))
+
+(deftest test-limit-per-params
+  (testing "parameters are in the order their `?` appear: per column, order:, overall order, then where:"
+    (is (= [{:type :string :value "region"} {:type :string :value "age"} {:type :string :value "age"} {:type :number :value 1}]
+           (vec (:params (sql "customer | where: id = 1 | o: data.age | l: 1 per data.region")))))))
+
+(deftest test-limit-per-api
+  (let [result (api/api-build "employee | o: id desc | l: 1 per company_id" nil :test)]
+    (testing "the SQL without hidden columns leaves out the hidden key, inside and outside"
+      (is (not (s/includes? (:query-without-hidden result) "__e_0__id")))
+      (is (s/starts-with? (s/triml (:query-without-hidden result))
+                          "SELECT \"__pine_rows__\".\"id\", \"__pine_rows__\".\"company_id\", \"__pine_rows__\".\"reports_to\" FROM ( SELECT \"e_0\".\"id\", ")))
+    (testing "SQL to Pine refuses the SQL of a per query cleanly: it has a subquery"
+      (is (= "sql-unsupported"
+             (:error-type (transpile/sql->pine (s/trim (s/replace (:query-without-hidden result) #";\s*$" "")))))))))

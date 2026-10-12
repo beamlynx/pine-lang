@@ -346,7 +346,9 @@
         ;; Don't add .* if current table has explicit columns
         select-all? (and star-eligible? (not current-table-has-columns?))
         items (mapv (fn [{:keys [column column-alias symbol alias] :as col}]
-                      (if (and (empty? column) (= symbol "*"))
+                      ;; Under a policy, a `*` left unexpanded goes through
+                      ;; column-sql, which redacts what it can't check.
+                      (if (and (empty? column) (= symbol "*") (not restricted?))
                         {:star alias}
                         (let [redact? (and restricted? (access-policy/sensitive-column? state rules col))
                               [c params] (column-sql state rules col)
