@@ -501,13 +501,44 @@
   surface as a raw Java NumberFormatException."
   10000)
 
-(defmethod -normalize-op :LIMIT [[_ [_ number]]]
+(defn- parse-limit [number]
   (let [n (try (Long/parseLong number) (catch NumberFormatException _ nil))]
     (when-not (and n (<= n max-limit))
       (throw (ex-info (str "limit: must be between 0 and " max-limit ".")
                       {:error-type "parse" :limit number})))
-    {:type :limit
-     :value n}))
+    n))
+
+(defn- per-column
+  "One column after `per`. A date bucket like `created_at => month` can't be
+  used there."
+  [column]
+  (let [info (column-info column)]
+    (when (:column-function info)
+      (throw (ex-info (str "`=> " (:column-function info) "` can't be used after `per`.")
+                      {:error-type "parse"})))
+    info))
+
+(defn- child [tag children]
+  (some #(when (= tag (first %)) %) children))
+
+;; `limit: 1 per customer_id` is {:type :limit :value 1 :per [{:column
+;; "customer_id"}]}. :value stays the number, as for a plain limit:, so
+;; anything that reads it doesn't need to know about `per`.
+(defmethod -normalize-op :LIMIT [[_ [_ number] columns]]
+  (cond-> {:type :limit
+           :value (parse-limit number)}
+    columns (assoc :per (mapv per-column (rest columns)))))
+
+;; While the columns after `per` are typed: `l: 1 per `, `l: 1 per a, ` or
+;; `l: 1 per c.`. It keeps the columns typed so far, as order-partial does,
+;; so hints can leave them out.
+(defmethod -normalize-op :LIMIT-PARTIAL [[_ [_ number] & children]]
+  (let [columns (child :columns children)
+        partial-alias (child :partial-alias children)]
+    (cond-> {:type :limit-partial
+             :value (parse-limit number)
+             :per (mapv per-column (rest columns))}
+      partial-alias (assoc :partial-alias (parse-partial-alias partial-alias)))))
 
 ;; -----
 ;; FROM

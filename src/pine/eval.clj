@@ -310,8 +310,11 @@
     ;; Regular columns
     :else [(q alias column) []]))
 
-(defn- build-columns-clause
-  "{:sql :params} for the SELECT list."
+(defn- select-items
+  "The SELECT list, one entry per item: {:expr :params :out-alias :name},
+  where :expr is the SQL before any `AS`, :out-alias the name written after
+  `AS` (or nil), and :name what the result calls the column. `alias.*` is
+  {:star alias}."
   [{:keys [operation columns current] :as state}]
   (let [type (-> operation :type)
         rules (:access-policy state)
@@ -340,32 +343,59 @@
                    (access-policy/expand-star state current))
         columns (if (seq expanded) (into columns expanded) columns)
         current-table-has-columns? (or current-table-has-columns? (seq expanded))
-        select-all (cond
-                     (not star-eligible?) ""
-                     current-table-has-columns? ""  ; Don't add .* if current table has explicit columns
-                     :else (str (if (seq columns) ", " "") (q current) ".*"))]
-    (let [parts (map (fn [{:keys [column column-alias symbol] :as col}]
-                       (let [redact? (and restricted? (access-policy/sensitive-column? state rules col))
-                             [c params] (column-sql state rules col)
-                             ;; A redacted literal loses Postgres' automatic naming of a
-                             ;; bare column reference, so name it explicitly whenever no
-                             ;; explicit column-alias was already going to do that job.
-                             out-alias (or column-alias (when redact? (if (empty? column) symbol column)))]
-                         [(if out-alias (str c " AS " (q out-alias)) c) params]))
-                     columns)]
-      {:sql (str "SELECT " (s/join ", " (map first parts)) select-all " FROM")
-       :params (mapcat second parts)})))
+        ;; Don't add .* if current table has explicit columns
+        select-all? (and star-eligible? (not current-table-has-columns?))
+        items (mapv (fn [{:keys [column column-alias symbol alias] :as col}]
+                      ;; Under a policy, a `*` left unexpanded goes through
+                      ;; column-sql, which redacts what it can't check.
+                      (if (and (empty? column) (= symbol "*") (not restricted?))
+                        {:star alias}
+                        (let [redact? (and restricted? (access-policy/sensitive-column? state rules col))
+                              [c params] (column-sql state rules col)
+                              ;; A redacted literal loses Postgres' automatic naming of a
+                              ;; bare column reference, so name it explicitly whenever no
+                              ;; explicit column-alias was already going to do that job.
+                              out-alias (or column-alias (when redact? (if (empty? column) symbol column)))]
+                          {:expr c
+                           :params params
+                           :out-alias out-alias
+                           :name (or out-alias (if (empty? column) symbol column))
+                           ;; A bare column reference, which the database
+                           ;; names after the column without an `AS`.
+                           :plain? (and (nil? out-alias) (seq column) (= c (q alias column)))})))
+                    columns)]
+    (cond-> items
+      select-all? (conj {:star current}))))
+
+(defn- item-sql [{:keys [star expr out-alias]}]
+  (cond
+    star (str (q star) ".*")
+    out-alias (str expr " AS " (q out-alias))
+    :else expr))
+
+(defn- build-columns-clause
+  "{:sql :params} for the SELECT list."
+  [state]
+  (let [items (select-items state)]
+    {:sql (str "SELECT " (s/join ", " (map item-sql items)) " FROM")
+     :params (mapcat :params items)}))
+
+(defn- order-terms
+  "[sql params] for a list of order columns: `\"a\".\"b\" DESC, ...`. A key
+  inside a JSON column sorts as a JSON value, so numbers sort as numbers."
+  [order]
+  (let [parts (map (fn [{:keys [alias column direction path]}]
+                     (let [[c params] (if path (json-extract :json (q alias column) path) [(q alias column) []])]
+                       [(str c " " direction) params]))
+                   order)]
+    [(s/join ", " (map first parts)) (mapcat second parts)]))
 
 (defn- build-order-clause
-  "[sql params] for ORDER BY, or nil. A key inside a JSON column sorts as a
-  JSON value, so numbers sort as numbers."
+  "[sql params] for ORDER BY, or nil."
   [{:keys [order]}]
   (when (seq order)
-    (let [parts (map (fn [{:keys [alias column direction path]}]
-                       (let [[c params] (if path (json-extract :json (q alias column) path) [(q alias column) []])]
-                         [(str c " " direction) params]))
-                     order)]
-      [(str "ORDER BY " (s/join ", " (map first parts))) (mapcat second parts)])))
+    (let [[sql params] (order-terms order)]
+      [(str "ORDER BY " sql) params])))
 
 (defn- remove-symbols
   "Remove symbols or columns from a vector of values"
@@ -461,11 +491,98 @@
                     (render-condition entry)))]
       [(str "WHERE " (s/join " AND " (map first parts))) (mapcat second parts)])))
 
-(defn- build-bare-select [state]
-  ;; Every SELECT Pine builds goes through here, named results' bodies
-  ;; included, so this is where hidden columns are kept out of where:,
-  ;; order: and group:.
-  (access-policy/check-references state (:access-policy state))
+(def ^:private rows-alias
+  "The derived table a per-group limit filters." "__pine_rows__")
+(def ^:private group-row-column
+  "A row's place in its group, from 1." "__pine_row__")
+(def ^:private overall-row-column
+  "A row's place in the order: of the whole result." "__pine_order__")
+
+(defn- partition-terms
+  "[sql params] for the columns after `per`. A key inside a JSON column
+  groups by its value as text."
+  [columns]
+  (let [parts (map (fn [{:keys [alias column path]}]
+                     (if path (json-extract :text (q alias column) path) [(q alias column) []]))
+                   columns)]
+    [(s/join ", " (map first parts)) (mapcat second parts)]))
+
+(defn- row-number
+  "[sql params] for `ROW_NUMBER() OVER (...) AS name`."
+  [partition order name]
+  (let [[p-sql p-params] (when (seq partition) (partition-terms partition))
+        [o-sql o-params] (when (seq order) (order-terms order))]
+    [(str "ROW_NUMBER() OVER ("
+          (s/join " " (filter some? [(when p-sql (str "PARTITION BY " p-sql))
+                                     (when o-sql (str "ORDER BY " o-sql))]))
+          ") AS " (q name))
+     (concat p-params o-params)]))
+
+(defn- spell-out-stars
+  "The SELECT list with each `alias.*` replaced by its columns, from the
+  names pine.ast.limit recorded."
+  [items {:keys [star-columns]} aliases]
+  (vec (mapcat (fn [{:keys [star] :as item}]
+                 (if star
+                   (let [columns (get star-columns star)]
+                     (when (empty? columns)
+                       (throw (ex-info (str "`" (table-label aliases star) "` isn't in the schema index, so limit: ... per "
+                                            "can't list its columns. Re-index the connection, or select its columns by name.")
+                                       {:error-type "unknown-columns" :alias star})))
+                     (map (fn [column] {:expr (q star column) :params [] :name column :plain? true}) columns))
+                   [item]))
+               items)))
+
+(defn- inner-names
+  "The name each item has inside the derived table. A derived table can't
+  hold two columns of the same name, so where names clash (`c.id` next to
+  `o.*`), each clashing item is named after its position instead. MySQL
+  compares names without case, so clashes are found the same way."
+  [items]
+  (let [lower (map #(s/lower-case (:name %)) items)
+        clashing (set (keep (fn [[k n]] (when (> n 1) k)) (frequencies lower)))]
+    (map-indexed (fn [i {:keys [name]}]
+                   (if (clashing (s/lower-case name)) (str "__pine_c" i "__") name))
+                 items)))
+
+(defn- build-per-group-select
+  "`limit: N per <columns>`: the first N rows of each group. ROW_NUMBER()
+  can't be filtered on in the query that computes it, so the query is built
+  as usual, with each row's place in its group added, and an outer query
+  keeps the rows up to N. The outer query names its columns one by one, so
+  the row numbers stay out of the result. It keeps order: as the order of
+  the whole result through a second row number, because the columns order:
+  names may not be in the result."
+  [state]
+  (let [{:keys [tables limit where aliases order limit-per]} state
+        from         (let [{a :alias} (first tables)
+                           {table :table schema :schema} (get aliases a)]
+                       (str (q schema table) " AS " (q a)))
+        join         (build-join-clause state)
+        items        (spell-out-stars (select-items state) limit-per aliases)
+        names        (inner-names items)
+        inner-items  (map (fn [{:keys [expr plain? name]} inner-name]
+                            (if (and plain? (= name inner-name)) expr (str expr " AS " (q inner-name))))
+                          items names)
+        outer-items  (map (fn [{:keys [name]} inner-name]
+                            (str (q rows-alias inner-name) (when (not= name inner-name) (str " AS " (q name)))))
+                          items names)
+        [group-row group-row-params] (row-number (:columns limit-per) (:order limit-per) group-row-column)
+        [overall-row overall-row-params] (when (seq order) (row-number nil order overall-row-column))
+        [where-clause where-params] (build-where-clause where)
+        inner (s/join " " (filter some? [(str "SELECT " (s/join ", " (concat inner-items (filter some? [group-row overall-row])))
+                                              " FROM")
+                                         from join where-clause]))
+        query (s/join " " (filter some? [(str "SELECT " (s/join ", " outer-items))
+                                         (str "FROM ( " inner " ) AS " (q rows-alias))
+                                         (str "WHERE " (q rows-alias group-row-column) " <= " (:n limit-per))
+                                         (when (seq order) (str "ORDER BY " (q rows-alias overall-row-column)))
+                                         (when limit (str "LIMIT " limit))]))
+        ;; In the order their `?` appear in the query.
+        params (concat (mapcat :params items) group-row-params overall-row-params where-params)]
+    {:query query :params (seq params)}))
+
+(defn- build-plain-select [state]
   (let [{:keys [tables _columns limit where aliases]} state
         from         (let [{a :alias} (first tables)
                            {table :table schema :schema} (get aliases a)]
@@ -481,6 +598,15 @@
         params (concat (:params select) where-params order-params)]
 
     {:query query :params (seq params)}))
+
+(defn- build-bare-select [state]
+  ;; Every SELECT Pine builds goes through here, named results' bodies
+  ;; included, so this is where hidden columns are kept out of where:,
+  ;; order:, group: and `per`.
+  (access-policy/check-references state (:access-policy state))
+  (if (:limit-per state)
+    (build-per-group-select state)
+    (build-plain-select state)))
 
 (defn- build-cte-body
   "Generate the inner SQL for a variable's AST used as a CTE.
@@ -631,14 +757,16 @@
     {:query query :params (seq (concat cte-params params))}))
 
 (defn- scoped?
-  "Whether a state's rows are narrowed by anything: a where:, a limit:, or a
-  source table that is a named result or checkpoint CTE whose own query is
-  narrowed. `company | l: 10 | employee` keeps no limit in its final state -
-  the limit was sealed into a CTE - but its rows are still scoped by it."
-  [{:keys [where limit tables aliases]}]
+  "Whether a state's rows are narrowed by anything: a where:, a limit: (with
+  or without `per`), or a source table that is a named result or checkpoint
+  CTE whose own query is narrowed. `company | l: 10 | employee` keeps no
+  limit in its final state - the limit was sealed into a CTE - but its rows
+  are still scoped by it."
+  [{:keys [where limit limit-per tables aliases]}]
   (boolean
    (or (seq where)
        limit
+       limit-per
        (some (fn [{a :alias}]
                (when-let [cte (get-in aliases [a :ast])]
                  (scoped? cte)))

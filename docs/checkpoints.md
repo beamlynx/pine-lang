@@ -132,13 +132,13 @@ SELECT COUNT(*) FROM x
 
 ## Constraints
 
-- Checkpoint op types (what *creates* a pending checkpoint) are GROUP and LIMIT.
+- Checkpoint op types (what *creates* a pending checkpoint) are GROUP and LIMIT. LIMIT includes `limit: N per <columns>` ([limit-per.md](limit-per.md)) and its partial form, so steps after it work on the rows kept per group.
 - Checkpoint-consuming op types (what *fires*/seals an already-pending checkpoint, alongside TABLE) are `select`/`select-partial`/`where`/`where-partial`/`order`/`order-partial`. `count:`/`delete!`/`update!` deliberately do not fire — see above.
 - Only one table-level composition step is supported per checkpoint; chaining `l: 10 | employee | document` creates one CTE for `l: 10` and then navigates normally through employee to document.
 - Auto-generated CTE names (`__pine_0__`, etc.) are numbered per expression and are not exposed to the user.
 - Checkpoint CTEs do not receive Pine's auto-id columns; those are suppressed for all CTE-backed tables.
 
-See also: [named-results.md](named-results.md) for cross-expression named CTEs.
+See also: [named-results.md](named-results.md) for cross-expression named CTEs, and [limit-per.md](limit-per.md) for top N per group.
 
 ---
 
@@ -153,7 +153,7 @@ See also: [named-results.md](named-results.md) for cross-expression named CTEs.
 
 ### Core functions (`ast/main.clj`)
 
-- `checkpoint-op-types` — set `#{:group :limit}`; ops that *create* a pending checkpoint
+- `checkpoint-op-types` — set `#{:group :limit :limit-partial}`; ops that *create* a pending checkpoint
 - `checkpoint-consuming-op-types` — set `#{:select :select-partial :where :where-partial :order :order-partial}`; ops that *fire* (seal) an already-pending checkpoint, alongside a TABLE op or another checkpoint op. Partial and complete forms are treated identically — a partial with a value has already fully typed whatever precedes a dangling trailing comma.
 - `reset-for-cte` — clears all query-building fields (tables, columns, joins, where, order, group, limit) while preserving references, variables, and pending-assignments
 - `seal-as-cte` — the single shared action: stores the snapshot under `cname` in `:pending-assignments`, seeds FK references for `cname` (same three passes used by cross-expression variables in `pre-handle`), resets query-building state, then injects `cname` as the first table via `handle-op`; `table/handle` resolves it via `:pending-assignments`

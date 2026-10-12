@@ -1,7 +1,7 @@
 OPERATIONS := <ws*> OPERATION <ws*> (<"|"> <ws*> OPERATION <ws*>)*
 ASSIGN     := <"="> <ws*> symbol
 
-OPERATION    := SELECT-PARTIAL | SELECT | WHERE-PARTIAL | WHERE | LIMIT | FROM | ORDER-PARTIAL | ORDER | COUNT | DELETE-ACTION | UPDATE-PARTIAL | UPDATE-ACTION | GROUP | ASSIGN | PATHS | TABLE
+OPERATION    := SELECT-PARTIAL | SELECT | WHERE-PARTIAL | WHERE | LIMIT-PARTIAL | LIMIT | FROM | ORDER-PARTIAL | ORDER | COUNT | DELETE-ACTION | UPDATE-PARTIAL | UPDATE-ACTION | GROUP | ASSIGN | PATHS | TABLE
 
 
 TABLE             := table table-mods
@@ -12,7 +12,12 @@ SELECT            := <select-op> aliased-columns
 
 WHERE-PARTIAL     := <where-op>         conditions <or-op> partial-condition  |  <where-op> conditions <ws+> <"or"> <ws*>  |  <where-op> partial-condition  |  <where-op>
 WHERE             := <where-op>         conditions     |     conditions
-LIMIT             := <limit-op>         integer        |     integer
+(* `limit: 1 per customer_id` keeps the first row of each customer_id: see
+   docs/limit-per.md. `per` needs whitespace on both sides, so a column like
+   `perimeter` never reads as it. *)
+LIMIT             := <limit-op>         integer (<per-op> columns)?  |  integer
+(* While the columns after `per` are typed: `l: 1 per`, `l: 1 per a, ` or `l: 1 per c.`. *)
+LIMIT-PARTIAL     := <limit-op> integer <per-op> columns <","> <ws*> partial-alias  |  <limit-op> integer <per-op> partial-alias  |  <limit-op> integer <per-op> columns <ws*> <",">  |  <limit-op> integer <ws+> <"per">
 FROM              := <from-op>          alias
 
 ORDER-PARTIAL     := <order-op> order-columns <","> <ws*> partial-alias | <order-op> partial-alias | <order-op> order-columns? <",">?
@@ -35,6 +40,7 @@ group-op          := (<"group:">  | <"g:">) <ws*>
 delete-action-op  := (<"delete!"> | <"d!">) <ws*>
 update-action-op  := (<"update!"> | <"u!">) <ws*>
 count-op          := <"count:">
+per-op            := <ws+> <"per"> <ws+>
 
 <table>           := symbol* | symbol* <"."> symbol*
 table-mods        := (<ws+> table-mod)*

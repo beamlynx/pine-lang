@@ -101,7 +101,9 @@ to build them, whoever asks, with `error-type: "write-refused"`:
 A `limit:` sealed into a checkpoint still counts as narrowing.
 `company | l: 10 | employee | delete! .id` deletes the employees of ten
 companies, so it is built. A named result counts only if its own query is
-narrowed.
+narrowed. `limit: N per <columns>` ([limit-per.md](limit-per.md)) narrows too:
+`ticket_status | o: created_at desc | l: 1 per ticket_id | delete! .id`
+deletes the latest status of each ticket.
 
 An unresolved join, where Pine found nothing connecting two tables, is refused
 for every operation with `error-type: "unresolved-join"`. It used to render

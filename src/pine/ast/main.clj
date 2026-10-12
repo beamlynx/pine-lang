@@ -54,6 +54,8 @@
             :selected-tables []           ;; e.g. [{ :table "user" :schema "public" :alias "u" }] ;; schema is nilable
             :columns         []           ;; e.g. [{ :alias "u" :column "name"  }]
             :limit           nil          ;; number ;; nilable
+            :limit-per       nil          ;; limit: N per ... e.g. {:n 1 :columns [{:alias "o_0" :column "customer_id" ...}]
+                                          ;;   :order [...] :star-columns {"o_0" ["id" ...]}} ;; nilable
             :aliases         {}           ;; e.g. [{ :schema "public" :table "user" }] ;; schema is nilable
             :joins           []           ;; e.g. [{:from "u_0" :to "c_1" :parent "to"
                                           ;;         :columns [{:from "company_id" :to "id"}]
@@ -142,7 +144,7 @@
 
 (declare handle-op)
 
-(def ^:private checkpoint-op-types #{:group :limit})
+(def ^:private checkpoint-op-types #{:group :limit :limit-partial})
 
 ;; Ops that consume/query the checkpoint's result rather than composing another
 ;; table join onto it. Fired on regardless of partial-vs-complete: an -partial op
@@ -156,7 +158,7 @@
 
 (defn- reset-for-cte [state]
   (assoc state
-         :tables    [] :columns [] :limit nil :joins  []
+         :tables    [] :columns [] :limit nil :limit-per nil :joins  []
          :where     [] :order   [] :group [] :update nil
          :current nil :context nil :current-index 0
          :table-count 0 :operation {:type nil :value nil}))
@@ -218,12 +220,13 @@
 
       :else state)))
 
-(defn handle-op [state {:keys [type value]}]
+(defn handle-op [state {:keys [type value per]}]
   (case type
     :select (select/handle state value)
     :select-partial (select/handle state value)
     :table (table/handle state value)
-    :limit (limit/handle state value)
+    :limit (limit/handle state value per)
+    :limit-partial (limit/handle state value per)
     :where (where/handle state value)
     :where-partial (where/handle-partial state value)
     :from (from/handle state value)

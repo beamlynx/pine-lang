@@ -707,7 +707,7 @@
         ;; For partial ops, always use the current context table — the user hasn't started typing
         ;; the next column yet, so the last completed column's alias is irrelevant.
         ;; For complete ops, use the typed column's alias when it was added in the current scope.
-        a (if (or (= type :select-partial) (= type :order-partial))
+        a (if (#{:select-partial :order-partial :limit-partial} type)
             (or (get-in state [:operation :partial-alias :alias]) (state :current))
             (if (and (seq column)
                      (column :operation-index)
@@ -717,11 +717,11 @@
         hints (generate-all-column-hints state a)]
     (cond
       ;; If the type is :select, :order, or :where and columns exist, filter hints using the columns
-      (and (or (= type :select) (= type :order) (= type :where)) column)
+      (and (#{:select :order :where :limit} type) column)
       (find-relevant-columns hints column)
 
       ;; If the type is :select-partial, :order-partial, or :where-partial and columns exist
-      (and (or (= type :select-partial) (= type :order-partial) (= type :where-partial)) columns)
+      (and (#{:select-partial :order-partial :where-partial :limit-partial} type) columns)
       (exclude-columns hints (filter #(= (:alias %) a) columns))
 
       ;; Otherwise, return all hints
@@ -761,9 +761,13 @@
                      :where-partial (generate-where-hints state-for-hints)
                      :where (generate-all-column-hints state-for-hints)
                      :update-partial (generate-update-hints state-for-hints)
+                     ;; The columns after `per`. A plain limit: has none.
+                     :limit (when (seq (get-in state-for-hints [:operation :per]))
+                              (generate-column-hints state-for-hints (get-in state-for-hints [:limit-per :columns])))
+                     :limit-partial (generate-column-hints state-for-hints (get-in state-for-hints [:limit-per :columns]))
                      [])
              hints (if (#{:select :select-partial :order :order-partial
-                          :where :where-partial :update-partial}
+                          :where :where-partial :update-partial :limit :limit-partial}
                         op-type)
                      (sort-column-hints hints)
                      hints)
@@ -772,5 +776,9 @@
                         :order-partial :order
                         :where-partial :where
                         :update-partial :update
+                        ;; Under :select, which clients already show, and
+                        ;; whose completion adds `column, `: right for a
+                        ;; list of columns.
+                        (:limit :limit-partial) :select
                         op-type)]
          (assoc-in state [:hints hint-key] (or hints [])))))))
