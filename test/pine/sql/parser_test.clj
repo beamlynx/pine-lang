@@ -41,7 +41,23 @@
    "select * from t where color = 1 or order_id = 2"
    "select \"c_0\".\"id\" as \"__c_0__id\", \"e_1\".* from \"company\" as \"c_0\" join \"employee\" as \"e_1\" on \"c_0\".\"id\" = \"e_1\".\"company_id\" limit 250"
    "select `id` from `Order` -- MySQL quoting\n"
-   "/* a comment */ select * -- and another\n from t"])
+   "/* a comment */ select * -- and another\n from t"
+   "with a as (select id from t), b as (select * from a where id > 1) select * from b"
+   "select distinct a from t"
+   "select distinct on (a, b) a, b, c from t order by a, b, c desc"
+   "select t.*, row_number() over (partition by t.a, t.b order by t.c desc, t.d) as rn from t"
+   "select row_number() over (order by c) rn from t"
+   "select * from (select id from t) x join (select id from u) as y on y.id = x.id"
+   "select * from t where a in (select id from u where b = 1) and c not in (select id from v)"
+   "select * from t where a is distinct from 'x' and b is not distinct from 1"
+   "update t set a = 1, b = null where id = 2"
+   "update t as d set a = 'x' from g left join k on k.id = g.id where d.id = g.id and k.id is null"
+   "delete from t where id = 1"
+   "delete from t d using g where d.id = g.id"
+   "with k as (select id from t) delete from u where id in (select id from k)"
+   "update company_document d set deleted_at = '2026-10-12' from sp_docs g left join keep_final kf on kf.id = g.id where d.id = g.id and kf.id is null and g.archived_at is null"
+   ;; The structure of the script in transpile_test's test-motivating-script.
+   "WITH sp_docs AS (\n    SELECT d.id, d.company_id, d.reference_id, d.created_at, d.archived_at\n    FROM company_document d\n    LEFT JOIN company_document_attachment cda ON cda.company_document_id = d.id\n    LEFT JOIN attachment a ON a.id = cda.attachment_id\n    WHERE d.tenant_id = '86b8ad91-7463-478a-aa43-43a977105bf4' AND d.deleted_at IS NULL\n      AND (a.type = 'sharepoint' OR d.reference_id IS NOT NULL)\n),\nranked AS (\n    SELECT g.*,\n        ROW_NUMBER() OVER (PARTITION BY g.company_id, g.reference_id ORDER BY g.created_at DESC, g.id ASC) AS rn\n    FROM sp_docs g WHERE g.archived_at IS NULL\n),\nkeep_final AS (SELECT id FROM ranked WHERE rn = 1)\nUPDATE company_document d SET deleted_at = '2026-10-12'\nFROM sp_docs g LEFT JOIN keep_final kf ON kf.id = g.id\nWHERE d.id = g.id AND kf.id IS NULL AND g.archived_at IS NULL"])
 
 (deftest test-one-parse
   (doseq [sql corpus]
@@ -50,7 +66,7 @@
 
 (deftest test-shape
   (testing "Select list, table, alias"
-    (is (= {:joins []
+    (is (= {:kind :select :ctes [] :joins []
             :select [{:kind :column :column {:name "name"}} {:kind :column :column {:name "id" :qualifier "c"} :as "i"}
                      {:kind :count :as "n"} {:kind :alias-star :qualifier "c"} {:kind :star}]
             :from {:schema "public" :table "company" :alias "c"}}
@@ -127,6 +143,47 @@
       (is (= "a = 1" (subs sql at)))
       (is (= 3 (sp/line-of sql at))))))
 
+(deftest test-new-shapes
+  (testing "WITH queries, in order"
+    (is (= ["a" "b"] (map :name (:ctes (p "with a as (select * from t), b as (select * from a) select * from b"))))))
+  (testing "A subquery in FROM keeps its alias"
+    (is (= "x" (:alias (:from (p "select * from (select id from t) x"))))))
+  (testing "ROW_NUMBER()"
+    (is (= {:kind :row-number :as "rn" :partition [{:name "a"}]
+            :order [{:target {:kind :column :column {:name "b"}} :direction :desc}]}
+           (strip-at (second (:select (p "select *, row_number() over (partition by a order by b desc) as rn from t")))))))
+  (testing "UPDATE and DELETE"
+    (is (= {:kind :update :target {:table "t" :alias "d"} :ctes [] :joins []
+            :set [{:column {:name "a"} :value {:kind :number :value "1"}}]
+            :from {:table "g"}
+            :where {:op :compare :operator "=" :left {:kind :column :column {:name "id" :qualifier "d"}}
+                    :right {:kind :column :column {:name "id" :qualifier "g"}}}}
+           (strip-at (p "update t d set a = 1 from g where d.id = g.id"))))
+    (is (= :delete (:kind (p "delete from t where id = 1"))))))
+
+(deftest test-scripts
+  (let [sql "BEGIN;\nselect 'a;b' from t; -- a comment;\nCOMMIT;\n"
+        pieces (map (fn [{:keys [start end]}] (subs sql start end)) (sp/split-script sql))]
+    (testing "A script splits on the `;` that end statements, not on one in a string or a comment"
+      (is (= ["BEGIN" "\nselect 'a;b' from t" " -- a comment;\nCOMMIT"] pieces)))
+    (testing "BEGIN, COMMIT and ROLLBACK are told apart from the rest"
+      (is (= ["begin" nil "commit"] (map sp/transaction-word pieces)))
+      (is (= "rollback" (sp/transaction-word "ROLLBACK WORK")))
+      (is (= "begin" (sp/transaction-word "start transaction"))))
+    (testing "Whether a statement changes data, even when it doesn't parse"
+      (is (= :update (sp/statement-kind "with a as (select f(x) from t) update t set a = 1")))
+      (is (= :delete (sp/statement-kind "DELETE FROM t")))
+      (is (= :other-write (sp/statement-kind "insert into t values (1)")))
+      (is (= :select (sp/statement-kind "select count(*) from t"))))
+    (testing "Masking keeps offsets and lines"
+      (is (= "      \nselect" (sp/mask "BEGIN;\nselect" 6 13))))
+    (testing "A `;` inside a dollar-quoted body doesn't end the statement"
+      (is (= 2 (count (sp/split-script "DO $$ BEGIN UPDATE t SET a = 1; END $$; select 1 from t")))))
+    (testing "Statements that may change data never count as reads"
+      (is (= :other-write (sp/statement-kind "CALL refresh()")))
+      (is (= :other-write (sp/statement-kind "DO $$ BEGIN END $$")))
+      (is (= :other-write (sp/statement-kind "EXPLAIN ANALYZE UPDATE t SET a = 1"))))))
+
 (deftest test-errors
   (let [err (fn [sql] (select-keys (sp/parse sql) [:error :error-type]))
         unsupported (fn [sql message]
@@ -134,7 +191,6 @@
                         (is (= "sql-unsupported" error-type) sql)
                         (is (some-> error (s/includes? message)) (str sql " => " error))))]
     (testing "Each names the construct"
-      (unsupported "select distinct a from t" "DISTINCT")
       (unsupported "select * from t offset 5" "OFFSET")
       (unsupported "select * from t limit 5 offset 5" "OFFSET")
       (unsupported "select * from t fetch first 5 rows only" "FETCH")
@@ -144,11 +200,17 @@
       (unsupported "select * from a cross join b" "CROSS JOIN")
       (unsupported "select * from a natural join b" "NATURAL JOIN")
       (unsupported "select * from a, b" "comma between tables")
-      (unsupported "with x as (select 1) select * from x" "WITH")
+      (unsupported "with recursive x as (select * from t) select * from x" "WITH RECURSIVE")
+      (unsupported "with x as materialized (select * from t) select * from x" "MATERIALIZED")
+      (unsupported "update t set a = 1 where id = 2 returning *" "RETURNING")
+      (unsupported "update t set a = now() where id = 2" "NOW() isn't in Pine yet")
+      (unsupported "select row_number() over (partition by lower(a) order by b) from t" "PARTITION BY lower(a) inside ROW_NUMBER()")
+      (unsupported "select row_number() over (partition by a order by b, (c is null) desc) from t" "ORDER BY (c is null) inside ROW_NUMBER()")
+      (unsupported "select row_number() over (partition by a order by b nulls last) from t" "ORDER BY b nulls last inside ROW_NUMBER()")
       (unsupported "select case when a then 1 end from t" "CASE")
       (unsupported "select * from t where exists (select 1)" "EXISTS")
       (unsupported "select * from t order by a nulls last" "NULLS")
-      (unsupported "select * from t where a in (select id from b)" "subquery")
+      (unsupported "select * from t where a = (select id from b)" "subquery here")
       (unsupported "select lower(a) from t" "lower()")
       (unsupported "select * from t where lower(a) = 'x'" "lower()")
       (unsupported "select sum(a) from t" "SUM()")
@@ -158,8 +220,7 @@
       (unsupported "select * from t where a = $1" "$1")
       (unsupported "select * from t where a = ?" "placeholder")
       (unsupported "select * from t; select * from u" "one statement")
-      (unsupported "delete from t where id = 1" "Only a SELECT")
-      (unsupported "UPDATE t SET a = 1" "Only a SELECT"))
+      (unsupported "insert into t values (1)" "INSERT doesn't convert to Pine. Only SELECT, UPDATE and DELETE do."))
 
     (testing "Text that isn't SQL"
       (is (= {:error "Line 1: A string is missing its closing quote." :error-type "sql-parse-error"}
