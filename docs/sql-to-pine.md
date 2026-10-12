@@ -12,8 +12,9 @@ The conversion is exact or it refuses. It covers the SQL Pine can say and names 
 its line. It never guesses, because a query that converts to something subtly different is worse than
 one that doesn't convert.
 
-One difference is accepted: Pine adds `LIMIT 250` to a query with no `limit:`, so a query without
-`LIMIT` returns at most 250 rows.
+Two differences are accepted, both caps on how many rows come back. Pine adds `LIMIT 250` to a query
+with no `limit:`, so a query without `LIMIT` returns at most 250 rows. A query that ends in `group:`
+returns at most 10 000 groups. A converted `COUNT(*)` has no cap: it counts every row.
 
 ## API
 
