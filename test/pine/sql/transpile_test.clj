@@ -94,11 +94,21 @@
     (converts-to "select count(*) from t where a = 1" "t | where: a = 1 | count:")
     (converts-to "select status, count(*) from t group by status" "t | group: status => count")
     (converts-to "select status, count(*) as n from t group by status order by n desc"
-                 "t | group: status => count | order: count desc"
-                 ["COUNT(*) AS n: Pine names the count column `count`."])
-    (converts-to "select status from t group by status order by status"
-                 "t | group: status => count | order: status asc"
-                 ["Pine adds a count column to a group:."])))
+                 "t | group: status => count as n | order: n desc")
+    (testing "Pine's count column is left out when the SQL has none"
+      (converts-to "select status from t group by status order by status"
+                   "t | group: status | select: status | order: status asc")
+      (converts-to "select count(*) from t group by status" "t | group: status => count | select: count"))
+    (testing "A grouped column keeps the SQL's name"
+      (converts-to "select status as s, count(*) from t group by status order by s"
+                   "t | group: status => count | select: status as s, count | order: s asc"))
+    (testing "ORDER BY a grouped column the SELECT leaves out sorts before the select:"
+      (converts-to "select count(*) as n from t group by status order by status"
+                   "t | group: status => count as n | order: status asc | select: n"))
+    (testing "Two SQL columns of one name: the second is renamed, with a warning"
+      (converts-to "select count(*), min(score) as count from t group by a"
+                   "t | group: a => count as count_2, min(score) as count | select: count_2, count"
+                   ["`count_2` is the SQL's column `count`: Pine needs each name once."]))))
 
 (deftest test-joins
   (testing "A join is the joined table's columns = the earlier table's"
@@ -386,9 +396,14 @@
   (testing "Refusals"
     (refuses "with a as (select * from t), a as (select * from u) select * from a" "Two WITH queries are called `a`")
     (refuses "with x as (select * from t) select * from (select * from u) x" "`x` names two queries")
-    (refuses "with a as (select status, count(*) as n from t group by status) select * from a"
-             "In the WITH query `a`: COUNT(*) AS n: Pine names the count column `count`.")
-    (refuses "with a as (select status from t group by status) select * from a" "In the WITH query `a`: Pine adds a count column")))
+    (refuses "with a as (select count(*), min(x) as count from t group by status) select * from a"
+             "In the WITH query `a`: `count_2` is the SQL's column `count`"))
+
+  (testing "A GROUP BY in a WITH query has exactly the SQL's columns"
+    (converts-to-blocks "with a as (select status, count(*) as n from t group by status) select * from a"
+                        "t | group: status => count as n |= a\n\na")
+    (converts-to-blocks "with a as (select status from t group by status) select * from a"
+                        "t | group: status | select: status |= a\n\na")))
 
 (deftest test-top-n-per-group
   (testing "ROW_NUMBER() kept with rn = 1 is limit: 1 per"
@@ -426,7 +441,8 @@
   (testing "DISTINCT ON keeps the first row of each group, in the ORDER BY"
     (converts-to "select distinct on (a) a, b from t order by a, b desc" "t | select: a, b | order: a asc, b desc | limit: 1 per a")
     (converts-to "select distinct on (t.a, t.b) * from t order by b, a, c" "t | order: b asc, a asc, c asc | limit: 1 per a, b")
-    (converts-to "select distinct on (a) * from t" "t | limit: 1 per a"))
+    (converts-to "select distinct on (a) * from t" "t | limit: 1 per a"
+                 ["DISTINCT ON has no ORDER BY, so the SQL keeps any row of each group. Pine keeps the first in primary key order."]))
 
   (testing "Refusals"
     (refuses "select id, row_number() over (partition by a order by b) as rn from t"
@@ -534,7 +550,7 @@
 
   (testing "Refusals"
     (converts-to "update company set updated_at = now() where id = 1" "company | where: id = 1 | update! updated_at = now()")
-    (refuses "update company set name = lower(name) where id = 1" "LOWER() isn't in Pine yet. update! writes a value")
+    (refuses "update company set name = lower(name) where id = 1" "lower() isn't in Pine's update!. update! writes a value")
     (refuses "update company set name = other where id = 1" "Setting a column from another column isn't converted")
     (refuses "update company set name = 'x'" "has no condition of its own")
     (refuses "update employee e set name = 'x' from company c where c.name = 'Acme'" "needs a WHERE condition that ties `c` to `e`")
@@ -920,8 +936,10 @@ COMMIT;
 
                          g | where: total < 100"))
 
+  (testing "An aggregate without AS is named as Postgres names it: after its function"
+    (converts-to "select a, sum(b) from t group by a" "t | group: a => sum(b) as sum"))
+
   (testing "Refused"
-    (refuses "select a, sum(b) from t group by a" "Name this value with AS")
     (refuses "select a, b, min(c) as m from t group by a" "`b` is selected but not grouped.")
     (refuses "select a from t group by a having b > 1" "`b` is neither grouped nor inside an aggregate.")
     (refuses "select a, min(max(b)) as m from t group by a" "An aggregate inside another isn't in Pine.")

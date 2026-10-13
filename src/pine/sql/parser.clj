@@ -68,20 +68,23 @@
     :null {:kind :null}
     :variable {:kind :variable :name value}))
 
-(defn- operand [[_ inner cast :as node]]
-  (cond
-    (= :now (first inner))
-    {:kind :now :at (at node)}
+(declare predicate select-query expr)
 
-    (= :cast-fn (first inner))
-    (let [[_ value t] inner]
-      (assoc (literal value) :cast (type-name t) :at (at node)))
-
-    :else
+(defn- operand
+  "A literal, column or variable, maybe cast. Also reads a :cast-operand
+  node, which has the same shape. CAST(x AS t) is x with :cast t; x may be
+  any value, so the result may be a computed value."
+  [[_ inner cast :as node]]
+  (case (first inner)
+    :now {:kind :now :at (at node)}
+    :special-value {:kind :special :name (s/upper-case (second (second inner))) :at (at node)}
+    :cast-fn (let [[_ v t] inner
+                   e (expr v)]
+               (when (:cast e)
+                 (throw (ex-info "two casts" {::two-casts (at node)})))
+               (assoc e :cast (type-name t) :at (at node)))
     (cond-> (assoc (literal inner) :at (at node))
       cast (assoc :cast (type-name (second cast))))))
-
-(declare predicate select-query expr)
 
 (defn- negated? [node]
   (boolean (child node :negated)))
@@ -92,8 +95,8 @@
 (defn- predicate [[tag & args :as node]]
   (case tag
     :predicate (predicate (first args))
-    :and {:op :and :args (mapv predicate args)}
-    :or {:op :or :args (mapv predicate args)}
+    :and {:op :and :args (mapv predicate args) :at (at node)}
+    :or {:op :or :args (mapv predicate args) :at (at node)}
     :not {:op :not :arg (predicate (first args)) :at (at node)}
     :strict-predicate (predicate (first args))
     :compare (let [[l [_ op] r] args]
@@ -104,7 +107,7 @@
             {:op :like :negated (negated? node)
              :operator (s/lower-case (second (second (child node :like-op))))
              :left l :right r :at (at node)})
-    :is-null {:op :is-null :negated (negated? node) :left (first (operands node)) :at (at node)}
+    :is-null {:op :is-null :negated (negated? node) :left (expr (first args)) :at (at node)}
     :in (let [[l & vs] (operands node)]
           {:op :in :negated (negated? node) :left l :values (vec vs) :at (at node)})
     :in-select {:op :in :negated (negated? node) :left (first (operands node))
@@ -126,14 +129,24 @@
   [[tag & args :as node]]
   (case tag
     :operand (operand node)
-    :count-star {:kind :count :at (at node)}
-    :computed (expr (first args))
+    :cast-operand (operand node)
+    :count-star (cond-> {:kind :count :at (at node)}
+                  (child node :filter) (assoc :filter (predicate (second (child node :filter)))))
+    :computed (let [inner (first args)]
+                (if (predicate-tags (first inner))
+                  {:kind :pred :pred (predicate inner) :at (at node)}
+                  (expr inner)))
     :now {:kind :now :at (at node)}
+    :special-value {:kind :special :name (s/upper-case (second (first args))) :at (at node)}
     :concat {:kind :concat :args (mapv expr args) :at (at node)}
-    :paren-value (let [inner (first args)]
-                   (if (predicate-tags (first inner))
-                     {:kind :pred :pred (predicate inner) :at (at node)}
-                     (expr inner)))
+    :paren-value (let [[inner cast-node] args
+                       e (if (predicate-tags (first inner))
+                           {:kind :pred :pred (predicate inner) :at (at node)}
+                           (expr inner))]
+                   (cond
+                     (nil? cast-node) e
+                     (:cast e) (throw (ex-info "two casts" {::two-casts (at node)}))
+                     :else (assoc e :cast (type-name (second cast-node)))))
     :strict-predicate {:kind :pred :pred (predicate node) :at (at node)}
     :call (let [[[_ fn-name] & more] args
                 filter-node (child node :filter)
@@ -143,11 +156,16 @@
                      :at (at node)}
               filter-node (assoc :filter (predicate (second filter-node)))
               cast-node (assoc :cast (type-name (second cast-node)))))
-    :case (let [whens (children node :when)
-                else-node (first (remove #(= :when (first %)) args))]
-            (cond-> {:kind :case
-                     :whens (mapv (fn [[_ p v]] [(predicate p) (expr v)]) whens)
-                     :at (at node)}
+    ;; CASE x WHEN v THEN ... is CASE WHEN x = v THEN ...: equal, never
+    ;; NULL, the same as `=`.
+    :case (let [subject (some-> (child node :case-subject) second expr)
+                whens (if subject
+                        (mapv (fn [[_ v r :as w]]
+                                [{:op :compare :operator "=" :left subject :right (expr v) :at (at w)} (expr r)])
+                              (children node :simple-when))
+                        (mapv (fn [[_ p v]] [(predicate p) (expr v)]) (children node :when)))
+                else-node (first (remove #(#{:when :simple-when :case-subject} (first %)) args))]
+            (cond-> {:kind :case :whens whens :at (at node)}
               else-node (assoc :else (expr else-node))))))
 
 (defn- table-ref
@@ -187,7 +205,7 @@
   (cond-> (case kind
             :star {:kind :star}
             :alias-star {:kind :alias-star :qualifier (identifier (first args))}
-            :count-star {:kind :count}
+            :count-star (expr inner)
             :row-number (row-number inner)
             :column {:kind :column :column (column inner)}
             :computed {:kind :expr :expr (expr inner)})
@@ -197,7 +215,7 @@
 (defn- order-item [[_ [kind value :as target] direction :as node]]
   {:target (case kind
              :column {:kind :column :column (column target)}
-             :count-star {:kind :count}
+             :count-star (expr target)
              :position {:kind :position :value value}
              :computed {:kind :expr :expr (expr target)})
    :direction (some-> direction second second s/lower-case keyword)
@@ -233,7 +251,7 @@
   [[tag target & clauses :as node]]
   (reduce (fn [acc [ctag & args :as c]]
             (case ctag
-              :assignment (update acc :set conj {:column (column (first args)) :value (operand (second args)) :at (at c)})
+              :assignment (update acc :set conj {:column (column (first args)) :value (expr (second args)) :at (at c)})
               (:update-from :delete-using) (merge acc (from-and-joins c))
               :where (assoc acc :where (predicate (first args)))))
           {:kind (if (= tag :update) :update :delete) :target (table-ref target) :set [] :joins [] :at (at node)}
@@ -413,7 +431,13 @@
       (let [index (min (:index result) (count text))
             [message kind] (hint text index)]
         {:error (str "Line " (line-of text index) ": " message) :error-type kind})
-      {:result (normalize result)})))
+      (try
+        {:result (normalize result)}
+        (catch clojure.lang.ExceptionInfo e
+          (if-let [at (::two-casts (ex-data e))]
+            {:error (str "Line " (line-of text at) ": Two casts on one value aren't converted. Cast it once.")
+             :error-type "sql-unsupported"}
+            (throw e)))))))
 
 ;; -------
 ;; SCRIPTS
