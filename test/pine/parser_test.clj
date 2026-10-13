@@ -305,18 +305,18 @@
         "delete! must still parse"))
 
   (testing "Parse `group` expressions"
-    (is (= [{:type :group, :value {:columns [{:column "status"}], :functions ["count"]}}]
+    (is (= [{:type :group, :value {:columns [{:column "status"}], :functions [{:kind :aggregate :fn "count" :arg nil :filter nil}]}}]
            (p "group: status")))
-    (is (= [{:type :group, :value {:columns [{:column "status"}], :functions ["count"]}}]
+    (is (= [{:type :group, :value {:columns [{:column "status"}], :functions [{:kind :aggregate :fn "count" :arg nil :filter nil}]}}]
            (p "group: status => count")))
     ;; Only count: the others computed over the constant 1.
     (is (:error (parse "group: status => count, sum")))
     (is (:error (parse "company | group: name => avg")))
-    (is (= [{:type :group, :value {:columns [{:column "name"} {:column "status"}], :functions ["count"]}}]
+    (is (= [{:type :group, :value {:columns [{:column "name"} {:column "status"}], :functions [{:kind :aggregate :fn "count" :arg nil :filter nil}]}}]
            (p "group: name, status => count")))
 
     ;; with aliases
-    (is (= [{:type :group, :value {:columns [{:alias "x", :column "status"}], :functions ["count"]}}]
+    (is (= [{:type :group, :value {:columns [{:alias "x", :column "status"}], :functions [{:kind :aggregate :fn "count" :arg nil :filter nil}]}}]
            (p "group: x.status  => count"))))
 
   (testing "Parse date extraction functions in select"

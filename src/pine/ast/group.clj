@@ -3,7 +3,28 @@
    [clojure.string :as s]
    [pine.ast.path :as path]
    [pine.ast.select :as select]
-   [pine.ast.table :as table]))
+   [pine.ast.table :as table]
+   [pine.ast.value :as value]))
+
+(defn- aggregate-columns
+  "[state columns] for the aggregates after `=>`. A bare `count` stays the
+  COUNT(1) it always was. Any other is a computed column marked :aggregate,
+  named by `as` or by value/default-name."
+  [state functions]
+  (let [[state columns]
+        (reduce (fn [[st acc] {:keys [column-alias] :as f}]
+                  (let [n (or column-alias (value/default-name f))]
+                    (if (and (= "count" (:fn f)) (nil? (:filter f)))
+                      [st (conj acc {:symbol "COUNT(1)" :column-alias n})]
+                      (let [[st node] (value/resolve-node st (dissoc f :column-alias) true)]
+                        [st (conj acc {:computed node :column-alias n :aggregate true})]))))
+                [state []]
+                functions)]
+    (doseq [[n k] (frequencies (map :column-alias columns))
+            :when (> k 1)]
+      (throw (ex-info (str "Two aggregates are named `" n "`. Name them apart with `as`, like `min(a.id) as first_id`.")
+                      {:error-type "duplicate-name" :column n})))
+    [state columns]))
 
 (defn handle [state value]
   (let [i (state :index)
@@ -18,12 +39,12 @@
         ;; Resolve what each name means first: `data.plan` is a path into
         ;; `data`, not alias `data`. Its alias may still be replaced below by
         ;; the alias of a matching selected column.
-        raw-group-columns (map #(assoc (path/resolve-column state %1) :operation-index i) (:columns value))
+        ;; A computed column's name is the computed column itself, which
+        ;; the merge below finds among the selected columns.
+        raw-group-columns (map #(assoc (or (path/computed-ref state %1) (path/resolve-column state %1)) :operation-index i) (:columns value))
         column-name #(or (:column-alias %) (:column %))
 
-        ;; Create aggregate function symbols with aliases
-        fn-columns (map (fn [name] {:symbol (str (s/upper-case name) "(1)")
-                                    :column-alias name}) (:functions value))
+        [state fn-columns] (aggregate-columns state (:functions value))
 
         ;; Merge group columns with existing selected columns
         ;; ONLY include columns that are explicitly mentioned in the GROUP operation

@@ -233,3 +233,26 @@
     (cond-> resolved
       (and (seq (:path resolved)) (not (:column-alias resolved)))
       (assoc :column-alias (path-text (:column resolved) (:path resolved))))))
+
+;; ---------------------------------------------------------------------------
+;; Computed names
+;; ---------------------------------------------------------------------------
+
+(defn computed-column
+  "The computed column of the select: steps so far named `n`, or nil."
+  [state n]
+  (when n
+    (some #(when (and (:computed %) (= n (:column-alias %))) %) (:columns state))))
+
+(defn computed-ref
+  "A bare name that is a computed column of an earlier select: step, as that
+  column's value, to inline where the name is used: SQL can't use a SELECT
+  list name in WHERE, PARTITION BY or GROUP BY. The name wins over a table
+  column with the same name, which is still reachable with its alias.
+  nil for any other column. See docs/computed-values.md."
+  [state {:keys [alias column path] :as col}]
+  (when (and (nil? alias) (empty? path))
+    (when-let [c (computed-column state column)]
+      (-> col
+          (assoc :alias (:current state) :computed (:computed c))
+          (dissoc :path)))))

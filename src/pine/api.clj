@@ -15,6 +15,7 @@
    [pine.access-policy :as access-policy]
    [pine.ast.effects :as effects]
    [pine.ast.main :as ast]
+   [pine.computed :as computed]
    [pine.db.connections :as connections] ;; Encode arrays and json results in API responses
    [pine.db.exec :as exec]
    [pine.db.main :as db]
@@ -147,6 +148,25 @@
   [table]
   (select-keys table [:schema :table :alias]))
 
+(defn- describe-computed
+  "A column, order:, group: or where: entry as the client gets it. A
+  computed value's tree is replaced by what the canvas draws: `computed`
+  true, `text`, the value written as Pine, and `uses`, the {alias, column}
+  pairs it reads. A computed value on the right of a condition (`> now()`)
+  is described the same way. See docs/computed-values.md."
+  [entry]
+  (let [describe (fn [node] {:text (computed/text node) :uses (computed/uses node)})]
+    (cond
+      (:or entry) (update entry :or #(mapv describe-computed %))
+      :else (cond-> entry
+              (:computed entry) (-> (merge (describe (:computed entry))) (assoc :computed true))
+              (= :computed (get-in entry [:value :type])) (update :value #(merge {:type :computed} (describe (:node %))))))))
+
+(defn- describe-entries [ast]
+  (reduce (fn [ast k] (if (contains? ast k) (update ast k #(mapv describe-computed %)) ast))
+          ast
+          [:columns :order :group :where]))
+
 (defn- prune-var-ast
   "Prune a variable/pending-assignment snapshot down to what the frontend actually
   uses (NamedResultAst in client.ts). Critical: a raw snapshot still carries :named-results
@@ -158,6 +178,7 @@
   down."
   [var-ast]
   (-> (select-keys var-ast [:tables :selected-tables :joins :columns :where :order :group])
+      describe-entries
       (update :tables #(mapv prune-table %))
       (update :selected-tables #(mapv prune-table %))))
 
@@ -165,6 +186,7 @@
   "Prune a generated state down to the :ast value returned to the frontend."
   [state]
   (-> (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where :group :prettified :ranges :assign :checkpoints])
+      describe-entries
       (update :selected-tables #(mapv prune-table %))
       (assoc :named-results
              (into {} (for [[k v] (:named-results state)] [k (prune-var-ast v)])))
