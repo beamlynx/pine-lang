@@ -656,8 +656,8 @@
 ;; THE MOTIVATING ONE
 ;; ------------------
 ;;
-;; An agent's script that soft-deletes duplicate SharePoint documents. Parts
-;; of it aren't in Pine yet, so it is refused where the first one is.
+;; An agent's script that soft-deletes duplicate SharePoint documents. It
+;; converts in full.
 
 (def ^:private motivating-sql
   "BEGIN;

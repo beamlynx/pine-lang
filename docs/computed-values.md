@@ -144,7 +144,7 @@ Either column of an explicit join pair can take a cast:
 document as d | activity_resource .resourceableId = .id ::text
 ```
 
-The cast belongs to the column it follows, here `d.id`: `ON "a_1"."resourceableId" = "d"."id"::text`.
+The cast belongs to the column it follows, here `d.id`: `ON "d"."id"::text = "ar_1"."resourceableId"`.
 
 ## How it works
 
