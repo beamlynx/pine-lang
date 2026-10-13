@@ -9,14 +9,14 @@
   "Convert a condition value to the appropriate database type based on the column's schema"
   [value alias col state]
   (let [table-info (get (:aliases state) alias)
-        db-type (dt/get-column-type (:references state) alias col table-info)]
-    (if db-type
+        column-info (dt/get-column (:references state) alias col table-info)]
+    (if (:type column-info)
       (if (and (coll? value) (not (map? value)))
         ;; For collections (like IN operator values), convert each item
         ;; Check for (not (map? value)) to avoid treating data type maps as collections
-        (map #(dt/convert-value-to-db-type % db-type) value)
+        (map #(dt/convert-value-for-column % column-info) value)
         ;; For single values, convert directly
-        (dt/convert-value-to-db-type value db-type))
+        (dt/convert-value-for-column value column-info))
       value)))
 
 (def ^:private json-comparisons #{"=" "!=" ">" "<" ">=" "<="})
