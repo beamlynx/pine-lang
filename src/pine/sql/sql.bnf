@@ -31,7 +31,7 @@ select-list   := select-item (<ws?> <","> <ws?> select-item)*
 select-item   := star | alias-star | count-star as-alias? | row-number as-alias? | column as-alias? | computed as-alias?
 star          := <"*">
 alias-star    := identifier <ws?> <"."> <ws?> <"*">
-count-star    := <COUNT> <ws?> <"("> <ws?> (<"*"> | <"1">) <ws?> <")">
+count-star    := <COUNT> <ws?> <"("> <ws?> (<"*"> | <"1">) <ws?> <")"> filter?
 (* ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...): Pine's limit: N per,
    when a later query keeps rows with rn = 1 or rn <= N. *)
 row-number    := <ROW_NUMBER> <ws?> <"("> <ws?> <")"> <ws?> <OVER> <ws?> <"("> <ws?> partition? window-order? <")">
@@ -47,7 +47,7 @@ table-name    := identifier (<ws?> <"."> <ws?> identifier)?
 derived       := <"("> <ws?> select <ws?> <")"> as-alias
 
 update        := <UPDATE> <ws> table-ref <ws> <SET> <ws> assignment (<ws?> <","> <ws?> assignment)* update-from? where?
-assignment    := column <ws?> <"="> <ws?> operand
+assignment    := column <ws?> <"="> <ws?> value
 update-from   := <ws> <FROM> <ws> (table-ref | derived) join*
 delete        := <DELETE> <ws> <FROM> <ws> table-ref delete-using? where?
 delete-using  := <ws> <USING> <ws> (table-ref | derived) join*
@@ -76,13 +76,13 @@ not           := <NOT> <ws?> not-expr
 (* A function or a count is compared too: in HAVING (`COUNT(1) > 1`), and
    so a function in WHERE is refused by name rather than at a parse error. *)
 compare       := cmp-operand <ws?> cmp-op <ws?> cmp-operand
-<cmp-operand> := operand | call | count-star
+<cmp-operand> := concat | operand | call | count-star | paren-value
 (* A function that is true or false on its own: BOOL_OR(...) in HAVING. *)
 call-truthy   := call
 cmp-op        := "=" | "<>" | "!=" | ">=" | "<=" | ">" | "<"
 like          := operand <ws> negated? like-op <ws> operand
 like-op       := LIKE | ILIKE
-is-null       := operand <ws> <IS> <ws> negated? <NULL>
+is-null       := cmp-operand <ws> <IS> <ws> negated? <NULL>
 is-distinct   := operand <ws> <IS> <ws> negated? <DISTINCT> <ws> <FROM> <ws> operand
 in            := operand <ws> negated? <IN> <ws?> <"("> <ws?> operand (<ws?> <","> <ws?> operand)* <ws?> <")">
 in-select     := operand <ws> negated? <IN> <ws?> <"("> <ws?> select <ws?> <")">
@@ -91,9 +91,12 @@ between       := operand <ws> negated? <BETWEEN> <ws> operand <ws> <AND> <ws> op
 truthy        := column
 negated       := <NOT> <ws>
 
-operand       := (column | string | number | boolean | null | variable) cast? | cast-fn | now
+operand       := (column | string | number | boolean | null | variable) cast? | cast-fn | now | special-value
 cast          := <ws?> <"::"> <ws?> type-name
-cast-fn       := <CAST> <ws?> <"("> <ws?> (column | string | number) <ws> <AS> <ws> type-name <ws?> <")">
+(* CAST(x AS t) is x::t, whatever x is. *)
+cast-fn       := <CAST> <ws?> <"("> <ws?> value <ws> <AS> <ws> type-name <ws?> <")">
+(* Read so they can be refused by name, not taken for column names. *)
+special-value := CURRENT_DATE | CURRENT_TIME | LOCALTIME | CURRENT_USER | SESSION_USER
 type-name     := #"(?i)[A-Za-z_][A-Za-z0-9_]*(?:\s+(?:with|without)\s+time\s+zone)?"
 
 group         := <ws> <GROUP> <ws> <BY> <ws> column (<ws?> <","> <ws?> column)*
@@ -112,26 +115,34 @@ column        := (identifier <ws?> <"."> <ws?>)? identifier
    these as computed values (docs/computed-values.md). A bare column or
    literal is never a computed value here, so each reads one way.
    --------------------------------------------------------------------- *)
-computed      := concat | call | case | paren-value | now
+computed      := concat | call | case | paren-value | now | special-value | cast-operand | select-condition
+(* A literal or column with a cast: `a::text AS k`, `CAST(a AS text) AS k`. *)
+cast-operand  := (column | string | number | boolean | null | variable) cast | cast-fn
+(* A condition as a selected value, without parentheses: `x IS NULL AS k`. *)
+<select-condition> := compare | like | is-null | is-distinct | in | in-select | between
 <value>       := concat | value-term
 concat        := value-term (<ws?> <"||"> <ws?> value-term)+
 <value-term>  := call | case | paren-value | operand
 (* A condition in parentheses is a value, true or false: (x IS NOT NULL). *)
-paren-value   := <"("> <ws?> (strict-predicate | value) <ws?> <")">
+paren-value   := <"("> <ws?> (strict-predicate | value) <ws?> <")"> cast?
 (* A function call. A count and NOW() have rules of their own. *)
 call          := fn-name <ws?> <"("> <ws?> (call-arg (<ws?> <","> <ws?> call-arg)*)? <ws?> <")"> filter? cast?
-fn-name       := #"(?!(?i:select|from|where|join|inner|left|right|full|outer|cross|natural|on|using|and|or|not|in|is|null|like|ilike|between|group|order|by|limit|offset|fetch|having|union|intersect|except|distinct|all|as|asc|desc|true|false|case|when|then|else|end|exists|with|escape|similar|window|over|nulls|lateral|cast|returning|into|values|set|recursive|count|now|row_number|filter|having|when|then|else|end|partition)\b)[A-Za-z_][A-Za-z0-9_]*"
+fn-name       := #"(?!(?i:select|from|where|join|inner|left|right|full|outer|cross|natural|on|using|and|or|not|in|is|null|like|ilike|between|group|order|by|limit|offset|fetch|having|union|intersect|except|distinct|all|as|asc|desc|true|false|case|when|then|else|end|exists|with|escape|similar|window|over|nulls|lateral|cast|returning|into|values|set|recursive|count|now|row_number|filter|having|when|then|else|end|partition|current_timestamp|current_date|current_time|localtimestamp|localtime|current_user|session_user)\b)[A-Za-z_][A-Za-z0-9_]*"
 <call-arg>    := strict-predicate | value
 filter        := <ws?> <FILTER> <ws?> <"("> <ws?> <WHERE> <ws> predicate <ws?> <")">
-case          := <CASE> <ws> when+ (<ELSE> <ws> value <ws>)? <END>
+case          := <CASE> <ws> (when+ | case-subject simple-when+) (<ELSE> <ws> value <ws>)? <END>
 when          := <WHEN> <ws> predicate <ws> <THEN> <ws> value <ws>
+(* CASE x WHEN 1 THEN ... is CASE WHEN x = 1 THEN ... *)
+case-subject  := value <ws>
+simple-when   := <WHEN> <ws> value <ws> <THEN> <ws> value <ws>
 (* A condition that isn't a column or a function on its own, so an argument
    like COALESCE(x, ...) reads as a value, not as `WHERE x`. *)
 strict-predicate := or | and | not | compare | like | is-null | is-distinct | in | in-select | between
-now           := <NOW> <ws?> <"("> <ws?> <")">
+(* CURRENT_TIMESTAMP and LOCALTIMESTAMP are the time now, as NOW() is. *)
+now           := <NOW> <ws?> <"("> <ws?> <")"> | <CURRENT_TIMESTAMP> | <LOCALTIMESTAMP>
 
 <identifier>  := bare-identifier | quoted-identifier
-bare-identifier   := #"(?!(?i:select|from|where|join|inner|left|right|full|outer|cross|natural|on|using|and|or|not|in|is|null|like|ilike|between|group|order|by|limit|offset|fetch|having|union|intersect|except|distinct|all|as|asc|desc|true|false|case|when|then|else|end|exists|with|escape|similar|window|over|nulls|lateral|cast|returning|into|values|set|recursive)\b)[A-Za-z_][A-Za-z0-9_]*"
+bare-identifier   := #"(?!(?i:select|from|where|join|inner|left|right|full|outer|cross|natural|on|using|and|or|not|in|is|null|like|ilike|between|group|order|by|limit|offset|fetch|having|union|intersect|except|distinct|all|as|asc|desc|true|false|case|when|then|else|end|exists|with|escape|similar|window|over|nulls|lateral|cast|returning|into|values|set|recursive|current_timestamp|current_date|current_time|localtimestamp|localtime|current_user|session_user)\b)[A-Za-z_][A-Za-z0-9_]*"
 (* "name" in Postgres, `name` in MySQL. "" inside "..." is one quote. *)
 quoted-identifier := <"\""> #"(?:[^\"]|\"\")+" <"\""> | <"`"> #"[^`]+" <"`">
 
@@ -190,3 +201,10 @@ THEN    := #"(?i)then\b"
 ELSE    := #"(?i)else\b"
 END     := #"(?i)end\b"
 NOW     := #"(?i)now\b"
+CURRENT_TIMESTAMP := #"(?i)current_timestamp\b"
+LOCALTIMESTAMP := #"(?i)localtimestamp\b"
+CURRENT_DATE := #"(?i)current_date\b"
+CURRENT_TIME := #"(?i)current_time\b"
+LOCALTIME := #"(?i)localtime\b"
+CURRENT_USER := #"(?i)current_user\b"
+SESSION_USER := #"(?i)session_user\b"

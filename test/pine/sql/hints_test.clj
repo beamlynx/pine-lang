@@ -42,6 +42,19 @@
     (is (= [] (joins "select * from company c where c.name = 'x join ")))
     (is (= [] (joins "select * from company c -- join "))))
 
+  (testing "Only the tables in scope at the cursor"
+    (is (= [] (joins "select * from (select * from company c) x join "))
+        "a table inside a subquery is out of scope")
+    (is (= [] (joins "select count(*) filter (where a is distinct from company) from t join "))
+        "IS DISTINCT FROM names no table")
+    (is (= [] (joins "select * from t where id in (select company_id from employee) and x join ")))
+    (is (= "y.employee e ON e.company_id = c.id"
+           (first (joins "update company c set name = 'x' from t join ")))
+        "the table an UPDATE changes is in scope")
+    (is (= ["y.employee e ON e.company_id = c.id" "z.document d ON d.company_id = c.id"]
+           (joins "select * from t where id in (select id from company c join "))
+        "inside a subquery, its own tables"))
+
   (testing "Only the text before the cursor"
     (is (= 2 (count (joins "select * from company c join  where c.id = 1" 29))))))
 

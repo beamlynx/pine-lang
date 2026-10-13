@@ -213,7 +213,6 @@
       (unsupported "with recursive x as (select * from t) select * from x" "WITH RECURSIVE")
       (unsupported "with x as materialized (select * from t) select * from x" "MATERIALIZED")
       (unsupported "update t set a = 1 where id = 2 returning *" "RETURNING")
-      (unsupported "update t set a = lower(b) where id = 2" "LOWER() isn't in Pine yet")
       (unsupported "select row_number() over (partition by a order by b nulls last) from t" "ORDER BY b nulls last inside ROW_NUMBER()")
       (unsupported "select * from t where exists (select 1)" "EXISTS")
       (unsupported "select * from t order by a nulls last" "NULLS")

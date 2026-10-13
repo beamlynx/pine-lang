@@ -32,7 +32,9 @@
   column, though Postgres would fold it to `tenantid`. See `spelling`."
   (:require [clojure.string :as s]
             [clojure.walk :as walk]
+            [pine.ast.main :as ast]
             [pine.db.references :as refs]
+            [pine.eval :as eval]
             [pine.parser :as pine]
             [pine.sql.parser :as sp]))
 
@@ -77,6 +79,21 @@
       (= 1 (count matches)) (first matches)
       :else (refuse at (str "`" n "` could be " (s/join " or " (map #(str "`" % "`") (sort matches)))
                             ". Quote the one you mean, like \"" (first (sort matches)) "\".")))))
+
+(def ^:private ^:dynamic *dialect*
+  "The connection's dialect (:postgres, :mysql, :sqlite), or nil without
+  one. MySQL reads `||` as OR, so it changes what converts."
+  nil)
+
+(def ^:private ^:dynamic *connection-id*
+  "The connection the converted Pine is built against as a check, or nil
+  to skip the check."
+  nil)
+
+(def ^:private ^:dynamic *sql-tables*
+  "Every table name the statement mentions, lowercased. A name Pine makes
+  up for a block must not be one of them: the block would shadow the table."
+  #{})
 
 (def ^:private ^:dynamic *ctes*
   "The WITH queries defined so far, by name: {:columns [...]}, with
@@ -147,12 +164,34 @@
   "A cast on the column side, as Pine writes it after the condition."
   {"text" "text" "varchar" "text" "character varying" "text" "uuid" "uuid"})
 
+(def ^:private zoned-time
+  "A date and time with a zone: `Z`, `+02`, `-05:30`."
+  #"\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\s*(?:[Zz]|[+-]\d{1,2}(?::?\d{2})?)")
+
+(defn- check-literal
+  "Refuses a literal Pine would read differently: a time with a zone, which
+  Pine refuses, and a cast to date that drops a time of day, which Pine
+  would keep."
+  [{:keys [kind value cast at]}]
+  (when (= :string kind)
+    (when (re-matches zoned-time (s/trim value))
+      (refuse at (str "'" value "' has a time zone, which isn't in Pine. Write the time without it, in the database's time zone.")))
+    (when (and (= "date" cast) (re-find #"\d[ T]\d" value))
+      (refuse at (str "'" value "'::date drops the time of day, which Pine wouldn't. Write the date alone, like '" (subs value 0 (min 10 (count value))) "'.")))))
+
+(defn- special-value [{:keys [name at]}]
+  (refuse at (case name
+               ("CURRENT_DATE" "CURRENT_TIME" "LOCALTIME") (str name " isn't in Pine. now() is the time now, with the date.")
+               (str name " isn't in Pine."))))
+
 (defn- value
   "A literal or variable operand as a Pine value."
   [{:keys [kind cast at] :as operand}]
   (when (and cast (not (dropped-value-casts cast)))
     (refuse at (str "A cast to " cast " isn't in Pine. Pine casts a column to text or uuid.")))
+  (check-literal operand)
   (case kind
+    :special (special-value operand)
     (:string :number :boolean :variable) (dissoc operand :at :cast)
     ;; Left for the caller, which knows whether a column can go here.
     :column (dissoc operand :at)
@@ -180,27 +219,56 @@
 
 (defn- column-operand? [o] (= :column (:kind o)))
 
+(def ^:private keyword-values
+  "Names Pine reads as a value, not a column, where a value can go: in a
+  computed value, and on the right of a condition (true, false and null)."
+  #{"true" "false" "null" "if" "then" "else"})
+
+(defn- keyword-column!
+  "Refuses a column whose name Pine would read as `names`' keyword here."
+  [names {:keys [name at]}]
+  (when (names (s/lower-case name))
+    (refuse at (str "A column called `" name "` can't be written here in Pine: it reads as the keyword " (s/lower-case name) "."))))
+
+(declare expr-pine expr-columns)
+
+(defn- computed-operand?
+  "A value Pine can compare a column with: COALESCE(...) or a || b."
+  [{:keys [kind] f :fn :as o}]
+  (or (= :concat kind) (and (= :call kind) (or (= "coalesce" f) (and (= "concat" f) (= :mysql *dialect*))))))
+
 (defn- compare-atom [tables {:keys [operator left right at]}]
-  (doseq [o [left right]
-          :when (#{:call :count :concat :pred :case} (:kind o))]
-    (if (= :call (:kind o))
-      (refuse (:at o) (str "Functions like " (:fn o) "() aren't in Pine here. A condition compares a column with a value, or now()."))
-      (refuse (:at o) "A comparison here needs a column on one side and a value on the other.")))
   (let [[left right operator] (if (and (not (column-operand? left)) (column-operand? right))
                                 [right left (mirrored operator)]
                                 [left right operator])]
+    (doseq [o [left right]
+            :when (and (#{:call :count :concat :pred :case} (:kind o))
+                       (not (and (identical? o right) (column-operand? left) (computed-operand? o))))]
+      (if (= :call (:kind o))
+        (refuse (:at o) (str "Functions like " (:fn o) "() aren't in Pine here. A condition compares a column with a value, or now()."))
+        (refuse (:at o) "A comparison here needs a column on one side and a value on the other.")))
     (when-not (column-operand? left)
       (refuse at "A comparison needs a column on one side."))
     (when (and (= :null (:kind right)) (#{"=" "!="} operator))
       (refuse (:at right) (str "`" operator " NULL` is never true in SQL. Write IS NULL or IS NOT NULL.")))
+    (when (and (column-operand? right) (not (#{"=" "!="} operator)))
+      (refuse at (str "Comparing two columns with " operator " isn't in Pine. Two columns compare with = or != only.")))
     {:col (resolve-column tables (:column left))
      :operator operator
      :cast (column-cast left)
-     :value (if (column-operand? right)
+     :value (cond
+              (column-operand? right)
               (do (when (:cast right)
                     (refuse (:at right) "A cast on the right-hand column isn't in Pine. Cast the left one."))
+                  (keyword-column! #{"true" "false" "null"} (:column right))
                   {:kind :column :col (resolve-column tables (:column right))})
-              (value right))}))
+
+              (computed-operand? right)
+              ;; Rendered once the column references are known (render-value).
+              (do (expr-pine {:tables tables :col-ref :name} right)
+                  {:kind :computed :expr right :tables tables :refs (set (map #(:t (resolve-column tables %)) (expr-columns right)))})
+
+              :else (value right))}))
 
 (defn- left-column [tables {:keys [left at]}]
   (when-not (column-operand? left)
@@ -316,7 +384,11 @@
 (defn- plan-where
   "Clauses for the WHERE and for any inner-join ON conditions moved into it."
   [tables predicates]
-  (vec (mapcat (fn [p] (check-guards (cnf (nnf tables p false) (:at p)) (:at p))) predicates)))
+  (let [clauses (vec (mapcat (fn [p] (check-guards (cnf (nnf tables p false) (:at p)) (:at p))) predicates))]
+    (when (> (count clauses) max-where-clauses)
+      (refuse (:at (last predicates)) (str "This WHERE would become more than " max-where-clauses
+                                           " where: steps in Pine. Simplify its mix of AND and OR.")))
+    clauses))
 
 ;; ---------------
 ;; COMPUTED VALUES
@@ -388,7 +460,7 @@
   (let [alias-of (fn [t] (let [{:keys [alias table]} (nth tables t)] (or alias table)))]
     (fn [{:keys [t name]}] (if (= t current) name (str (alias-of t) "." name)))))
 
-(declare render-atom quote-string)
+(declare render-atom quote-string concat-pine)
 
 (defn- conditions-pine
   "A SQL predicate as Pine conditions joined with `or`. `value?` is true
@@ -398,7 +470,13 @@
   [{:keys [tables col-ref]} p value?]
   (let [clauses (cnf (nnf tables p false) (:at p))]
     (when (next clauses)
-      (refuse (:at p) "AND inside a value isn't in Pine. The conditions of one value are joined with `or`."))
+      (refuse (:at p) (cond
+                        (seq (find-nodes #(= :between (:op %)) p))
+                        "BETWEEN inside a value isn't in Pine: it is two conditions joined with AND, and the conditions of one value are joined with `or`."
+                        (seq (find-nodes #(= :is-distinct (:op %)) p))
+                        "IS [NOT] DISTINCT FROM inside a value isn't in Pine: it is two conditions joined with AND, and the conditions of one value are joined with `or`."
+                        :else
+                        "AND inside a value isn't in Pine. The conditions of one value are joined with `or`.")))
     (let [[clause] clauses
           guarded (some #(when (:guard %) %) clause)]
       (if (and value? guarded)
@@ -410,9 +488,10 @@
         (do (check-guards clauses (:at p))
             (s/join " or " (map #(render-atom col-ref %) clause)))))))
 
-(defn- literal-pine [{:keys [kind value name cast at]}]
+(defn- literal-pine [{:keys [kind value name cast at] :as e}]
   (when (and cast (not (dropped-value-casts cast)))
     (refuse at (str "A cast to " cast " isn't in Pine. Pine casts to text or uuid.")))
+  (check-literal e)
   (case kind
     :string (quote-string value)
     :number value
@@ -440,14 +519,21 @@
   and :agg, a function giving an aggregate's Pine text, where aggregates
   may appear."
   [{:keys [tables col-ref agg] :as ctx} {:keys [kind at] :as e}]
+  (when (and (:cast e) (#{:pred :case :concat :now} kind))
+    (refuse at (str "A cast on " (case kind :pred "a condition" :case "CASE" :concat "a || b" :now "now()") " isn't converted.")))
   (case kind
-    :column (let [c (resolve-column tables (:column e))
+    :column (let [_ (keyword-column! keyword-values (:column e))
+                  c (resolve-column tables (:column e))
                   cast (column-cast e)]
               (str (col-ref c) (when cast (str "::" cast))))
     (:string :number :boolean :variable :null) (literal-pine e)
+    :special (special-value e)
     :now "now()"
-    ;; `a || b` is NULL when either part is, and so is Pine's concat().
-    :concat (str "concat(" (s/join ", " (map #(expr-pine ctx %) (concat-args e))) ")")
+    ;; `a || b` is NULL when either part is, and so is Pine's concat(). On
+    ;; MySQL `||` is OR, unless the server is told otherwise.
+    :concat (do (when (= :mysql *dialect*)
+                  (refuse at "In MySQL, || means OR, unless the server sets PIPES_AS_CONCAT. Write CONCAT(a, b), which converts to Pine's concat()."))
+                (concat-pine ctx (concat-args e)))
     :pred (conditions-pine ctx (:pred e) true)
     :case (case-pine ctx e)
     :count (if agg (agg e) (refuse at "COUNT(*) here needs GROUP BY."))
@@ -463,11 +549,22 @@
                   (str "coalesce(" (s/join ", " (map #(expr-pine ctx %) args)) ")"
                        (when cast (str "::" (column-cast e)))))
 
+              ;; MySQL's CONCAT() is NULL when any part is, as Pine's is.
+              (and (= "concat" f) (= :mysql *dialect*))
+              (do (when cast (refuse at "A cast on CONCAT() isn't converted."))
+                  (concat-pine ctx args))
+
               (= "concat" f)
               (refuse at "CONCAT() skips NULL arguments on Postgres, and Pine's concat() doesn't. Write a || b: Pine's concat() matches that.")
 
               :else
               (refuse at (str "Functions like " f "() aren't in Pine."))))))
+
+(defn- concat-pine
+  "Pine's concat() of SQL values. It makes text of each part itself, so a
+  cast to text on a part is left out: Pine's own SQL writes one on each."
+  [ctx parts]
+  (str "concat(" (s/join ", " (map #(expr-pine ctx (if (#{"text" "varchar" "character varying"} (:cast %)) (dissoc % :cast) %)) parts)) ")"))
 
 (defn- default-agg-name
   "Pine's own default name for an aggregate: `min_id` for min(a.id)."
@@ -481,7 +578,7 @@
   "An aggregate as Pine, without its name: `min(id::text) where type = 'x'`."
   [ctx e]
   (if (= :count (:kind e))
-    "count"
+    (str "count" (when-let [p (:filter e)] (str " where " (conditions-pine (dissoc ctx :agg) p false))))
     (let [{f :fn args :args filter-p :filter at :at} e]
       (when (not= 1 (count args))
         (refuse at (str (s/upper-case f) "() takes one argument in Pine.")))
@@ -560,9 +657,10 @@
 ;; -------
 
 (defn- hidden-column?
-  "A hidden key or type column Pine adds to its own SQL: AS \"__c_0__id\"."
-  [{:keys [kind as]}]
-  (and (= :column kind) as (re-matches #"__.+__.+" as)))
+  "A hidden key column Pine adds to its own SQL: \"c_0\".\"id\" AS
+  \"__c_0__id\", named exactly after the alias and column it selects."
+  [{:keys [kind as] {:keys [qualifier name]} :column}]
+  (and (= :column kind) as qualifier (= as (str "__" qualifier "__" name))))
 
 (defn- order-target
   "The select item an unqualified ORDER BY name refers to by its alias."
@@ -573,41 +671,18 @@
 (defn- sort-word [d]
   (if (= d :desc) "desc" "asc"))
 
-(defn- plan-grouped [tables items {:keys [group order limit]} warn!]
-  (let [group-cols (mapv #(resolve-column tables %) group)
-        group-set (set group-cols)]
-    (when-let [dupe (some (fn [[k n]] (when (> n 1) k)) (frequencies (map :name group-cols)))]
-      (refuse (:at (first group)) (str "Two grouped columns are both called `" dupe "`. Pine names a grouped column by its name alone.")))
-    (doseq [{:keys [kind column as at]} items]
-      (case kind
-        :count (when (and as (not= as "count"))
-                 (warn! (str "COUNT(*) AS " as ": Pine names the count column `count`.") :columns))
-        :column (do (when-not (group-set (resolve-column tables column))
-                      (refuse at (str "`" (:name column) "` is selected but not grouped. Pine selects only the grouped columns and the count.")))
-                    (when (and as (not= as (:name column)))
-                      (warn! (str (:name column) " AS " as ": a grouped column keeps its own name in Pine.") :columns)))
-        (refuse at "Only grouped columns and COUNT(*) can be selected with GROUP BY.")))
-    (when-not (some #(= :count (:kind %)) items)
-      (warn! "Pine adds a count column to a group:." :columns))
-    (let [selected (set (for [i items :when (= :column (:kind i))] (resolve-column tables (:column i))))]
-      (when (some (complement selected) group-cols)
-        (warn! "Pine returns every grouped column, including ones the SELECT left out." :columns)))
-    (cond-> [{:op :group :cols group-cols}]
-      (seq order)
-      (conj {:op :order
-             :items (mapv (fn [{:keys [target direction at]}]
-                            (let [aliased (order-target items target)
-                                  target (if aliased {:kind (:kind aliased) :column (:column aliased)} target)]
-                              {:name (case (:kind target)
-                                       :count "count"
-                                       :column (let [c (resolve-column tables (:column target))]
-                                                 (if (group-set c)
-                                                   (:name c)
-                                                   (refuse at (str "`" (:name c) "` isn't grouped, so it can't be sorted on after GROUP BY."))))
-                                       :position (refuse at "ORDER BY a position isn't in Pine. Name the column."))
-                               :direction (sort-word direction)}))
-                          order)})
-      limit (conj {:op :limit :n (:value limit)}))))
+(defn- missing-function
+  "The first function in `x` that Pine has no equivalent for, or nil."
+  [x]
+  (some (fn [{f :fn :as c}]
+          (when-not (or (aggregate? c) (= "coalesce" f) (and (= "concat" f) (= :mysql *dialect*))) f))
+        (find-nodes #(= :call (:kind %)) x)))
+
+(defn- selected-name
+  "The name the select list gives the value `e`, when it selects it."
+  [items e]
+  (let [k (strip-at (dissoc e :at))]
+    (some #(when (and (= :expr (:kind %)) (:as %) (= k (strip-at (:expr %)))) (:as %)) items)))
 
 (defn- order-items
   "order: items for ORDER BY items that name columns. `what` names where
@@ -618,7 +693,11 @@
             (case (:kind target)
               :count (refuse at (str "ORDER BY COUNT(*) " what "needs GROUP BY."))
               :position (refuse at (str "ORDER BY a position " what "isn't in Pine. Name the column."))
-              :expr (refuse at (str "ORDER BY an expression " what "isn't converted yet. Select it with a name, and sort by the name."))
+              :expr (if-let [n (selected-name items (:expr target))]
+                      {:name n :direction (sort-word direction)}
+                      (if-let [f (missing-function (:expr target))]
+                        (refuse at (str "ORDER BY " f "(...) " what "isn't in Pine: " f "() isn't."))
+                        (refuse at (str "ORDER BY an expression " what "isn't converted yet. Select it with a name, and sort by the name."))))
               :column (if (= :expr (:kind aliased))
                         ;; A computed value's name: Pine sorts by its value.
                         {:name (:as aliased) :direction (sort-word direction)}
@@ -631,11 +710,13 @@
   first N rows of (see plan-windows). `named` gives the name of the
   computed column an expression in PARTITION BY or ORDER BY is selected
   as (see plan-plain)."
-  [tables {:keys [partition order at]} {:keys [n]} named]
+  [tables {:keys [partition order at]} {:keys [n]} named warn!]
   (when-not n
     (refuse at "ROW_NUMBER() converts only when a later query keeps its first rows, with WHERE rn = 1 or rn <= N."))
   (when (empty? partition)
     (refuse at "ROW_NUMBER() without PARTITION BY numbers the whole result. Use ORDER BY and LIMIT."))
+  (when (empty? order)
+    (warn! "ROW_NUMBER() has no ORDER BY, so the SQL keeps any row of each group. Pine keeps the first in primary key order."))
   (cond-> []
     (seq order) (conj {:op :order
                        :items (vec (map-indexed (fn [i {:keys [target direction] :as item}]
@@ -655,7 +736,9 @@
   that order: order: p, o | limit: 1 per p. Ordering by p too changes no
   group's first row, since p is the same within a group, and keeps the
   SQL's order of the rows."
-  [tables items {:keys [distinct-on order limit]}]
+  [tables items {:keys [distinct-on order limit]} warn!]
+  (when (empty? order)
+    (warn! "DISTINCT ON has no ORDER BY, so the SQL keeps any row of each group. Pine keeps the first in primary key order."))
   (let [at (:at (first distinct-on))
         per (mapv #(resolve-column tables %) distinct-on)
         sorted (order-items tables items order "")
@@ -682,6 +765,8 @@
                                   :alias-star [{:star (:t (resolve-column tables {:qualifier qualifier :name "x" :at at}))}]
                                   :row-number []
                                   :column (let [col (resolve-column tables column)]
+                                            ;; select: true would read as the value.
+                                            (keyword-column! #{"true" "false" "null"} column)
                                             [(cond-> {:col col}
                                                (and as (not= as (:name col))) (assoc :as (pine-name! as at)))])
                                   ;; A computed value. Pine needs its name.
@@ -693,7 +778,9 @@
         ;; computed column Pine ranks by name: the selected one with the
         ;; same value, or a new one.
         extras (atom [])
-        taken (set (concat (keep :as expanded) (keep (comp :name :col) expanded)))
+        ;; Columns a `*` brings in are taken too, when the schema says what they are.
+        taken (set (concat (keep :as expanded) (keep (comp :name :col) expanded)
+                           (mapcat #(when (contains? % :star) (:db-columns (nth tables (:star %)))) expanded)))
         named (fn [e what i]
                 (let [k (strip-at e)]
                   (or (some #(when (and (:expr %) (= k (strip-at (:expr %)))) (:as %)) (concat expanded @extras))
@@ -705,7 +792,7 @@
                                :extra-column)
                         (swap! extras conj {:expr e :as n :refs (expr-refs tables e)})
                         n))))
-        window-steps (when row-number (window-ops tables row-number window named))
+        window-steps (when row-number (window-ops tables row-number window named warn!))
         expanded (into expanded @extras)]
     (when (and row-number (or (seq order) limit distinct-on))
       (refuse (:at row-number) "ROW_NUMBER() next to ORDER BY, LIMIT or DISTINCT ON in the same query isn't converted."))
@@ -717,23 +804,27 @@
       row-number
       (into window-steps)
       distinct-on
-      (into (distinct-on-ops tables items stmt))
+      (into (distinct-on-ops tables items stmt warn!))
       (and (seq order) (not distinct-on))
       (conj {:op :order :items (order-items tables items order "")})
       limit (conj {:op :limit :n (:value limit)}))))
 
 (defn- plan-aggregated
-  "GROUP BY with HAVING, aggregates over a value, or a computed value over
-  them. It becomes three steps, so the result has exactly the SQL's
-  columns:
+  "GROUP BY, as steps whose result has exactly the SQL's columns, under
+  its names:
 
     group: <grouped columns> => <each aggregate, named>
     | where: <HAVING, by the names>
-    | select: <the SQL's columns, by the names>
+    | order: <ORDER BY, when it sorts on the group's columns>
+    | select: <the SQL's columns, by the names>, when they differ
+    | order: <ORDER BY, when it sorts on the selected names>
+    | limit: N
 
-  The where: and select: work on the group's result, which a checkpoint
-  seals (docs/checkpoints.md), so there they name its columns bare."
-  [tables current items {:keys [group having order limit at]}]
+  The where:, order: and select: work on the group's result, which a
+  checkpoint seals (docs/checkpoints.md), so there they name its columns
+  bare. A group: with no aggregate adds a count column, which the select:
+  then leaves out."
+  [tables current items {:keys [group having order limit at]} warn!]
   (let [col-ref (make-col-ref tables current)
         ctx {:tables tables :col-ref col-ref}
         group-cols (mapv #(resolve-column tables %) group)
@@ -743,37 +834,61 @@
         _ (doseq [{:keys [kind at]} items
                   :when (not (#{:column :count :expr} kind))]
             (refuse at "Only grouped columns, aggregates and values over them can be selected with GROUP BY."))
-        ;; Each aggregate once, in the order written. One selected on its
-        ;; own with AS takes that name; the others Pine's default, made
-        ;; unique.
-        aggs (reduce (fn [acc e] (if (some #(= (agg-key e) (agg-key %)) acc) acc (conj acc e)))
-                     [] (find-nodes aggregate? [items having]))
-        direct (into {} (for [{:keys [kind expr as] :as item} items
-                              :let [e (if (= :count kind) item expr)]
-                              :when (and as (aggregate? e))]
-                          [(agg-key e) as]))
+        order-targets (map :target order)
+        _ (when-let [c (first (filter #(missing-function [%]) (find-nodes #(= :call (:kind %)) [items having order-targets])))]
+            (refuse (:at c) (str "Functions like " (:fn c) "() aren't in Pine.")))
+        ;; An aggregate, without a cast after it or a name.
+        base #(dissoc % :cast :as)
+        akey #(strip-at (base %))
+        aggs (reduce (fn [acc e] (if (some #(= (akey e) (akey %)) acc) acc (conj acc (base e))))
+                     [] (find-nodes aggregate? [items having order-targets]))
+        ;; An aggregate selected on its own takes the SQL's name for it: its
+        ;; AS, or else the function's name, as Postgres names it. The others
+        ;; get Pine's default, made unique.
+        direct-item? (fn [{:keys [kind expr] :as item}]
+                       (or (= :count kind) (and (= :expr kind) (aggregate? expr) (not (:cast expr)))))
+        item-agg (fn [{:keys [kind expr] :as item}] (if (= :count kind) item expr))
+        sql-name (fn [{:keys [as] :as item}]
+                   (or as (let [e (item-agg item)] (if (= :count (:kind e)) "count" (:fn e)))))
+        explicit (keep (fn [i] (when (and (direct-item? i) (:as i)) (:as i))) items)
+        _ (when-let [dupe (some (fn [[k n]] (when (> n 1) k))
+                                (frequencies (concat explicit (keep #(when (= :column (:kind %)) (:as %)) items)
+                                                     (keep #(when (and (= :expr (:kind %)) (not (direct-item? %))) (:as %)) items))))]
+            (refuse at (str "Two selected columns are both called `" dupe "`. Pine needs each name once.")))
         taken (set (concat (map :name group-cols) (keep :as items)))
+        agg-names (reduce (fn [m item]
+                            (let [k (akey (item-agg item))]
+                              (if (contains? m k)
+                                m
+                                (let [wanted (sql-name item)
+                                      n (if (:as item) wanted (unique-name (into taken (vals m)) wanted))]
+                                  (when (not= n wanted)
+                                    (warn! (str "`" n "` is the SQL's column `" wanted "`: Pine needs each name once.") :columns))
+                                  (assoc m k n)))))
+                          {} (filter direct-item? items))
         agg-names (reduce (fn [m e]
-                            (let [k (agg-key e)]
-                              (assoc m k (or (direct k) (unique-name (into taken (vals m)) (default-agg-name e))))))
-                          {} aggs)
-        agg-name #(get agg-names (agg-key %))
+                            (let [k (akey e)]
+                              (if (contains? m k) m (assoc m k (unique-name (into taken (vals m)) (default-agg-name e))))))
+                          agg-names aggs)
+        agg-name #(get agg-names (akey %))
         group-text (str "group: " (s/join ", " (map col-ref group-cols))
                         (when (seq aggs)
-                          (str " => " (s/join ", " (map #(if (= "count" (agg-name %) (default-agg-name %))
-                                                         ;; `count` is already called count.
+                          (str " => " (s/join ", " (map #(if (= "count" (agg-name %) (default-agg-name %) (agg-pine ctx %))
+                                                         ;; A plain count is already called count.
                                                            (agg-pine ctx %)
                                                            (str (agg-pine ctx %) " as " (agg-name %)))
                                                         aggs)))))
         refs (into (set (map :t group-cols)) (mapcat #(expr-refs tables %) aggs))
         ;; After the group:, a column is the result's column by its name.
-        result-columns (vec (concat (map :name group-cols) (map agg-name aggs)))
+        ;; With no aggregate, Pine adds a count.
+        result-columns (vec (concat (map :name group-cols) (if (seq aggs) (map agg-name aggs) ["count"])))
         pseudo [{:table "result" :db-columns result-columns}]
         pseudo-ctx {:tables pseudo :col-ref :name}
         sealed (fn [x]
                  (rewrite (fn [n]
                             (cond
-                              (aggregate? n) {:kind :column :column {:name (agg-name n) :at (:at n)} :at (:at n)}
+                              (aggregate? n) (cond-> {:kind :column :column {:name (agg-name n) :at (:at n)} :at (:at n)}
+                                               (:cast n) (assoc :cast (:cast n)))
                               (and (= :call-truthy (:op n)) (aggregate? (:call n)))
                               {:op :truthy :column {:name (agg-name (:call n)) :at (:at n)} :at (:at n)}
                               (= :column (:kind n))
@@ -790,42 +905,60 @@
                        {:op :text :text (str "where: " (s/join " or " (map #(render-atom :name %) clause)))}))
         ;; The SQL's columns, in its order, under its names.
         outputs (mapv (fn [{:keys [kind column as expr at] :as item}]
-                        (case kind
-                          :column (let [c (select-keys (resolve-column tables column) [:t :name])
-                                        g (or (group-name c) (refuse at (str "`" (:name column) "` is selected but not grouped.")))]
-                                    {:text (str g (when (and as (not= as g)) (str " as " (pine-name! as at)))) :name (or as g)})
-                          :count {:text (agg-name item) :name (agg-name item)}
-                          :expr (if (and as (aggregate? expr))
-                                  {:text (agg-name expr) :name (agg-name expr)}
-                                  (do (when-not as
-                                        (refuse at "Name this value with AS, like `... AS name`: Pine's select: names every computed value."))
-                                      {:text (str (expr-pine pseudo-ctx (sealed expr)) " as " (pine-name! as at)) :name as}))))
+                        (cond
+                          (= :column kind)
+                          (let [c (select-keys (resolve-column tables column) [:t :name])
+                                g (or (group-name c) (refuse at (str "`" (:name column) "` is selected but not grouped.")))]
+                            {:text (str g (when (and as (not= as g)) (str " as " (pine-name! as at)))) :name (or as g) :group g})
+
+                          (direct-item? item)
+                          (let [n (agg-name (item-agg item))] {:text n :name n :agg n})
+
+                          ;; An aggregate with a cast after it: the cast goes in the select:.
+                          (aggregate? expr)
+                          (let [n (pine-name! (or as (:fn expr)) at)]
+                            {:text (str (expr-pine pseudo-ctx (sealed expr)) " as " n) :name n})
+
+                          :else
+                          (do (when-not as
+                                (refuse at "Name this value with AS, like `... AS name`: Pine's select: names every computed value."))
+                              {:text (str (expr-pine pseudo-ctx (sealed expr)) " as " (pine-name! as at)) :name as})))
                       items)
         names (mapv :name outputs)
         select-needed? (not= (map :text outputs) result-columns)
-        order-op (when (seq order)
-                   {:op :order
-                    :items (mapv (fn [{:keys [target direction at]}]
-                                   {:name (case (:kind target)
-                                            :count (agg-name target)
-                                            :column (let [col (:column target)
-                                                          by-alias (when-not (:qualifier col) (some #{(:name col)} names))]
-                                                      (or by-alias
-                                                          (let [c (select-keys (resolve-column tables col) [:t :name])
-                                                                g (or (group-name c) (refuse at (str "`" (:name col) "` isn't grouped, so it can't be sorted on after GROUP BY.")))]
-                                                            (or (some (fn [{:keys [kind column as]}]
-                                                                        (when (and (= :column kind) (= c (select-keys (resolve-column tables column) [:t :name]))) (or as g)))
-                                                                      items)
-                                                                (if select-needed?
-                                                                  (refuse at (str "`" (:name col) "` isn't selected, so it can't be sorted on after the select:."))
-                                                                  g)))))
-                                            (refuse at "ORDER BY here takes a selected column or an alias."))
-                                    :direction (sort-word direction)})
-                                 order)})]
+        ;; Each ORDER BY item as a name before the select: (the group's
+        ;; columns) and after it (the SQL's names), where it has one.
+        order-names (for [{:keys [target direction at]} order]
+                      (let [output-of (fn [k v] (some #(when (= v (k %)) (:name %)) outputs))
+                            [pre post]
+                            (case (:kind target)
+                              :count (let [n (agg-name target)] [n (output-of :agg n)])
+                              :expr (if (and (aggregate? (:expr target)) (not (:cast (:expr target))))
+                                      (let [n (agg-name (:expr target))] [n (output-of :agg n)])
+                                      [nil (or (selected-name items (:expr target))
+                                               (refuse at "ORDER BY an expression after GROUP BY isn't converted. Select it with a name, and sort by the name."))])
+                              :column (let [col (:column target)
+                                            by-alias (when-not (:qualifier col) (some #(when (= (:name col) (:name %)) %) outputs))]
+                                        (if by-alias
+                                          [(or (:group by-alias) (:agg by-alias)) (:name by-alias)]
+                                          (let [c (select-keys (resolve-column tables col) [:t :name])
+                                                g (or (group-name c) (refuse at (str "`" (:name col) "` isn't grouped, so it can't be sorted on after GROUP BY.")))]
+                                            [g (output-of :group g)])))
+                              :position (refuse at "ORDER BY a position isn't in Pine. Name the column."))]
+                        {:pre pre :post post :direction (sort-word direction) :at at}))
+        order-place (cond
+                      (empty? order-names) nil
+                      (not select-needed?) :pre
+                      (every? :post order-names) :post
+                      (every? :pre order-names) :pre
+                      :else (refuse (:at (first order)) "This ORDER BY sorts on a value the SELECT names and on a column it leaves out. That isn't converted."))
+        order-op (when order-place
+                   {:op :order :items (mapv (fn [o] {:name (get o order-place) :direction (:direction o)}) order-names)})]
     (cond-> [{:op :text :text group-text :refs refs}]
       true (into having-ops)
+      (= :pre order-place) (conj order-op)
       select-needed? (conj {:op :text :text (str "select: " (s/join ", " (map :text outputs)))})
-      order-op (conj order-op)
+      (= :post order-place) (conj order-op)
       limit (conj {:op :limit :n (:value limit)})
       true (conj {:op :columns :columns names}))))
 
@@ -838,6 +971,10 @@
       (refuse (:at (first select)) "Nothing is left to select."))
     (when (and distinct (not in-set-only))
       (refuse (:at distinct) "DISTINCT isn't in Pine. (group: isn't the same: it adds a count.)"))
+    ;; Used only after `in`, DISTINCT changes nothing: the set has the same
+    ;; values. With a LIMIT, it does: the LIMIT counts distinct values.
+    (when (and distinct limit)
+      (refuse (:at distinct) "DISTINCT with LIMIT isn't in Pine: the LIMIT counts distinct values, and Pine has no DISTINCT."))
     (when (and limit (> (:value limit) pine/max-limit))
       (refuse (:at limit) (str "LIMIT " (:value limit) " is more than Pine's " pine/max-limit ".")))
     (when-let [r (and (or (seq group) (some #(= :count (:kind %)) items))
@@ -848,14 +985,13 @@
     (when (and having (empty? group))
       (refuse (:at stmt) "HAVING without GROUP BY isn't converted."))
     (cond
-      (and (seq group) (or having (some #(= :expr (:kind %)) items)))
-      (plan-aggregated tables current items stmt)
-
       (seq group)
-      (plan-grouped tables items stmt warn!)
+      (plan-aggregated tables current items stmt warn!)
 
       (some #(= :count (:kind %)) items)
-      (do (when (next items)
+      (do (when-let [f (first (filter :filter items))]
+            (refuse (:at f) "COUNT(*) FILTER needs GROUP BY. Without one, put the condition in WHERE."))
+          (when (next items)
             (refuse (:at (first (remove #(= :count (:kind %)) items))) "A column next to COUNT(*) needs GROUP BY."))
           (when (seq order) (refuse (:at (first order)) "ORDER BY on a single COUNT(*) isn't converted. Remove it."))
           (when limit (refuse (:at limit) "LIMIT on a single COUNT(*) isn't converted. Remove it."))
@@ -892,8 +1028,9 @@
 (defn- quote-string [v]
   (str "'" (s/replace v "'" "''") "'"))
 
-(defn- render-value [{:keys [kind value name]} col-ref]
+(defn- render-value [{:keys [kind value name] :as v} col-ref]
   (case kind
+    :computed (expr-pine {:tables (:tables v) :col-ref col-ref} (:expr v))
     :string (quote-string value)
     :number value
     :boolean (str value)
@@ -920,7 +1057,9 @@
                      :from [t]
                      :text (remove #{current} (:refs o))
                      :where (mapcat (fn [{:keys [col value]}]
-                                      (concat (cols col) (when (= :column (:kind value)) (cols (:col value)))))
+                                      (concat (cols col)
+                                              (when (= :column (:kind value)) (cols (:col value)))
+                                              (when (= :computed (:kind value)) (remove #{current} (:refs value)))))
                                     clause)
                      :select (mapcat #(cond (contains? % :star) [(:star %)]
                                             (:expr %) (remove #{current} (:refs %))
@@ -967,6 +1106,8 @@
          :update (str "update! " (s/join ", " (map (fn [{:keys [column value]}]
                                                      (str column " = " (case (:kind value)
                                                                          :null "null"
+                                                                         ;; update! reads the changed table's columns bare.
+                                                                         :computed (render-value value :name)
                                                                          (render-value value col-ref))))
                                                    (:assignments o))))
          :delete (str "delete! " (s/join ", " (map #(str "." %) cols))))))))
@@ -988,14 +1129,24 @@
           (range (count tables))))
 
 (defn- assignment-value
-  "The value an UPDATE's SET writes: a literal or NULL. Pine's update! takes
-  a function's result nowhere, and another column isn't converted."
-  [{:keys [kind at] :as operand}]
-  (case kind
-    :null {:kind :null}
-    :now {:kind :now}
-    :column (refuse at "update! here takes a value. Setting a column from another column isn't converted.")
-    (value operand)))
+  "The value an UPDATE's SET writes: a literal, NULL, now(), COALESCE(...)
+  or a || b of the changed table's columns. Another column on its own isn't
+  converted."
+  [tables {:keys [kind at] :as operand}]
+  (cond
+    (= :null kind) {:kind :null}
+    (= :now kind) {:kind :now}
+    (= :column kind) (refuse at "update! here takes a value. Setting a column from another column isn't converted.")
+    (computed-operand? operand)
+    (do (doseq [c (expr-columns operand)
+                :when (pos? (:t (resolve-column tables c)))]
+          (refuse (:at c) (str "update! can only read the columns of the table it changes, not `" (:qualifier c) "." (:name c) "`.")))
+        (expr-pine {:tables tables :col-ref :name} operand)
+        {:kind :computed :expr operand :tables tables})
+    (#{:call :concat :case :pred :count} kind)
+    (refuse at (str (if (= :call kind) (str (:fn operand) "() isn't in Pine's update!.") "This value isn't in Pine's update!.")
+                    " update! writes a value, coalesce(...), a || b, or now()."))
+    :else (value operand)))
 
 (defn- action-ops
   "The steps that end an UPDATE or DELETE: `from:` back to the table it
@@ -1008,6 +1159,10 @@
     (when (zero? where-count)
       (refuse at (str "This " what " has no condition of its own, so it would change every row it reaches."
                       " Pine refuses that: add a WHERE.")))
+    ;; update! finds rows by the primary key: a table with none is refused.
+    (when (and (= kind :update) *schema* (not (:cte target))
+               (empty? (refs/primary-key *schema* (:db-schema target) (or (:db-table target) (:table target)))))
+      (refuse at (str "`" (:table target) "` has no primary key, so update! can't name its rows.")))
     (into (if (zero? current) [] [{:op :from :t 0}])
           (case kind
             :update
@@ -1016,7 +1171,7 @@
                                    (when (and (:qualifier column) (not= (:qualifier column) (table-key target)))
                                      (refuse at (str "`" (:qualifier column) "." (:name column) "` isn't a column of the table the UPDATE changes.")))
                                    {:column (column-name target (:name column) (:quoted column) at)
-                                    :value (assignment-value value)})
+                                    :value (assignment-value tables value)})
                                  assignments)}]
             :delete
             (let [pk (when *schema* (refs/primary-key *schema* (:db-schema target) (or (:db-table target) (:table target))))]
@@ -1080,10 +1235,24 @@
   "`base`, or `base_2`, `base_3`, ..., whichever is first not taken, nor a
   table in the connection's schema."
   [taken base]
-  (let [taken? #(or (taken %) (contains? (:table *schema*) %))]
+  (let [taken? #(or (taken %) (contains? (:table *schema*) %) (*sql-tables* (s/lower-case %)))]
     (if (taken? base) (first (remove taken? (map #(str base "_" %) (iterate inc 2)))) base)))
 
-(declare flatten-query)
+(declare flatten-query query-columns predicate-columns)
+
+(defn- outer-columns!
+  "With the schema, refuses a bare column in a subquery after IN that none
+  of its tables has. In SQL it is the outer query's column; in Pine it would
+  be read as the subquery's own."
+  [sq]
+  (when *schema*
+    (let [ts (map #(merge % (db-table %)) (query-tables sq))]
+      (when (every? #(and (:db-table %) (seq (:db-columns %))) ts)
+        (doseq [c (concat (query-columns sq) (some-> (:where sq) predicate-columns))
+                :when (and (:name c) (nil? (:qualifier c)) (not (some #{(:name c)} (keep :as (:select sq)))))
+                :when (not-any? (fn [t] (some #(if (:quoted c) (= (:name c) %) (.equalsIgnoreCase ^String (:name c) ^String %)) (:db-columns t))) ts)]
+          (refuse (:at c) (str "`" (:name c) "` isn't a column of the subquery's " (if (next ts) "tables" (str "table `" (table-key (first ts)) "`"))
+                               ". A subquery that reads a column of the outer query isn't in Pine.")))))))
 
 (defn- flatten-table
   "A subquery in FROM or JOIN becomes an entry named by its alias."
@@ -1106,7 +1275,8 @@
                  [state (assoc p :args args)])
     :not (let [[state a] (flatten-predicate state (:arg p))] [state (assoc p :arg a)])
     :in (if-let [sq (:subquery p)]
-          (let [[state sq] (flatten-query state sq)
+          (let [_ (outer-columns! sq)
+                [state sq] (flatten-query state sq)
                 [item & more] (:select sq)
                 _ (when (or more (not= :column (:kind item)))
                     (refuse (:at p) "A subquery after IN must select one column."))
@@ -1125,12 +1295,26 @@
           [state p])
     [state p]))
 
+(defn- flatten-select
+  "A subquery after IN in a selected value, `(a IN (SELECT ...)) AS k`,
+  becomes an entry too, and the value `a in <entry>`."
+  [state items]
+  (let [st (atom state)
+        items (walk/prewalk (fn [n]
+                              (if (and (map? n) (= :in (:op n)) (:subquery n))
+                                (let [[s2 p] (flatten-predicate @st n)] (reset! st s2) p)
+                                n))
+                            items)]
+    [@st items]))
+
 (defn- flatten-query [state q]
   (let [[state from] (flatten-table state (:from q))
         [state joins] (reduce (fn [[st acc] j] (let [[st t] (flatten-table st (:table j))] [st (conj acc (assoc j :table t))]))
                               [state []] (:joins q))
-        [state where] (if (:where q) (flatten-predicate state (:where q)) [state nil])]
-    [state (assoc q :from from :joins joins :where where)]))
+        [state where] (if (:where q) (flatten-predicate state (:where q)) [state nil])
+        [state select] (if (:select q) (flatten-select state (:select q)) [state nil])]
+    [state (cond-> (assoc q :from from :joins joins :where where)
+             (:select q) (assoc :select select))]))
 
 (defn- entry-named [entries n]
   (first (filter #(and (:name %) (= n (:name %))) entries)))
@@ -1154,7 +1338,7 @@
 (defn- narrowable?
   "Whether `q` can select only column `c` without changing its rows."
   [q c]
-  (and (empty? (:group q)) (nil? (:distinct-on q))
+  (and (empty? (:group q)) (nil? (:distinct-on q)) (nil? (:limit q))
        (not-any? #(#{:count :row-number} (:kind %)) (:select q))
        (output-item q c)))
 
@@ -1166,6 +1350,9 @@
     (-> entry
         (assoc :in-set-only true)
         (assoc-in [:query :select] [item])
+        ;; Without a LIMIT (narrowable?), the order changes no value of the
+        ;; set, and it may sort on a column no longer selected.
+        (update :query dissoc :order)
         (update-in [:query :where] #(if not-null
                                       (and-of (cond-> [] % (conj %) true (conj {:op :is-null :negated true
                                                                                 :left {:kind :column :column (:column item) :at (:at item)}
@@ -1259,6 +1446,20 @@
   (boolean (when-let [item (output-item q c)]
              (not-null? entries q (assoc (:column item) :at at) 0))))
 
+(defn- bare-may-be-k?
+  "Whether a bare column among `cols` may belong to the joined table `k-ref`,
+  in a query of several tables. The rewrites below remove k, and with it
+  such a column. With the schema, a real table's columns are known."
+  [q k-ref cols]
+  (let [set-columns (set (map :column (get-in q [:action :set])))
+        aliases (set (keep :as (:select q)))
+        bare (filter #(and (:name %) (nil? (:qualifier %)) (not (set-columns %)) (not (aliases (:name %)))) cols)]
+    (boolean
+     (and (seq bare) (next (query-tables q))
+          (let [{:keys [db-table db-columns]} (when *schema* (db-table k-ref))]
+            (or (nil? db-table) (empty? db-columns)
+                (some (fn [c] (some #(.equalsIgnoreCase ^String (:name c) ^String %) db-columns)) bare)))))))
+
 (defn- anti-join
   "{:join <index> :conjunct <p> :k-col :t-col} when join `ji` of `q` is
   `LEFT JOIN k ON k.c = t.x` and WHERE has `k.c IS NULL` at its top, with k
@@ -1284,7 +1485,8 @@
         others (concat (query-columns (assoc q :joins (vec (concat (take ji (:joins q)) (drop (inc ji) (:joins q))))))
                        (mapcat predicate-columns (remove #{conjunct} where-parts)))]
     (when (and (= :left type) cols conjunct
-               (not-any? #(or (true? (:star %)) (= k (:star %)) (= k (:qualifier %))) others))
+               (not-any? #(or (true? (:star %)) (= k (:star %)) (= k (:qualifier %))) others)
+               (not (bare-may-be-k? q k-ref others)))
       {:join ji :conjunct conjunct :k-col k-col :t-col t-col})))
 
 (defn- anti-joins
@@ -1356,7 +1558,7 @@
                           (cond (and (= k (:qualifier l)) (earlier (:qualifier r)) (not= k (:qualifier r))) [l r]
                                 (and (= k (:qualifier r)) (earlier (:qualifier l)) (not= k (:qualifier l))) [r l])))
         [item & more-items] (:select sq)
-        distinct-values? (and sq (:distinct sq) (nil? more-items) (= :column (:kind item))
+        distinct-values? (and sq (:distinct sq) (nil? (:limit sq)) (nil? more-items) (= :column (:kind item))
                               (= (:name k-col) (or (:as item) (:name (:column item))))
                               (empty? (:group sq)) (nil? (:having sq)) (nil? (:distinct-on sq)))
         tests (find-nodes #(and (= :is-null (:op %)) (= :column (get-in % [:left :kind]))
@@ -1375,6 +1577,7 @@
                          (some-> (:where q) conjuncts))
                (every? #(= (:name k-col) (get-in % [:left :column :name])) tests)
                (not-any? #(or (= k (:qualifier %)) (true? (:star %)) (= k (:star %))) others)
+               (not (bare-may-be-k? q k-ref others))
                (not-any? #(or (= :star (:kind %)) (and (= :alias-star (:kind %)) (= k (:qualifier %)))) (:select q)))
       {:join ji :k-col k-col :t-col t-col :set (:name src)})))
 
@@ -1480,6 +1683,9 @@
                              :when idx]
                          (let [tref (nth tables idx)
                                k (table-key tref)
+                               _ (when (next (filter #(and (nil? (:schema %)) (= name (:table %))) tables))
+                                   (refuse (:at tref) (str "`" name "` numbers rows with ROW_NUMBER(), and this query reads it twice."
+                                                           " That isn't converted: Pine keeps the first rows of each group once.")))
                                _ (when (and (pos? idx) (:type (nth (:joins q) (dec idx))))
                                    (refuse (:at (nth (:joins q) (dec idx)))
                                            (str "`" name "` numbers rows with ROW_NUMBER(). Joining it with LEFT or RIGHT JOIN isn't converted.")))
@@ -1549,6 +1755,13 @@
     (doseq [{:keys [name at]} ctes] (pine-name! name at))
     (when-let [dupe (some (fn [[k n]] (when (> n 1) k)) (frequencies (map :name ctes)))]
       (refuse (:at (last (filter #(= dupe (:name %)) ctes))) (str "Two WITH queries are called `" dupe "`.")))
+    ;; Pine reads a named result for a table of the same name, even one
+    ;; written with its schema.
+    (doseq [{:keys [name at]} ctes
+            t (tree-seq coll? seq stmt)
+            :when (and (map? t) (:schema t) (string? (:table t)) (.equalsIgnoreCase ^String name ^String (:table t)))]
+      (refuse at (str "The WITH query `" name "` has the name of the table `" (:schema t) "." (:table t)
+                      "`, which this statement also reads. Pine would read the WITH query for both. Give it another name.")))
     (let [main (if (= :select (:kind stmt)) (dissoc stmt :ctes) (write->query stmt))
           state (reduce (fn [st {:keys [name query at]}]
                           (let [[st q] (flatten-query st query)]
@@ -1584,7 +1797,9 @@
   [sql]
   (let [pieces (map (fn [{:keys [start end] :as p}]
                       (let [text (subs sql start end)]
-                        (assoc p :tx (sp/transaction-word text) :kind (sp/statement-kind text))))
+                        (assoc p :tx (sp/transaction-word text) :kind (sp/statement-kind text)
+                               ;; As written, for the warning: BEGIN WORK, END.
+                               :written (-> text (s/replace #"(?s)--[^\n]*|/\*.*?\*/" " ") s/trim (s/replace #"\s+" " ") s/upper-case))))
                     (sp/split-script sql))
         tx (filter :tx pieces)
         data (remove :tx pieces)
@@ -1602,24 +1817,67 @@
     {:statement chosen
      :warnings (concat
                 (when (seq tx)
-                  [(str "Left out " (s/join " and " (distinct (map (comp s/upper-case :tx) tx)))
+                  [(str "Left out " (s/join " and " (distinct (map :written tx)))
                         ". Pine runs each update! and delete! in a transaction of its own.")])
                 (for [p data :when (not= p chosen)]
                   (str "Left out the statement on line " (line p) ". Pine converts one statement at a time.")))}))
 
+(defn- build-error
+  "The first block that doesn't build, with Pine's reason, as [block
+  error], or nil. Each block is built against the connection, after the
+  ones before it, as /build would. Nothing runs."
+  [texts]
+  (when *connection-id*
+    (loop [[t & more] texts named {}]
+      (when t
+        (let [[state error] (try
+                              (let [{:keys [result error]} (pine/parse t)
+                                    _ (when error (throw (ex-info (str error) {})))
+                                    state (ast/generate result *connection-id* nil nil named [])]
+                                (eval/build-query state)
+                                [state nil])
+                              (catch Exception e [nil (or (ex-message e) (.getName (class e)))]))]
+          (if error
+            [t error]
+            (recur more (merge named (:pending-assignments state)))))))))
+
 (defn- render-blocks
   "The blocks laid out one operation per line, blank lines between them, or
-  an internal error when one doesn't read back as Pine."
+  an internal error when one doesn't read back as Pine or doesn't build."
   [blocks warnings]
   (let [text (fn [{:keys [pine name]}] (str pine (when name (str " |= " name))))
-        checked (map (fn [b] [(text b) (try (pine/parse (text b)) (catch Exception e {:error (ex-message e)}))]) blocks)]
-    (if-let [[b {:keys [error]}] (first (filter #(:error (second %)) checked))]
-      {:error (str "The SQL converted to Pine that doesn't read back. This is a bug in the converter.\n\n" b "\n\n" error)
+        checked (map (fn [b] [(text b) (try (pine/parse (text b)) (catch Exception e {:error (ex-message e)}))]) blocks)
+        unbuilt (when-not (some #(:error (second %)) checked) (build-error (map first checked)))]
+    (cond
+      (some #(:error (second %)) checked)
+      (let [[b {:keys [error]}] (first (filter #(:error (second %)) checked))]
+        {:error (str "The SQL converted to Pine that doesn't read back. This is a bug in the converter.\n\n" b "\n\n" error)
+         :error-type "internal"})
+
+      unbuilt
+      {:error (str "The SQL converted to Pine that doesn't build. This is a bug in the converter.\n\n" (first unbuilt) "\n\n" (second unbuilt))
        :error-type "internal"}
+
+      :else
       {:expression (s/join "\n\n" (map (fn [{:keys [pine name]}]
                                          (str (or (:result (pine/prettify pine)) pine) (when name (str " |= " name))))
                                        blocks))
        :warnings (vec (distinct warnings))})))
+
+(defn- check-strings
+  "Refuses a string with a line break in it. Pine's blocks are separated by
+  a blank line, and so is each block a client sends, so such a string would
+  split the block it is in."
+  [stmt]
+  (doseq [n (find-nodes #(and (= :string (:kind %)) (re-find #"[\r\n]" (or (:value %) ""))) stmt)]
+    (refuse (:at n) "A string with a line break in it isn't converted. Pine's blocks are separated by blank lines.")))
+
+(defn- statement-tables
+  "Every table name a statement mentions, lowercased."
+  [stmt]
+  (set (for [n (tree-seq coll? seq stmt)
+             :when (and (map? n) (string? (:table n)))]
+         (s/lower-case (:table n)))))
 
 (defn- convert [sql]
   (try
@@ -1629,13 +1887,19 @@
       (if error
         {:error error :error-type error-type}
         (let [found (atom (vec warnings))
-              blocks (transpile-statement result #(swap! found conj %))]
+              _ (check-strings result)
+              blocks (binding [*sql-tables* (statement-tables result)]
+                       (transpile-statement result #(swap! found conj %)))]
           (render-blocks blocks @found))))
     (catch clojure.lang.ExceptionInfo e
       (if (::refusal (ex-data e))
         {:error (str "Line " (sp/line-of sql (:at (ex-data e))) ": " (ex-message e))
          :error-type "sql-unsupported"}
-        (throw e)))))
+        (throw e)))
+    ;; Each level of nesting is a level of recursion, in the reader and here.
+    (catch StackOverflowError _
+      {:error "The SQL is nested too deeply to convert. Simplify it, or write it in Pine."
+       :error-type "sql-unsupported"})))
 
 (defn sql->pine
   "{:expression :warnings} for one SQL SELECT, UPDATE or DELETE, or
@@ -1644,11 +1908,17 @@
 
   error-type is sql-parse-error when the text isn't SQL this reads,
   sql-unsupported when Pine can't say it, and internal when the Pine
-  produced doesn't parse, which is a bug here, not in the SQL.
+  produced doesn't parse or build, which is a bug here, not in the SQL.
 
   `references` is the connection's indexed schema, or nil. With it, a bare
-  name takes the database's spelling."
-  ([sql] (sql->pine sql nil))
-  ([sql references]
-   (binding [*schema* references]
+  name takes the database's spelling.
+
+  `opts` may have :connection-id, to build the converted Pine against that
+  connection as a check (nothing runs), and :dialect, the connection's."
+  ([sql] (sql->pine sql nil {}))
+  ([sql references] (sql->pine sql references {}))
+  ([sql references {:keys [connection-id dialect]}]
+   (binding [*schema* references
+             *connection-id* connection-id
+             *dialect* dialect]
      (convert sql))))

@@ -49,8 +49,10 @@ connection, `joins` is empty.
 
 - **Which joins:** Pine's own join hints. `resolution` is `fk` for a foreign key, and `heuristic`
   for a join guessed from names like `company_id`. A key of several columns is joined on all of them.
-- **Which tables:** every table after `FROM` or `JOIN` before the cursor, the last one first. The
-  `ON` clause refers to each by its alias, or by its name when it has none.
+- **Which tables:** every table in scope at the cursor, the last one first: after `FROM`, `JOIN` or
+  `UPDATE`, before the cursor, in the same query as the cursor. A table inside a subquery the cursor
+  isn't in doesn't count, and neither does one in the query around it. The `ON` clause refers to each
+  by its alias, or by its name when it has none.
 - **Names:**
   - The new table gets an alias of its words' initials (`line_item` is `li`), with a number when
     that is taken.
@@ -61,8 +63,10 @@ connection, `joins` is empty.
 ### How it reads the SQL
 
 The SQL is unfinished while it is typed, so it is scanned, not parsed. Comments and strings are
-blanked out first, so `JOIN` inside them doesn't count. A table is the name after `FROM` or `JOIN`,
-with an optional schema and alias. A word like `ON` or `WHERE` is never taken as an alias.
+blanked out first, so `JOIN` inside them doesn't count. A table is the name after `FROM`, `JOIN` or
+`UPDATE`, with an optional schema and alias. A word like `ON`, `WHERE` or `SET` is never taken as an
+alias, and the `FROM` of `IS DISTINCT FROM` names no table. Parentheses mark the queries: a table
+counts only when it is inside the same parentheses as the cursor.
 
 For each table, the endpoint builds the Pine `schema.table | ` and asks for its join hints. That is
 the same code that suggests joins in the Pine editor. It writes each hint back as SQL.
