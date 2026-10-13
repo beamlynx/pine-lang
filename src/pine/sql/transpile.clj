@@ -1797,7 +1797,9 @@
   [sql]
   (let [pieces (map (fn [{:keys [start end] :as p}]
                       (let [text (subs sql start end)]
-                        (assoc p :tx (sp/transaction-word text) :kind (sp/statement-kind text))))
+                        (assoc p :tx (sp/transaction-word text) :kind (sp/statement-kind text)
+                               ;; As written, for the warning: BEGIN WORK, END.
+                               :written (-> text (s/replace #"(?s)--[^\n]*|/\*.*?\*/" " ") s/trim (s/replace #"\s+" " ") s/upper-case))))
                     (sp/split-script sql))
         tx (filter :tx pieces)
         data (remove :tx pieces)
@@ -1815,7 +1817,7 @@
     {:statement chosen
      :warnings (concat
                 (when (seq tx)
-                  [(str "Left out " (s/join " and " (distinct (map (comp s/upper-case :tx) tx)))
+                  [(str "Left out " (s/join " and " (distinct (map :written tx)))
                         ". Pine runs each update! and delete! in a transaction of its own.")])
                 (for [p data :when (not= p chosen)]
                   (str "Left out the statement on line " (line p) ". Pine converts one statement at a time.")))}))

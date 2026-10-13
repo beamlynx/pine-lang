@@ -6,6 +6,7 @@
             [clojure.test :refer [deftest is testing]]
             [pine.db.references :as refs]
             [pine.parser :as parser]
+            [pine.sql.parser]
             [pine.sql.transpile :as t]))
 
 (def ^:private schema
@@ -172,9 +173,12 @@
 
   (testing "Deep nesting is a refusal, not a server error"
     (let [deep (str "select * from t where " (apply str (repeat 5000 "not ")) "a = 1")
-          {:keys [error error-type]} (t/sql->pine deep)]
-      (is (= "sql-unsupported" error-type) error)
-      (is (s/includes? (str error) "nested too deeply")))
+          {:keys [expression error-type]} (t/sql->pine deep)]
+      (is (or expression (= "sql-unsupported" error-type)) "converts or refuses, as the stack allows"))
+    (with-redefs [pine.sql.parser/parse (fn [_] (throw (StackOverflowError.)))]
+      (let [{:keys [error error-type]} (t/sql->pine "select * from t")]
+        (is (= "sql-unsupported" error-type))
+        (is (s/includes? (str error) "nested too deeply"))))
     (let [deep (str "select " (apply str (repeat 2000 "coalesce(")) "a" (apply str (repeat 2000 ", 1)")) " as k from t")
           {:keys [expression error-type]} (t/sql->pine deep)]
       (is (or expression (= "sql-unsupported" error-type)) "converts or refuses, as the stack allows"))))
@@ -188,3 +192,51 @@
         (is (= "internal" (:error-type r)))
         (is (s/includes? (:error r) "doesn't build"))
         (is (s/includes? (:error r) "boom"))))))
+
+(deftest test-messages-and-equivalents
+  (testing "Each refusal names what was written"
+    (refuses "with r as (select id, row_number() over (partition by a order by d.created_at + 1) as rn from t d) select * from r where rn = 1"
+             "inside ROW_NUMBER() isn't in Pine: arithmetic isn't")
+    (refuses "select * from t order by lower(b)" "ORDER BY lower(...) isn't in Pine: lower() isn't")
+    (refuses "with w(a, b) as (select x, y from t) select * from w" "A column list after a WITH name")
+    (refuses "SELECT 1; SELECT * FROM t" "A SELECT without FROM isn't in Pine")
+    (refuses "select a, min(distinct x) as m from t group by a" "DISTINCT isn't in Pine")
+    (refuses "select string_agg(a, ',') as s, b from t group by b" "Functions like string_agg()")
+    (refuses "select (a between 1 and 2) as k from t" "BETWEEN inside a value")
+    (refuses "select (a is not distinct from 1) as k from t" "IS [NOT] DISTINCT FROM inside a value")
+    (refuses "select * from t where a = b + 1" "Arithmetic isn't in Pine"))
+
+  (testing "What Pine can say converts"
+    (converts-to "select a from t where a = coalesce(b, 1)" "t | where: a = coalesce(b, 1) | select: a")
+    (converts-to "select * from t where a = b || 'x'" "t | where: a = concat(b, 'x')")
+    (converts-to "update company set name = coalesce(name, 'x') where id = 1" "company | where: id = 1 | update! name = coalesce(name, 'x')")
+    (converts-to "update company set name = name || 'x' where id = 1" "company | where: id = 1 | update! name = concat(name, 'x')")
+    (converts-to "select a, sum(x) as s from t group by a order by sum(x)" "t | group: a => sum(x) as s | order: s asc")
+    (converts-to "select coalesce(b, c) as k from t order by coalesce(b, c)" "t | select: coalesce(b, c) as k | order: k asc")
+    (converts-to "select a, (a in (select b from k)) as m from t" "k | select: b |= k_bs\n\nt | select: a, a in k_bs as m")
+    (converts-to "select x is not null as k from t" "t | select: x is not null as k")
+    (converts-to "select a::text as k, cast(b as text) as l from t" "t | select: a::text as k, b::text as l")
+    (converts-to "select (coalesce(a, b))::text as k from t" "t | select: coalesce(a, b)::text as k")
+    (converts-to "select case x when 1 then 'a' else 'b' end as k from t" "t | select: if x = 1 then 'a' else 'b' as k")
+    (converts-to "select b, count(*) filter (where a = 1) as n from t group by b" "t | group: b => count where a = 1 as n")
+    (converts-to "select a, min(x) from t group by a" "t | group: a => min(x) as min"))
+
+  (testing "Transaction words are named as written"
+    (converts-to "BEGIN WORK; UPDATE company SET name = 'x' WHERE id = 1; END;"
+                 "company | where: id = 1 | update! name = 'x'"
+                 ["Left out BEGIN WORK and END. Pine runs each update! and delete! in a transaction of its own."]))
+
+  (testing "The where: steps are counted in total, not per OR"
+    (refuses (str "select * from t where " (s/join " and " (repeat 5 "((a=1 and b=1) or (c=1 and d=1))")))
+             "more than 16 where: steps"))
+
+  (testing "On MySQL, || is OR: refused. CONCAT() converts, since MySQL's is NULL when a part is"
+    (let [mysql (fn [sql] (t/sql->pine sql nil {:dialect :mysql}))]
+      (is (s/includes? (:error (mysql "select a || b as k from t")) "In MySQL, || means OR"))
+      (is (= "t\n | select: concat(a, b) as k" (:expression (mysql "select concat(a, b) as k from t"))))))
+
+  (testing "With no ORDER BY, which row is kept is said"
+    (converts-to "with r as (select id, row_number() over (partition by a) as rn from t) select * from r where rn = 1"
+                 "t | select: id | limit: 1 per a |= r\n\nr"
+                 ["`rn` from ROW_NUMBER() isn't a column in Pine: `r` keeps the first rows of each group instead."
+                  "ROW_NUMBER() has no ORDER BY, so the SQL keeps any row of each group. Pine keeps the first in primary key order."])))

@@ -249,8 +249,9 @@
   (-> expression parser/parse :result (ast/generate :test nil nil {} []) eval/build-query eval/formatted-query s/trim))
 
 (def ^:private fixed-point-corpus
-  "Pine expressions whose SQL converts back. Not count:, group: or a
-  checkpoint: Pine writes those with WITH, which isn't converted yet."
+  "Pine expressions whose SQL converts back to Pine that builds the same SQL.
+  count:, group: and checkpoints are written with WITH, which converts to
+  several blocks: see multi-block-corpus."
   ["company"
    "company | where: id = 1"
    "company | where: name = 'Acme' | where: id > 3 or id < 1"
@@ -263,7 +264,32 @@
    "company | employee :left | o: name asc | l: 5"
    "employee | document .created_by"
    "company as c | employee as e | from: c | document"
-   "company | s: id, name as n | o: id desc"])
+   "company | s: id, name as n | o: id desc"
+   ;; Computed values.
+   "company | s: coalesce(name, 'x') as k"
+   "company | s: concat(name, 'x') as k"
+   "company | s: if id = 1 then 'a' else 'b' as k"
+   "company | s: id = 1 or name is null as k"
+   "company | s: id, name::text as k"
+   "company | s: now() as t"
+   "company | where: name = coalesce(name, 'x')"
+   "company | where: name = concat(name, 'x')"
+   "company | where: created_at < now()"])
+
+(def ^:private multi-block-corpus
+  "Pine expressions whose SQL has WITH: it converts back, to several blocks."
+  ["company | group: name => count"
+   "company | group: name => count as n"
+   "company | group: name => min(id) as m"
+   "company | group: name => count where id > 1 as n"
+   "company | group: name => count | where: count > 1"
+   "company | where: id = 1 | count:"])
+
+(deftest test-multi-block-round-trip
+  (doseq [expression multi-block-corpus]
+    (testing expression
+      (let [{:keys [error]} (t/sql->pine (pine->sql expression) nil {:connection-id :test})]
+        (is (nil? error) error)))))
 
 (deftest test-fixed-point
   (doseq [expression fixed-point-corpus]

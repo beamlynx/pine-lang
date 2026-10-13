@@ -385,21 +385,35 @@
       ["A subquery here isn't in Pine. One converts in FROM, in JOIN, and after IN." "sql-unsupported"]
 
       (inside-window before)
-      (let [{:keys [clause item]} (inside-window before)]
-        [(str clause " " (expression-at (str item after)) " inside ROW_NUMBER() isn't in Pine yet. Pine ranks rows by columns.")
+      (let [{:keys [clause item]} (inside-window before)
+            e (expression-at (str item after))]
+        [(if (re-find #"^\s*(?:\+|-|\*|/|%)" after)
+           (str clause " " e " inside ROW_NUMBER() isn't in Pine: arithmetic isn't.")
+           (str clause " " e " inside ROW_NUMBER() isn't in Pine yet. Pine ranks rows by columns and by values it can compute."))
          "sql-unsupported"])
 
       (and (re-find #"^\s*\(" after) (re-find #"(?is)\bset\b(?:(?!\bwhere\b).)*=\s*[A-Za-z_][A-Za-z0-9_]*\s*$" before))
       (let [f (s/lower-case (second (re-find #"([A-Za-z_][A-Za-z0-9_]*)\s*$" before)))]
-        [(str (s/upper-case f) "() isn't in Pine yet. update! writes a value: a string, a number, true, false, null or now().") "sql-unsupported"])
+        [(str (s/upper-case f) "() isn't in Pine's update!. update! writes a value, coalesce(...), a || b, or now().") "sql-unsupported"])
 
       (and word (unsupported-words word))
       [(unsupported-words word) "sql-unsupported"]
 
+      ;; WITH w(a, b) AS (...): a column list after the name.
+      (and (re-find #"^\s*\(" after)
+           (re-find #"(?is)(?:^|;)\s*with\s+(?:[A-Za-z_\"][^()]*?\)\s*,\s*)?(?:[A-Za-z_][A-Za-z0-9_]*|\"[^\"]+\")\s*$" before))
+      ["A column list after a WITH name, like w(a, b), isn't converted. Name the columns with AS in its query." "sql-unsupported"]
+
+      ;; SELECT with no FROM: Pine starts from a table.
+      (and (re-find #"(?i)^\s*select\b" before) (not (re-find #"(?i)\bfrom\b" text)) (s/blank? after))
+      ["A SELECT without FROM isn't in Pine. Pine starts from a table." "sql-unsupported"]
+
       (re-find #"^\s*\(" after)
       (let [f (some-> (re-find #"([A-Za-z_][A-Za-z0-9_]*)\s*$" before) second s/lower-case)]
-        (if (#{"sum" "avg" "min" "max" "string_agg" "array_agg"} f)
-          [(str (s/upper-case f) "() isn't in Pine. Pine counts only: COUNT(*).") "sql-unsupported"]
+        (cond
+          (#{"sum" "avg" "min" "max" "bool_or" "bool_and" "every"} f)
+          [(str (s/upper-case f) "() converts with one value inside, like " (s/upper-case f) "(x). DISTINCT and ORDER BY inside it aren't in Pine.") "sql-unsupported"]
+          :else
           [(str "Functions" (when f (str " like " f "()")) " aren't in Pine.") "sql-unsupported"]))
 
       (or (re-find #"^\s*\$[0-9]" after) (and (re-find #"\$$" before) (re-find #"^[0-9]" after)))

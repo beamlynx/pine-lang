@@ -76,7 +76,7 @@ not           := <NOT> <ws?> not-expr
 (* A function or a count is compared too: in HAVING (`COUNT(1) > 1`), and
    so a function in WHERE is refused by name rather than at a parse error. *)
 compare       := cmp-operand <ws?> cmp-op <ws?> cmp-operand
-<cmp-operand> := concat | operand | call | count-star
+<cmp-operand> := concat | operand | call | count-star | paren-value
 (* A function that is true or false on its own: BOOL_OR(...) in HAVING. *)
 call-truthy   := call
 cmp-op        := "=" | "<>" | "!=" | ">=" | "<=" | ">" | "<"
