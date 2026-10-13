@@ -633,9 +633,14 @@
                                  (get-in state [:references :table table :columns]))]
                    (map #(-> % (select-keys [:column]) (assoc :alias a)) columns)))
                (table/resolve-table entry))
-       ;; Explicit columns: only what was actually selected, under its exposed name.
+       ;; Explicit columns: only what was actually selected, under its
+       ;; exposed name. A `t.*` among them is every column of t, as the
+       ;; named result's own state knows them.
        (->> explicit-cols
-            (map #(or (:column-alias %) (:column %)))
+            (mapcat (fn [c]
+                      (if (and (str/blank? (:column c)) (= "*" (:symbol c)) (not (:column-alias c)))
+                        (map :column (generate-all-column-hints (:ast entry) (:alias c)))
+                        [(or (:column-alias c) (:column c))])))
             distinct
             (map (fn [column-name] {:column column-name :alias a})))))))
 

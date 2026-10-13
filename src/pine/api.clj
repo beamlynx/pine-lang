@@ -673,6 +673,18 @@
       (try (db/init-references conn-id)
            (catch Exception _ nil)))))
 
+(defn- sql-to-pine
+  "SQL to Pine, with the connection when there is one: names take its
+  spelling, its dialect decides what `||` means, and the converted Pine is
+  built against it as a check. Nothing runs."
+  [query connection-id]
+  (let [conn-id (or connection-id @db/connection-id)
+        references (sql-to-pine-schema conn-id)]
+    (if references
+      (sql-transpile/sql->pine query references {:connection-id conn-id
+                                                 :dialect (connections/get-dialect conn-id)})
+      (sql-transpile/sql->pine query nil))))
+
 (defroutes app-routes
   ;; connection management
   (GET "/api/v1/connection" [] (-> (get-connection) response))
@@ -754,7 +766,7 @@
       (or (param-problem params :sql? true)
           (when-not (string? query) (bad-request "`query` is required."))
           (response (or (too-long-response query)
-                        (sql-transpile/sql->pine query (sql-to-pine-schema connection-id)))))))
+                        (sql-to-pine query connection-id))))))
 
   ;; The connection's tables and columns, for completing SQL as it is typed
   ;; (docs/sql-hints.md). No connection, or one that can't be read, is an

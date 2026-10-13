@@ -56,6 +56,17 @@
    "delete from t d using g where d.id = g.id"
    "with k as (select id from t) delete from u where id in (select id from k)"
    "update company_document d set deleted_at = '2026-10-12' from sp_docs g left join keep_final kf on kf.id = g.id where d.id = g.id and kf.id is null and g.archived_at is null"
+   ;; Computed values.
+   "select coalesce(a, 'x' || b) as k, (c is not null) as d, case when e = 1 then 'one' when e = 2 then 'two' else 'many' end as f from t"
+   "select coalesce(a, b)::text as k, now() as n from t where c > now()"
+   "select a, min(b::text) filter (where c = 'x') as m, bool_or(c = 'y') as o, count(*) from t group by a having bool_or(c = 'y') or a is not null"
+   "select a, count(*) from t group by a having count(*) > 1 and min(b) < 5"
+   "select t.*, row_number() over (partition by t.a, coalesce(t.b, 'x') order by (t.c is null) desc, case when t.d then t.e end desc) as rn from t"
+   "select * from t order by coalesce(a, b) desc"
+   "update t set a = now() where id = 1"
+   "select * from a join b on b.x = a.y::text"
+   "select lower(a) from t where upper(b) = 'X'"
+   "select distinct on (a) a, b from t order by a, b desc"
    ;; The structure of the script in transpile_test's test-motivating-script.
    "WITH sp_docs AS (\n    SELECT d.id, d.company_id, d.reference_id, d.created_at, d.archived_at\n    FROM company_document d\n    LEFT JOIN company_document_attachment cda ON cda.company_document_id = d.id\n    LEFT JOIN attachment a ON a.id = cda.attachment_id\n    WHERE d.tenant_id = '86b8ad91-7463-478a-aa43-43a977105bf4' AND d.deleted_at IS NULL\n      AND (a.type = 'sharepoint' OR d.reference_id IS NOT NULL)\n),\nranked AS (\n    SELECT g.*,\n        ROW_NUMBER() OVER (PARTITION BY g.company_id, g.reference_id ORDER BY g.created_at DESC, g.id ASC) AS rn\n    FROM sp_docs g WHERE g.archived_at IS NULL\n),\nkeep_final AS (SELECT id FROM ranked WHERE rn = 1)\nUPDATE company_document d SET deleted_at = '2026-10-12'\nFROM sp_docs g LEFT JOIN keep_final kf ON kf.id = g.id\nWHERE d.id = g.id AND kf.id IS NULL AND g.archived_at IS NULL"])
 
@@ -194,7 +205,6 @@
       (unsupported "select * from t offset 5" "OFFSET")
       (unsupported "select * from t limit 5 offset 5" "OFFSET")
       (unsupported "select * from t fetch first 5 rows only" "FETCH")
-      (unsupported "select a, count(*) from t group by a having count(*) > 1" "HAVING")
       (unsupported "select * from a union select * from b" "UNION")
       (unsupported "select * from a full join b on a.id = b.a_id" "FULL JOIN")
       (unsupported "select * from a cross join b" "CROSS JOIN")
@@ -203,17 +213,10 @@
       (unsupported "with recursive x as (select * from t) select * from x" "WITH RECURSIVE")
       (unsupported "with x as materialized (select * from t) select * from x" "MATERIALIZED")
       (unsupported "update t set a = 1 where id = 2 returning *" "RETURNING")
-      (unsupported "update t set a = now() where id = 2" "NOW() isn't in Pine yet")
-      (unsupported "select row_number() over (partition by lower(a) order by b) from t" "PARTITION BY lower(a) inside ROW_NUMBER()")
-      (unsupported "select row_number() over (partition by a order by b, (c is null) desc) from t" "ORDER BY (c is null) inside ROW_NUMBER()")
       (unsupported "select row_number() over (partition by a order by b nulls last) from t" "ORDER BY b nulls last inside ROW_NUMBER()")
-      (unsupported "select case when a then 1 end from t" "CASE")
       (unsupported "select * from t where exists (select 1)" "EXISTS")
       (unsupported "select * from t order by a nulls last" "NULLS")
       (unsupported "select * from t where a = (select id from b)" "subquery here")
-      (unsupported "select lower(a) from t" "lower()")
-      (unsupported "select * from t where lower(a) = 'x'" "lower()")
-      (unsupported "select sum(a) from t" "SUM()")
       (unsupported "select count(id) from t" "COUNT(*)")
       (unsupported "select count(distinct id) from t" "COUNT(*)")
       (unsupported "select a + 1 from t" "Arithmetic")

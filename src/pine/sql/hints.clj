@@ -61,8 +61,23 @@
   "(?:\"(?:[^\"]|\"\")+\"|`[^`]+`|[A-Za-z_][A-Za-z0-9_$]*)")
 
 (def ^:private table-ref
-  (re-pattern (str "(?i)\\b(?:from|join)\\s+(" ident ")(?:\\s*\\.\\s*(" ident "))?"
-                   "(?:\\s+(?:as\\s+)?(?!(?:" (s/join "|" (sort reserved)) ")\\b)(" ident "))?")))
+  "A table after FROM, JOIN or UPDATE, with its alias. Not the FROM of IS
+  DISTINCT FROM, and `set` after UPDATE's table is no alias."
+  (re-pattern (str "(?i)(?<!\\bdistinct\\s{1,20})\\b(?:from|join|update)\\s+(" ident ")(?:\\s*\\.\\s*(" ident "))?"
+                   "(?:\\s+(?:as\\s+)?(?!(?:" (s/join "|" (sort (conj reserved "set"))) ")\\b)(" ident "))?")))
+
+(defn- scopes
+  "For each offset of `text`, the parenthesized group it is in, as a number:
+  0 outside every parenthesis. A subquery is a group of its own."
+  [^String text]
+  (loop [i 0 stack [0] next-id 1 acc (transient [])]
+    (if (>= i (count text))
+      [(persistent! acc) (peek stack)]
+      (let [c (.charAt text i)]
+        (case c
+          \( (recur (inc i) (conj stack next-id) (inc next-id) (conj! acc next-id))
+          \) (recur (inc i) (if (next stack) (pop stack) stack) next-id (conj! acc (peek stack)))
+          (recur (inc i) stack next-id (conj! acc (peek stack))))))))
 
 (defn- unquote-name
   "[name quoted?] for a name as written."
@@ -84,11 +99,27 @@
       (= 1 (count matches)) (first matches)
       :else (s/lower-case n))))
 
+(declare scan-found)
+
 (defn- scan-tables
-  "The tables in `text`, in order: {:schema :table :ref}. :ref is what the
-  SQL calls the table, its alias or its name as written."
-  [text references]
-  (for [[_ a b alias] (re-seq table-ref text)
+  "The tables in `text` that are in scope at its end, in order: {:schema
+  :table :ref}. :ref is what the SQL calls the table, its alias or its name
+  as written. A table inside a subquery the end isn't in, or in the query
+  around the one it is in, isn't in scope."
+  [^String text references]
+  (let [[scope-of here] (scopes text)
+        m (re-matcher table-ref text)
+        found (loop [acc []]
+                (if (.find m)
+                  (recur (if (= here (nth scope-of (.start m) 0))
+                           (conj acc [nil (.group m 1) (.group m 2) (.group m 3)])
+                           acc))
+                  acc))]
+    (scan-found found references)))
+
+(defn- scan-found
+  [found references]
+  (for [[_ a b alias] found
         :let [[schema-raw table-raw] (if b [a b] [nil a])
               [schema schema-quoted] (some-> schema-raw unquote-name)
               [table table-quoted] (unquote-name table-raw)

@@ -43,12 +43,16 @@ On failure, `error` says what and where, and `error-type` says which kind:
 |---|---|
 | `sql-unsupported` | It is SQL, but Pine can't say it: `Line 3: OFFSET isn't in Pine.` |
 | `sql-parse-error` | The text isn't SQL this reads. |
-| `internal` | The converter produced Pine that doesn't parse. That is a bug here; the message includes the Pine. |
+| `internal` | The converter produced Pine that doesn't parse, or doesn't build. That is a bug here; the message includes the Pine and Pine's reason. |
 
-Nothing runs, so no connection is needed and no access policy applies. With one, names take the
-database's spelling (see [Names and case](#names-and-case)). The request may carry `connection-id`;
-without it, the selected connection is used. A connection that can't be read is skipped, never an
-error.
+Nothing runs, so no connection is needed and no access policy applies. The request may carry
+`connection-id`; without it, the selected connection is used. A connection that can't be read is
+skipped, never an error. With a connection:
+
+- Names take the database's spelling (see [Names and case](#names-and-case)).
+- The converted Pine is built against it, block by block, as a check. Nothing runs. Pine that
+  doesn't build is an `internal` error, never a conversion that fails later.
+- On MySQL, `||` is refused: there it means OR. `CONCAT()` converts instead.
 
 AI agents use it too. beamlynx-desktop's MCP tool `run_sql_as_pine` accepts SQL, which beamlynx-ui
 converts here and then runs as Pine through `/eval`, with the connection's access policy and writes
@@ -73,7 +77,7 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `JOIN employee USING (company_id)` | `.company_id = .company_id` |
 | `WHERE a = 1 AND b = 'x'` | `\| where: a = 1 \| where: b = 'x'` |
 | `WHERE a = 1 OR b = 'x'` | `\| where: a = 1 or b = 'x'` |
-| `<>`, `!=`, `<`, `>`, `<=`, `>=` | the same, `<>` as `!=` |
+| `<>`, `!=`, `<`, `>`, `<=`, `>=` | the same, `<>` as `!=`. Two columns compare with `=` and `!=` only |
 | `LIKE`, `ILIKE`, `NOT LIKE`, `NOT ILIKE` | the same |
 | `IS NULL`, `IS NOT NULL` | the same |
 | `IN ('a', 1)`, `NOT IN (...)` | the same |
@@ -85,19 +89,39 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `'2024-01-01'::timestamp` | `'2024-01-01'`: Pine types a value by its column |
 | `SELECT COUNT(*) FROM ... WHERE ...` | `... \| count:` |
 | `SELECT a, COUNT(*) FROM t GROUP BY a` | `t \| group: a => count` |
+| `SELECT a, COUNT(*) AS n FROM t GROUP BY a` | `t \| group: a => count as n` |
+| `SELECT a FROM t GROUP BY a` | `t \| group: a \| select: a`: Pine's count is left out |
 | `ORDER BY a, b DESC` | `order: a asc, b desc` |
 | `LIMIT 10` | `limit: 10` |
 | `$name` | `$name`, a Pine variable |
 | `x IS DISTINCT FROM 'v'` | `where: x != 'v' or x is null` |
 | `x IS NOT DISTINCT FROM 'v'` | `where: x = 'v' \| where: x is not null` |
 | `x IS DISTINCT FROM NULL` | `where: x is not null` |
+| `x > NOW()`, `CURRENT_TIMESTAMP`, `LOCALTIMESTAMP` | `where: x > now()` |
+| `x = COALESCE(y, 1)`, `x = y \|\| 'a'` | `where: x = coalesce(y, 1)`, `where: x = concat(y, 'a')` |
 | `WITH a AS (...) SELECT ... FROM a` | a block ending in `\|= a`, then `a \| ...` |
 | `FROM (SELECT ...) x` | a block ending in `\|= x`, then `x \| ...` |
 | `x IN (SELECT c FROM t ...)` | a block for the subquery, then `where: x in <block>` |
 | `LEFT JOIN k ON k.c = t.x WHERE k.c IS NULL` | `where: x not in k` |
 | `ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn`, kept with `rn = 1` or `rn <= N` | `order: o \| limit: N per p` |
 | `SELECT DISTINCT ON (p) ... ORDER BY p, o` | `order: p, o \| limit: 1 per p` |
+| `COALESCE(a, b)`, `a \|\| b`, `NOW()` | `coalesce(a, b)`, `concat(a, b)`, `now()` (see [Computed values](#computed-values)) |
+| `CASE WHEN a THEN x WHEN b THEN y ELSE z END AS k` | `select: if a then x else if b then y else z as k` |
+| `CASE x WHEN 1 THEN 'a' ELSE 'b' END AS k` | `select: if x = 1 then 'a' else 'b' as k` |
+| `(x IS NOT NULL) AS k`, `x IS NOT NULL AS k` | `select: x is not null as k`, a true or false value |
+| `(a IN (SELECT b FROM k)) AS m` | a block for the subquery, then `select: a in <block> as m` |
+| `a::text AS k`, `CAST(a AS text) AS k` | `select: a::text as k` |
+| `SELECT s.*, COALESCE(...) AS k FROM s` | `s as s \| select: s.*, coalesce(...) as k` |
+| `MIN(x) AS m ... GROUP BY a` | `group: a => min(x) as m`; also `MAX`, `SUM`, `AVG` |
+| `MIN(x)` without `AS` | `min(x) as min`, the name Postgres gives it |
+| `MAX(x)::text AS m` | `group: ... => max(x) as max_x \| select: ..., max_x::text as m` |
+| `MIN(x) FILTER (WHERE c)`, `COUNT(*) FILTER (WHERE c)` | `min(x) where c`, `count where c` |
+| `BOOL_OR(c)`, `BOOL_AND(c)` | `any(c)`, `all(c)` |
+| `GROUP BY a HAVING ...` | `group: a => ... \| where: ...`, by the aggregates' names |
+| `LEFT JOIN k ON k.c = t.x`, k distinct values, tested with `k.c IS NOT NULL` | `x in k` (see [Tests on a LEFT JOIN](#tests-on-a-left-join)) |
+| `ar."resourceableId" = g.id::text` in `ON` | `.resourceableId = .id ::text` |
 | `UPDATE t SET c = 'v' WHERE ...` | `t \| where: ... \| update! c = 'v'` |
+| `SET c = COALESCE(c, 'x')`, `SET c = c \|\| 'x'` | `update! c = coalesce(c, 'x')`, `update! c = concat(c, 'x')` |
 | `DELETE FROM t WHERE ...` | `t \| where: ... \| delete! .id`, by the table's primary key |
 | `BEGIN; ...; COMMIT;` | the statement inside, with a warning |
 
@@ -111,6 +135,104 @@ column is written with its direction.
 Tables and joins first, in the SQL's order. Then one `where:` for each AND-ed condition. Then `select:`,
 `group:` or `count:`. Then `order:` and `limit:`. Pine builds one SQL `SELECT` with every join and
 every condition in it, so a `where:` after the joins means the same as SQL's single `WHERE`.
+
+### Computed values
+
+A value in the select list that isn't a column becomes a [computed value](computed-values.md), named
+with the SQL's `AS`:
+
+```sql
+SELECT s.*, COALESCE(s.reference_id, 'att:' || s.any_attachment_id) AS dedupe_key FROM sp_docs s
+```
+
+```
+sp_docs as s
+ | select: s.*, coalesce(reference_id, concat('att:', any_attachment_id)) as dedupe_key
+```
+
+- `COALESCE` becomes `coalesce()`, `NOW()` becomes `now()`, and a cast to `text` or `uuid` stays.
+  `CURRENT_TIMESTAMP` and `LOCALTIMESTAMP` are `now()` too. `CURRENT_DATE`, `CURRENT_TIME` and
+  `CURRENT_USER` are refused by name.
+- `a || b || c` becomes `concat(a, b, c)`. Both are NULL when any part is. A cast to text on a part is
+  left out: Pine's `concat()` makes text of each part. SQL's own `CONCAT()` is refused on Postgres,
+  where it skips NULLs. On MySQL it is NULL when a part is, so it converts, and `||` is refused, since
+  MySQL reads it as OR.
+- `CAST(x AS t)` is `x::t`, whatever `x` is.
+- `CASE WHEN a THEN x WHEN b THEN y ELSE z END` becomes `if a then x else if b then y else z`. A `CASE`
+  right after `THEN` goes in parentheses.
+- A condition used as a value, `(x IS NOT NULL)`, becomes the condition. Its `NOT`s are pushed down as in
+  `WHERE`. Pine joins the conditions of one value with `or` only, so a value with `AND` in it is refused.
+  So are `BETWEEN` and `IS [NOT] DISTINCT FROM`, which are two conditions joined with AND; the
+  message names them.
+- A computed value needs `AS`: Pine names every one. `ORDER BY` its name works, and so does `ORDER BY`
+  the same expression.
+- A column named `true`, `false`, `null`, `if`, `then` or `else` is refused inside a computed value, and
+  `true`, `false` and `null` on the right of a condition or in `select:`: Pine reads them as keywords
+  there.
+- Any other function is refused by name: `Functions like lower() aren't in Pine.`
+
+### Aggregates and HAVING
+
+Every `GROUP BY` converts in steps whose result has exactly the SQL's columns, under its names:
+
+```sql
+SELECT d.id, COALESCE(MIN(a.id::text) FILTER (WHERE a.type = 'sharepoint'), MIN(a.id::text)) AS att
+FROM document d LEFT JOIN attachment a ON a.document_id = d.id
+GROUP BY d.id, d.reference_id
+HAVING BOOL_OR(a.type = 'sharepoint') OR d.reference_id IS NOT NULL
+```
+
+```
+document as d
+ | attachment as a :left .document_id = .id
+ | group: d.id, d.reference_id => min(id::text) where type = 'sharepoint' as min_id, min(id::text) as min_id_2, any(type = 'sharepoint') as any_type
+ | where: any_type = true or reference_id is not null
+ | select: id, coalesce(min_id, min_id_2) as att
+```
+
+1. `group:` lists the grouped columns and every aggregate once. An aggregate selected on its own takes
+   the SQL's name for it: its `AS`, or else its function's name, as Postgres names it (`count`, `min`).
+   The others take Pine's default name (`min_id`), with `_2`, `_3`, ... when it is taken. When two SQL
+   columns have one name, like `COUNT(*), MIN(x) AS count`, the second is renamed with a warning; two
+   with the same `AS` are refused.
+2. `where:` is the `HAVING`. It follows the `group:`, so a [checkpoint](checkpoints.md) seals the groups
+   first, and it filters them by the names. A boolean aggregate on its own, like `BOOL_OR(...)`, is
+   compared with `true`.
+3. `order:` sorts by the group's columns when the `ORDER BY` names one the `SELECT` leaves out, and
+   comes before the `select:`. Otherwise it sorts by the SQL's names, after it. `ORDER BY` an aggregate
+   uses the aggregate's name.
+4. `select:` lists the SQL's columns in its order, under its names: a grouped column with its `AS`,
+   and a cast after an aggregate (`MAX(x)::text`). It is left out when the `group:` already returns
+   exactly those. A `group:` with no aggregate adds a count, which the `select:` leaves out.
+
+`MIN`, `MAX`, `SUM` and `AVG` convert, `BOOL_OR` to `any()` and `BOOL_AND` to `all()`, each with an
+optional `FILTER (WHERE ...)`. `COUNT(*)` is `count`, and `COUNT(*) FILTER (WHERE c)` is
+`count where c`. Any other function, like `STRING_AGG`, is refused by name.
+
+### Tests on a LEFT JOIN
+
+This SQL asks, for each row of `g`, whether `edited` has its id:
+
+```sql
+WITH edited AS (SELECT DISTINCT ... AS document_id FROM ...)
+SELECT g.*, (e.document_id IS NOT NULL) AS has_activity
+FROM grouped g LEFT JOIN edited e ON e.document_id = g.id
+```
+
+In Pine that is `id in edited`, with no join: `grouped as g | select: g.*, id in edited as has_activity`.
+It converts that way when all of these hold:
+
+- The `ON` is that one pair, and the joined query holds distinct values of the one column it selects
+  (`SELECT DISTINCT c`). Otherwise the join could repeat rows of `g`, which `in` doesn't.
+- The joined query is used nowhere else, and every other mention of it is a test `k.c IS NULL` or
+  `IS NOT NULL`.
+
+`IS NOT NULL` becomes `in` and `IS NULL` becomes `not in`. When the schema doesn't show both columns are
+`NOT NULL`, `in` could be unknown where the SQL's test is false. So a value is written
+`if id in edited then true else false`, which is never NULL. In a condition, where unknown counts as
+false, plain `in` is exact. A negated test there that could be unknown is refused.
+
+A `LEFT JOIN k ... WHERE k.c IS NULL` on its own is still [rows with no match](#rows-with-no-match).
 
 ### WHERE becomes several where: steps
 
@@ -158,12 +280,22 @@ A subquery in `FROM` or `JOIN` works the same, named by its alias. A subquery af
 block too, named after its table and column, like `company_ids`. When it is just `SELECT c FROM w`,
 and `w` is a `WITH` query used for nothing else, `w` itself is used and selects only `c`.
 
-`DISTINCT` doesn't change which values a set holds, so it is dropped from a query that is only used
-after `IN`. Anywhere else it is refused.
+A subquery after `IN` inside a selected value, `(a IN (SELECT b FROM k)) AS m`, becomes a block in the
+same way, and the value `a in <block> as m`.
 
-A `WITH` query's columns are what a later query sees. So a conversion that would change them, the
-ones that are warnings in the statement's own query (`COUNT(*) AS n` named `count`, the count a
-`group:` adds), is refused inside a `WITH` query.
+A name Pine makes up for a block, like `company_ids`, is never a table the SQL reads: then it is
+`company_ids_2`. A `WITH` query named like a table the statement also reads with its schema
+(`WITH company AS (...) ... FROM public.company`) is refused, since Pine would read the `WITH` query for
+both.
+
+With the schema, a bare column in a subquery after `IN` must be a column of the subquery's own tables.
+In SQL it may be the outer query's column; Pine would read it as the subquery's, so it is refused.
+
+`DISTINCT` doesn't change which values a set holds, so it is dropped from a query that is only used
+after `IN`, unless it has a `LIMIT`: the `LIMIT` counts distinct values. Anywhere else it is refused.
+
+A `WITH` query's columns are what a later query sees. So a conversion that would change them, such as
+renaming a second column of one name, is refused inside a `WITH` query.
 
 ### Rows with no match
 
@@ -175,7 +307,11 @@ SELECT t.* FROM t LEFT JOIN k ON k.c = t.x WHERE k.c IS NULL
 
 In Pine that is `where: x not in k`, with `k` selecting only `c`. It converts that way when the
 `ON` is that one pair, the `IS NULL` is on `k.c` and stands on its own in the `WHERE`, and nothing
-else uses `k`. Otherwise the `LEFT JOIN` converts as a join.
+else uses `k`. A bare column that could be `k`'s counts as a use, unless the schema says it isn't.
+Otherwise the `LEFT JOIN` converts as a join.
+
+When `k` is a `WITH` query with a `LIMIT`, it isn't narrowed to `c`: a new block reads it, so the
+`LIMIT` still applies before `c is not null`.
 
 `NOT IN` treats NULL differently from the join. When `t.x` is NULL, the join keeps the row and
 `NOT IN` drops it. When `k.c` holds a NULL, `NOT IN` matches nothing at all. So unless the schema
@@ -212,10 +348,18 @@ ranked
 - Every query that uses the numbered rows must keep the first N, with `rn = 1`, `rn <= N` or
   `rn < N`, and all of them the same N. That test leaves the later query; `limit: N per` does it.
 - `rn` can't be used any other way. `rn = 2` and `rn > 1` are refused by name.
-- `PARTITION BY` and `ORDER BY` take columns. An expression, such as `(x IS NOT NULL)` or a `CASE`,
-  is refused with its line.
+- An expression in `PARTITION BY` or `ORDER BY`, such as `(x IS NOT NULL)` or a `CASE`, is selected as
+  a computed column before the `order:`, and used by its name. A selected value with the same expression
+  is used by its own name. Otherwise the new column is called `rn_order_1`, `rn_partition_1`, ..., after
+  `rn` and its place. It is a column the SQL doesn't have, which a warning says when it reaches a result.
+- A `ROW_NUMBER()` that no later query uses, and no `*` returns, is left out with a warning. So a second,
+  unused one doesn't stop the first from converting.
 - `rn` isn't a column of the result in Pine. A `SELECT *` over the numbered rows gets a warning.
-- The numbered rows can't be joined with `LEFT JOIN` or `RIGHT JOIN`.
+- The numbered rows can't be joined with `LEFT JOIN` or `RIGHT JOIN`, or read twice in one query.
+- With no `ORDER BY`, the SQL keeps any row of each group, and Pine the first in primary key order. A
+  warning says so. The same goes for `DISTINCT ON` with no `ORDER BY`.
+- A column Pine adds for an expression never takes the name of a column a `*` brings in, when the
+  schema says what those are.
 
 Postgres's `SELECT DISTINCT ON (p) ... ORDER BY p, o` keeps the first row of each `p`. It becomes
 `order: p, o | limit: 1 per p`. Sorting by `p` first changes no group's first row, and keeps the
@@ -244,17 +388,19 @@ employee as e
 - The `WHERE` conditions that tie the `FROM` table to the changed one are its join. The rest are
   `where:` steps. `DELETE ... USING` works the same.
 - When the pipe ends on another table, `from:` goes back to the changed one before `update!`.
-- `SET` takes values: a string, a number, true, false, NULL or a `$variable`. A function, like
-  `NOW()`, or another column is refused.
+- `SET` takes values: a string, a number, true, false, NULL, a `$variable`, `NOW()`,
+  `COALESCE(...)` or `a || b` of the changed table's columns. Another function, or another column on
+  its own, is refused.
 - `delete!` names rows by the table's primary key, so converting a `DELETE` needs the connection.
-  A table without a primary key is refused.
+  A table without a primary key is refused, and with the connection, so is an `UPDATE` of one.
 - A statement with no condition of its own is refused, as Pine refuses to change every row.
 
 ### Scripts
 
 A script is split on `;`, but not on one inside a string, a quoted name, a comment or a
-dollar-quoted body (`$$ ... $$`). `BEGIN`, `COMMIT` and `ROLLBACK` are left out, with a warning: Pine runs
-each `update!` and `delete!` in a transaction of its own. A script that ends in `ROLLBACK` and changes
+dollar-quoted body (`$$ ... $$`). `BEGIN`, `COMMIT` and `ROLLBACK` are left out, with a warning that
+names them as written (`BEGIN WORK`, `END`): Pine runs each `update!` and `delete!` in a transaction of
+its own. A script that ends in `ROLLBACK` and changes
 data is refused, since the SQL undoes its change and Pine wouldn't.
 
 Of the other statements, the one that changes data converts, or the first one when none does. Each
@@ -324,24 +470,33 @@ Without a connection, a bare identifier is folded to lowercase: `FROM Users` is 
 ### Pine's own SQL
 
 The SQL preview beamlynx shows for a Pine expression converts back. Its hidden key columns
-(`AS "__c_0__id"`) are left out, with a warning, since Pine adds them itself. Its `LIMIT 250` becomes
-`limit: 250`. A preview that starts with `WITH`, which Pine writes for `count:`, `group:`, `|=`
-names and checkpoints, converts to a block for each `WITH` query. A preview of `limit: N per` doesn't
-convert yet.
+(`"c_0"."id" AS "__c_0__id"`) are left out, with a warning, since Pine adds them itself. Only that exact
+form is: an alias that merely looks like one is kept. Its `LIMIT 250` becomes `limit: 250`. Computed
+values convert back, including the casts Pine writes around each part of a `concat()`. A preview that
+starts with `WITH`, which Pine writes for `count:`, `group:`, `|=` names and checkpoints, converts to a
+block for each `WITH` query.
+
+Two exceptions:
+
+- A preview of `limit: N per` doesn't convert yet.
+- A `group:` with an aggregate over a value converts back with the internal names Pine gives the
+  aggregated columns: `select: name, id as __pine_a0__ |= x_1`, then
+  `group: name => min(__pine_a0__) as m`. It means the same, but isn't the Pine you started from.
 
 ### Warnings
 
 A conversion can succeed with warnings. Each says how the Pine differs from the SQL without
 changing which rows come back:
 
-- `COUNT(*) AS n`: Pine names the count column `count`. In a `WITH` query, this and the next three
-  are refused instead, since a later query may use the columns.
-- `GROUP BY` without `COUNT(*)`, or a grouped column left out of the `SELECT`: Pine's `group:` returns
-  the grouped columns and a count.
-- A grouped column's alias is dropped.
+- A second SQL column of one name, renamed: `count_2`. In a `WITH` query this and the next are
+  refused instead, since a later query may use the columns.
+- `SELECT COUNT(*) AS n` without `GROUP BY`: `count:` names its column `count`.
 - An inner join's `ON` condition moved to `where:`.
+- `ROW_NUMBER()` or `DISTINCT ON` with no `ORDER BY`: which row of each group Pine keeps.
 - Pine's hidden columns left out.
 - `rn` from `ROW_NUMBER()` isn't a column of a `SELECT *` result.
+- A `ROW_NUMBER()` that no later query uses is left out.
+- A column added for an expression in `ROW_NUMBER()`, when it reaches a result.
 - `BEGIN`, `COMMIT` and `ROLLBACK` left out.
 - Another statement in the script left out, with its line.
 
@@ -354,32 +509,45 @@ Each is refused with its line.
 | `INSERT`, `MERGE`, `CALL`, `DO`, DDL and other statements | Only `SELECT`, `UPDATE` and `DELETE` convert. |
 | Two statements that change data | One at a time. |
 | `ROLLBACK` after a change | Pine's `update!` keeps its change. |
-| `DISTINCT`, other than in a set used after `IN` | Not in Pine. |
-| `OFFSET`, `FETCH`, `HAVING`, `UNION`, `INTERSECT`, `EXCEPT` | Not in Pine. |
+| `DISTINCT`, other than in a set used after `IN` without `LIMIT` | Not in Pine. |
+| `SELECT` without `FROM` | Pine starts from a table. |
+| A column list after a `WITH` name, `w(a, b)` | Name the columns with `AS` in its query. |
+| A string with a line break | Pine's blocks are separated by blank lines. |
+| A time with a zone (`'...Z'`, `'...+02'`), or `'... 10:00'::date` | Pine refuses the zone, and would keep the time. |
+| `CURRENT_DATE`, `CURRENT_TIME`, `CURRENT_USER` | Not in Pine. |
+| Two columns compared with `<`, `>`, `<=` or `>=` | Pine compares two columns with `=` and `!=`. |
+| SQL nested too deeply | Simplify it. |
+| `OFFSET`, `FETCH`, `UNION`, `INTERSECT`, `EXCEPT` | Not in Pine. |
+| `HAVING` without `GROUP BY` | Not converted. |
 | `WITH RECURSIVE`, `MATERIALIZED`, `RETURNING` | Not in Pine. |
 | A subquery other than in `FROM`, `JOIN` or after `IN` | Not in Pine. |
-| A function, `CASE`, `EXISTS`, arithmetic | Not in Pine. |
+| A function other than `COALESCE`, `NOW()` and the aggregates above; `EXISTS`; arithmetic | Not in Pine. |
+| `CONCAT()` on Postgres; `\|\|` on MySQL | Postgres's `CONCAT()` skips NULLs: write `a \|\| b`. MySQL reads `\|\|` as OR. |
+| `AND`, `BETWEEN` or `IS [NOT] DISTINCT FROM` inside a value | Pine joins a value's conditions with `or`. |
+| A computed value without `AS`, other than an aggregate | Pine names every computed value. |
+| A cast after an aggregate to other than `text` or `uuid` | Pine casts to those two. |
+| An aggregate without `GROUP BY`, or inside another aggregate | Not in Pine. |
+| `ORDER BY` an expression that isn't selected, outside `ROW_NUMBER()` | Select it with a name, and sort by the name. |
 | A window function other than `ROW_NUMBER()`, or one not kept with `rn <= N` | Not in Pine. |
-| An expression in `PARTITION BY` or `ORDER BY` inside `ROW_NUMBER()` | Not yet. |
 | `rn = 2`, `rn > 1`, or `rn` used any other way | Pine keeps the first N rows of each group. |
 | `LIMIT` after `DISTINCT ON` | Remove it. |
-| `NOW()` or another function in `SET` | Not yet. `update!` writes a value. |
-| A column in `SET` | Not converted. |
+| A function other than `NOW()` and `COALESCE` in `SET` | `update!` writes a value, `coalesce(...)`, `a \|\| b` or `now()`. |
+| A column on its own in `SET`, or another table's column | Not converted. |
+| `UPDATE` of a table with no primary key, with the connection | `update!` finds rows by the key. |
 | `UPDATE` or `DELETE` with no condition of its own | Pine refuses to change every row. |
 | `DELETE` without a connection, or on a table with no primary key | `delete!` names rows by the key. |
 | `IS DISTINCT FROM` another column | Compare with a value. |
-| A cast in a join's `ON` | Pine joins on columns as they are. |
-| `SUM`, `AVG`, `MIN`, `MAX`, `COUNT(column)`, `COUNT(DISTINCT ...)` | Pine counts rows only. |
+| `COUNT(column)`, `COUNT(DISTINCT ...)` | Pine's count counts rows. |
 | A column next to `COUNT(*)` without `GROUP BY` | Needs `GROUP BY`. |
 | `ORDER BY` or `LIMIT` on a single `COUNT(*)` | Remove them. |
-| A selected column that isn't grouped | Pine selects the grouped columns and the count. |
+| A selected column that isn't grouped | Not in SQL either. |
 | `ORDER BY 1`, `NULLS FIRST` | Name the column; no null ordering. |
 | `FULL`, `CROSS` or `NATURAL` join, a comma between tables | Pine joins inner, left or right, on named columns. |
 | A join tied to two earlier tables | Pine joins a table to one other. |
 | `USING` after more than one table | It can't say which table it joins to. Write it with `ON`. |
 | A column in a join that isn't qualified | It could belong to more than one table. |
 | `= NULL` | Never true in SQL. Use `IS NULL`. |
-| A cast other than to `text` or `uuid` | Pine casts a column to those two. |
+| A cast other than to `text` or `uuid`, in a condition, a value or a join's `ON` | Pine casts to those two. |
 | A comparison with no column | Pine conditions start with a column. |
 | `$1`, `?` | Write the value, or a `$name` variable. |
 | `LIMIT` over 10 000 | Pine's maximum. |
@@ -392,7 +560,7 @@ Each is refused with its line.
 |---|---|
 | `src/pine/sql/sql.bnf` | The SQL subset, as an Instaparse grammar: one statement. |
 | `src/pine/sql/parser.clj` | Splits a script on `;`, reads a statement into plain maps, and names an unsupported word when the reading stops on one. |
-| `src/pine/sql/transpile.clj` | Picks the statement, rewrites `WITH` queries and subqueries into blocks, maps each to Pine operations, renders them, and checks each block parses. |
+| `src/pine/sql/transpile.clj` | Picks the statement, rewrites `WITH` queries and subqueries into blocks, maps each to Pine operations, renders them, and checks each block parses and, with a connection, builds. |
 | `src/pine/api.clj` | `POST /api/v1/sql-to-pine`. |
 
 ### Reading (`pine.sql.parser`)
@@ -418,8 +586,8 @@ statement that converts is read from the whole text with everything else blanked
 so offsets and lines still point into what was pasted.
 
 When the reading stops inside `ROW_NUMBER() OVER (...)`, the message quotes the `PARTITION BY` or
-`ORDER BY` item it stopped in: "ORDER BY (e.document_id IS NOT NULL) inside ROW_NUMBER() isn't in
-Pine yet."
+`ORDER BY` item it stopped in: "ORDER BY d.created_at + 1 inside ROW_NUMBER() isn't in Pine:
+arithmetic isn't."
 
 ### Converting (`pine.sql.transpile`)
 
@@ -431,9 +599,12 @@ itself last, with no name. An `UPDATE` or `DELETE` becomes the query that picks 
 1. `flatten-query` makes each subquery in `FROM`, `JOIN` or after `IN` an entry. After `IN`, the
    condition becomes `{:op :in-set}`, Pine's `in` with a named result.
 2. `narrow-in-sets` uses a `WITH` query itself after `IN`, when that is all it's used for.
-3. `anti-joins` turns `LEFT JOIN k ... WHERE k.c IS NULL` into `not in`, with NULL guards unless
+3. `semi-joins` turns a `LEFT JOIN` to distinct values, tested only with `IS [NOT] NULL`, into `in`,
+   marking each test `:guard` when `not-null?` can't show both columns are `NOT NULL`.
+4. `anti-joins` turns `LEFT JOIN k ... WHERE k.c IS NULL` into `not in`, with NULL guards unless
    `not-null?` finds both columns `NOT NULL` in the schema.
-4. `plan-windows` finds what every user of a `ROW_NUMBER()` keeps (`rn-limit`), removes that test
+5. `drop-unused-windows` leaves out a `ROW_NUMBER()` no later query uses.
+6. `plan-windows` finds what every user of a `ROW_NUMBER()` keeps (`rn-limit`), removes that test
    from them, and records N on the numbered entry.
 
 Each entry is then one block (`transpile-query`), with the earlier entries' names and columns in
@@ -444,9 +615,16 @@ Each entry is then one block (`transpile-query`), with the earlier entries' name
 2. `table-ops` lays out the table steps, adding `from:` where a join's anchor isn't the current table.
 3. `plan-where` turns `WHERE`, and any `ON` conditions moved out of inner joins, into clauses: `nnf`
    pushes `NOT` down, `cnf` distributes `OR`.
-4. `plan-select` chooses `select:`, `group: ... => count` or `count:`, then `order:` and `limit:`.
-5. `render` writes Pine text. `pine.parser/prettify` lays it out one operation per line, and
+4. `plan-select` chooses `select:`, `group:` or `count:`, then `order:` and `limit:`.
+   `plan-aggregated` does every `GROUP BY`. `plan-plain` selects an expression in `ROW_NUMBER()` as a
+   computed column.
+5. `expr-pine` writes a SQL value as a Pine computed value, and `conditions-pine` a condition used in
+   one. Both work on the tables in scope; after the `group:` of `plan-aggregated`, on its result.
+6. `render` writes Pine text. `pine.parser/prettify` lays it out one operation per line, and
    `pine.parser/parse` checks it reads back. A named block gets `|= name` after its last operation.
+   With a connection, `build-error` builds each block, after the ones before it, as `/build` would.
+
+A statement nested too deeply overflows the stack, in the reader or here. That is caught and refused.
 
 A column is `{:t <table index> :name <column>}` until it is rendered, so whether it needs an alias is
 decided once, at the end.
@@ -459,12 +637,19 @@ decided once, at the end.
 - Each refusal's message.
 - `WITH`, subqueries, top N per group, rows with no match, `UPDATE`, `DELETE` and scripts, each on
   its own.
-- The script that motivated them: an agent's `UPDATE` that soft-deletes duplicate documents. The
-  test asserts its first refusal, and that a version without the unsupported parts converts to the
-  Pine a person would write.
+- The script that motivated them: an agent's `UPDATE` that soft-deletes duplicate documents. It
+  converts in full, as written, with a warning for `BEGIN`/`COMMIT`, the check after it, and an unused
+  `ROW_NUMBER()`.
+- `test/pine/sql/postgres_equivalence_test.clj` runs that script on a real Postgres when
+  `PINE_TEST_POSTGRES_URL` names a server. It creates a database of its own with a fixture for every
+  rule (duplicates by reference and by attachment, edits that count and ones that don't, archived and
+  already deleted documents, another tenant), and checks that the SQL's `UPDATE` and the Pine pick the
+  same ids. It drops the database after.
 - That an agent's read-only run refuses a converted `UPDATE`.
-- A fixed point: for a list of Pine expressions, Pine's SQL converts back to Pine that produces the
-  same SQL.
+- A fixed point: for a list of Pine expressions, computed values among them, Pine's SQL converts back
+  to Pine that produces the same SQL. Pine's SQL with `WITH` is checked to convert back and build.
+- `test/pine/sql/review_test.clj`: each finding of a review of the converter, with the reviewer's
+  input.
 - The normal form under SQL's three-valued logic: random `AND`/`OR`/`NOT`/`IS DISTINCT FROM` trees,
   evaluated before and after, for every combination of true, false and NULL.
 
@@ -475,6 +660,6 @@ Planned in `beamlynx-plans/pending/2026-10-08-sql-to-pine.md`:
 - With a connection: resolve an unqualified column in a join from the schema, and write a join that
   matches a foreign key as `.column` instead of explicit pairs. Names already take the database's
   spelling.
-- Functions in `SET`, like `NOW()`, and expressions in `ROW_NUMBER()`'s `ORDER BY`.
-- `COALESCE`, `FILTER`, `BOOL_OR` and `HAVING`.
+- `NOW() - INTERVAL '1 minute'` and other date arithmetic.
+- More functions, and `ORDER BY` an expression that isn't selected.
 - Date buckets (`DATE_TRUNC`) as `=> month` and the like.
