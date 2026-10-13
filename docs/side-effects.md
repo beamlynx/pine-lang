@@ -76,16 +76,23 @@ does not parse.
 
 ### Which rows `update!` changes
 
-`update!` has no equivalent. It always scopes by a single `id` column:
+`update!` finds the rows to change by the table's primary key. You don't name
+it: Pine reads it from the database.
 
 ```sql
-UPDATE "employee" SET "name" = ? WHERE id IN ( SELECT "e_1"."id" FROM ... )
+UPDATE "employee" SET "name" = ? WHERE "id" IN ( SELECT "e_1"."id" FROM ... )
 ```
 
-So a table whose primary key is not a column called `id` — including one keyed
-on several columns — cannot be updated through Pine. This is a separate
-limitation from the one `delete!` just lost, and it is about the target's own
-primary key rather than the foreign key it was reached by.
+A key of several columns is matched as a row, the way `delete!` matches several
+named columns:
+
+```sql
+UPDATE "k"."case_ref" SET "note" = ? WHERE ("case_id", "search_id") IN (
+  SELECT "cr_1"."case_id", "cr_1"."search_id" FROM ... )
+```
+
+A table with no primary key, such as a view, is refused: no column is known to
+pick out one row, so the update could change rows nobody meant.
 
 ### Writes Pine refuses to build
 

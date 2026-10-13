@@ -373,9 +373,12 @@
 
 ;; todo: spec for the :value for a :table
 (defn handle [state value]
-  (let [{:keys [table]} value
-        var-ast (or (get-in state [:named-results table])
-                    (get-in state [:pending-assignments table]))]
+  (let [{:keys [table schema]} value
+        ;; A schema names a real table: `public.company` is never the named
+        ;; result `company`, which has no schema.
+        var-ast (when-not schema
+                  (or (get-in state [:named-results table])
+                      (get-in state [:pending-assignments table])))]
     (if var-ast
       (handle-as-variable state value var-ast)
       (handle-as-table state value))))

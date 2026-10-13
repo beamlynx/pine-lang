@@ -80,6 +80,16 @@
   {:type :boolean
    :value x})
 
+(defn- boolean-literal
+  "A value given for a boolean column. `true` and `false` become a real
+  boolean, so the driver binds a boolean: bound as the text 'false',
+  Postgres refused `update! active = false` (\"column is of type boolean
+  but expression is of type character varying\"), and SQLite stored the
+  text. Anything else is passed on as it was written."
+  [{v :value}]
+  (let [b (when (or (string? v) (boolean? v)) (some-> v str clojure.string/lower-case))]
+    (pine-boolean (case b "true" true "false" false v))))
+
 (defn column
   "Create a column data type. Optionally provide a cast."
   ([column] {:type :column :value [nil column nil]})
@@ -97,8 +107,7 @@
     "jsonb" (jsonb (literal-text value))
     "json" (jsonb (literal-text value))
     "uuid" (uuid (:value value))
-    "boolean" (pine-boolean (:value value))
-    "bool" (pine-boolean (:value value))
+    ("boolean" "bool") (boolean-literal value)
     ("integer" "int" "int4" "bigint" "int8" "smallint" "int2" "tinyint" "mediumint")
     ;; MySQL's TINYINT/MEDIUMINT are plain integers, not booleans - even
     ;; TINYINT(1), which conventionally holds 0/1. Mapping it to "boolean"

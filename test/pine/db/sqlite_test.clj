@@ -252,6 +252,11 @@
                   *id* [{:table "tag" :query "DELETE FROM tag WHERE id = 10" :params []}
                         {:table "tag" :query "DELETE FROM nope" :params []}])))
     (is (= [10 12] (selected "tag | select: id")) "the first delete was rolled back")
+    (testing "a boolean column takes true and false as booleans, not text"
+      (db/run-action-queries-in-transaction *id* (:queries (generate "person | where: id = 1 | update! active = false")))
+      (is (= [0] (selected "person | where: id = 1 | select: active")))
+      (db/run-action-queries-in-transaction *id* (:queries (generate "person | where: id = 1 | update! active = true")))
+      (is (= [1] (selected "person | where: id = 1 | select: active"))))
     (db/run-sql *id* "DELETE FROM tag")))
 
 (deftest test-connection-is-contained

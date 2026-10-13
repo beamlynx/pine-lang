@@ -5,6 +5,15 @@
             [pine.ast.table :as table]
             [pine.data-types :as dt]))
 
+(defn- convert-by-type
+  "A condition value converted for a column of db-type. An `in` list is
+  converted item by item."
+  [value db-type]
+  (if (and (coll? value) (not (map? value)))
+    ;; Check for (not (map? value)) to avoid treating data type maps as collections
+    (map #(dt/convert-value-to-db-type % db-type) value)
+    (dt/convert-value-to-db-type value db-type)))
+
 (defn- convert-condition-value
   "Convert a condition value to the appropriate database type based on the column's schema"
   [value alias col state]
@@ -122,6 +131,12 @@
 
                           (= :computed (:type value))
                           (update value :node #(resolve-computed-value state %))
+
+                          ;; A cast column is compared as the cast's type, so
+                          ;; the value takes that type, not the column's:
+                          ;; `id = '1' ::text` compares text with text.
+                          cast
+                          (convert-by-type value (s/lower-case cast))
 
                           :else
                           (convert-condition-value value alias col state))]

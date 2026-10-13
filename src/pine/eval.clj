@@ -886,6 +886,25 @@
      :params (mapcat second select-items)
      :group-by group-by}))
 
+(defn- group-cte-name
+  "The name of the CTE a terminal group: reads from: `x_N`, N the group's
+  step, unless that is already taken by a CTE this query defines, a table or
+  alias it reads, or a named result. Then `x_N_2`, `x_N_3`, and so on. Two
+  CTEs of one name are refused by the database, and a table of that name
+  would be shadowed by the CTE."
+  [{:keys [aliases named-results pending-assignments]} index ctes]
+  (let [taken (into #{}
+                    (map s/lower-case)
+                    (concat (map first ctes)
+                            (keys aliases)
+                            (keep :table (vals aliases))
+                            (keys named-results)
+                            (keys pending-assignments)))
+        base (str "x_" index)]
+    (->> (cons base (map #(str base "_" %) (iterate inc 2)))
+         (remove #(taken (s/lower-case %)))
+         first)))
+
 (defn build-group-query [state]
   (let [{:keys [index tables aliases]} state
         ;; A checkpoint/variable feeding into a terminal GROUP (e.g. `|= x |
@@ -900,7 +919,7 @@
                                                (str (q name) " AS ( " body " )"))
                                              ctes))
                            ", "))
-        cte-alias (str "x_" index)
+        cte-alias (group-cte-name state index ctes)
         ;; Build inner query (base SELECT with non-aggregate columns)
         {inner-query :query inner-params :params} (build-inner-select-for-group state)
         ;; Build outer query (SELECT from CTE with aggregates and GROUP BY)
@@ -1124,6 +1143,10 @@
 (defn- param-preview [{v :value :as param}]
   (case (:type param)
     :boolean (str v)
+    ;; A decimal is shown unquoted, so the shown SQL runs when copied:
+    ;; Postgres refuses the text '2.5' for an integer column, but takes the
+    ;; number 2.5. A whole number in quotes reads as the column's type.
+    :number (if (decimal? v) (.toPlainString ^BigDecimal v) (str "'" v "'"))
     ;; Not run, only shown: a $variable with no value yet.
     :variable (str "$" v)
     (str "'" (s/replace (str v) "'" "''") "'")))
