@@ -1,5 +1,6 @@
 (ns pine.ast.update-action
   (:require [pine.ast.path :as path]
+            [pine.ast.value :as value]
             [pine.ast.where :as where]
             [pine.data-types :as dt]))
 
@@ -10,11 +11,11 @@
         {:keys [alias column]} column
         current-alias (or alias (:current state))
         table-info (get (:aliases state) current-alias)
-        db-type (dt/get-column-type (:references state) current-alias column table-info)]
+        column-info (dt/get-column (:references state) current-alias column table-info)]
     ;; An unbound $variable keeps its name; see where.clj's resolve-condition.
     ;; Another column is not a literal, so there is nothing to convert.
-    (if (and db-type (not (#{:variable :column} (:type value))))
-      (assoc assignment :value (dt/convert-value-to-db-type value db-type))
+    (if (and (:type column-info) (not (#{:variable :column :computed} (:type value))))
+      (assoc assignment :value (dt/convert-value-for-column value column-info))
       assignment)))
 
 (defn- into-key
@@ -24,8 +25,8 @@
   JSON null. The column keeps its type in :db-type: a Postgres `json` column
   takes the jsonb that jsonb_set gives back only when it is cast."
   [state {:keys [value] :as assignment} {:keys [alias column] :as resolved}]
-  (when (= :column (:type value))
-    (throw (ex-info (str "update! can only write a value into a key of a JSON column, not another column. `"
+  (when (#{:column :computed} (:type value))
+    (throw (ex-info (str "update! can only write a value into a key of a JSON column, not another column or a function. `"
                          (path/path-text column (:path resolved)) "` was given one.")
                     {})))
   (assoc assignment
@@ -34,12 +35,21 @@
          ;; An unbound $variable stays as it is; /eval refuses to run it.
          :value (if (= :variable (:type value)) value (where/json-literal "=" value))))
 
+(defn- resolve-value
+  "A function written as the value, `update! deleted_at = now()`: its
+  columns are resolved like any computed value's."
+  [state {:keys [value] :as assignment}]
+  (if (= :computed (:type value))
+    (assoc-in assignment [:value :node] (second (value/resolve-node state (:node value))))
+    assignment))
+
 (defn- resolve-assignment
   "Find what an assignment writes. `data.plan` is read as alias `data` until
   it's resolved, so it is resolved here to find out whether it's a key inside
   a JSON column."
   [state {:keys [column] :as assignment}]
-  (let [resolved (path/resolve-column state column)]
+  (let [resolved (path/resolve-column state column)
+        assignment (resolve-value state assignment)]
     (if (seq (:path resolved))
       (into-key state assignment resolved)
       (convert-assignment-value assignment state))))

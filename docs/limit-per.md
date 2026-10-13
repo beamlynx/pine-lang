@@ -16,7 +16,7 @@ Keep the first N rows of each group with `limit: N per <columns>`.
 ```
 
 - `per` is a keyword, like `as` or `desc`. It needs whitespace on both sides, so a column called `perimeter` is never read as `per`.
-- The columns after `per` are written as anywhere else: `customer_id`, `c.id` after a join, or a key inside a JSON column, `data.region`.
+- The columns after `per` are written as anywhere else: `customer_id`, `c.id` after a join, a key inside a JSON column, `data.region`, or the name of a [computed column](computed-values.md) selected before.
 - A date bucket such as `created_at => month` can't be used after `per`.
 - N is checked as for a plain `limit:`: 0 to 10 000.
 
@@ -64,6 +64,17 @@ customer as c | order .customer_id | o: created_at desc | l: 1 per c.id
 ```
 
 The column can belong to any table in the expression. Name it by its alias.
+
+### On a computed value
+
+```
+company_document | s: id, company_id, coalesce(reference_id, concat('doc:', id)) as dedupe_key
+ | o: created_at desc | l: 1 per company_id, dedupe_key
+```
+
+A computed column's name can follow `per`, and the `order:` before it can use one too. Its value is written
+into the window: `PARTITION BY "c_0"."company_id", COALESCE("c_0"."reference_id", ...)`. See
+[computed-values.md](computed-values.md).
 
 ### With no `order:`
 

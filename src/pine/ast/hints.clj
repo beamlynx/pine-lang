@@ -633,9 +633,14 @@
                                  (get-in state [:references :table table :columns]))]
                    (map #(-> % (select-keys [:column]) (assoc :alias a)) columns)))
                (table/resolve-table entry))
-       ;; Explicit columns: only what was actually selected, under its exposed name.
+       ;; Explicit columns: only what was actually selected, under its
+       ;; exposed name. A `t.*` among them is every column of t, as the
+       ;; named result's own state knows them.
        (->> explicit-cols
-            (map #(or (:column-alias %) (:column %)))
+            (mapcat (fn [c]
+                      (if (and (str/blank? (:column c)) (= "*" (:symbol c)) (not (:column-alias c)))
+                        (map :column (generate-all-column-hints (:ast entry) (:alias c)))
+                        [(or (:column-alias c) (:column c))])))
             distinct
             (map (fn [column-name] {:column column-name :alias a})))))))
 
@@ -716,6 +721,10 @@
               (state :current)))
         hints (generate-all-column-hints state a)]
     (cond
+      ;; A computed column is complete: nothing is being typed.
+      (and (= :select type) (:computed column))
+      []
+
       ;; If the type is :select, :order, or :where and columns exist, filter hints using the columns
       (and (#{:select :order :where :limit} type) column)
       (find-relevant-columns hints column)
@@ -726,6 +735,32 @@
 
       ;; Otherwise, return all hints
       :else hints)))
+
+(defn- computed-hints
+  "The names of the computed columns selected so far, offered like columns
+  where a later step can use them by name: where:, order: and after `per`.
+  Each is marked :computed. Narrowed the way column hints are: by the name
+  being typed, and leaving out the ones already listed."
+  [state op-type]
+  (let [names (keep #(when (and (:computed %) (not (:aggregate %))) (:column-alias %)) (:columns state))
+        hint (fn [n] {:column n :alias (:current state) :computed true})
+        operation (:operation state)
+        typed (fn [names column] (if column (filter #(str/includes? % column) names) names))]
+    (map hint
+         (case op-type
+           :where names
+           :where-partial (let [pc (get-in operation [:value :partial-condition])]
+                            (cond
+                              (or (nil? pc) (contains? pc :operator)) names
+                              (:alias pc) []
+                              :else (typed names (:column pc))))
+           (:order :limit) (let [c (last (if (= :order op-type) (:order state) (get-in state [:limit-per :columns])))]
+                             (if c (typed names (:column c)) names))
+           (:order-partial :limit-partial) (if (:partial-alias operation)
+                                             []
+                                             (let [listed (set (map :column (if (= :order-partial op-type) (:order state) (get-in state [:limit-per :columns]))))]
+                                               (remove listed names)))
+           []))))
 
 (defn- in-json-path?
   "Whether the name being typed stops inside a JSON path, like `c.data.`.
@@ -766,6 +801,12 @@
                               (generate-column-hints state-for-hints (get-in state-for-hints [:limit-per :columns])))
                      :limit-partial (generate-column-hints state-for-hints (get-in state-for-hints [:limit-per :columns]))
                      [])
+             hints (if (#{:where :where-partial :order :order-partial :limit-partial} op-type)
+                     (concat hints (computed-hints state-for-hints op-type))
+                     hints)
+             hints (if (and (= :limit op-type) (seq (get-in state-for-hints [:operation :per])))
+                     (concat hints (computed-hints state-for-hints op-type))
+                     hints)
              hints (if (#{:select :select-partial :order :order-partial
                           :where :where-partial :update-partial :limit :limit-partial}
                         op-type)

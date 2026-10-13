@@ -8,6 +8,20 @@
   [col]
   (boolean (or (:auto-id col) (:json-type-of col))))
 
+(defn column-source
+  "The real table (and schema) this column ultimately traces back to - itself
+  if selecting from a real table, or copied forward from a variable's own
+  already-resolved source for the matching column if selecting from a
+  variable. Never recomputed past this one hop: a variable is always defined
+  before it's used, so whatever it's built from has already gone through this
+  same step, and its own :columns already carry a fully-real :source."
+  [state alias raw-column]
+  (let [{:keys [table schema ast]} (get (:aliases state) alias)]
+    (if ast
+      (some #(when (= raw-column (or (:column-alias %) (:column %))) (:source %))
+            (:columns ast))
+      {:table table :schema schema})))
+
 (defn resolve-table
   "Given a table-alias entry (as found in state's :aliases), return the real
   source table(s) it resolves to for join purposes: itself, unchanged, if it's
@@ -300,7 +314,11 @@
       (seq join-column-pairs)
       (let [x (-> state :aliases (get from-alias))
             join-result {:from (x :alias) :to (current :alias) :parent "from"
-                         :columns (mapv (fn [{:keys [left right]}] {:from left :to right})
+                         ;; A cast on one side of a pair stays with that side.
+                         :columns (mapv (fn [{:keys [left right left-cast right-cast]}]
+                                          (cond-> {:from left :to right}
+                                            left-cast (assoc :from-cast left-cast)
+                                            right-cast (assoc :to-cast right-cast)))
                                         join-column-pairs)
                          :resolution "manual" :cast nil}]
         (update state :joins conj (assoc join-result :type join)))

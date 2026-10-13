@@ -169,19 +169,36 @@
   (or (some (fn [[raw exposed]] (when (= exposed exposed-name) raw)) rename)
       exposed-name))
 
-(defn get-column-type
-  "Get the database type for a column from schema references. Returns the
-   database type string or nil if not found. table-info may be a variable's
-   alias entry (carrying :ast) - resolved through its real source table(s)
-   the same one-hop way join resolution works, since a variable's own
-   pre-seeded column list never carried type information to begin with."
+(defn get-column
+  "The column's entry in the schema references, {:column :type ...}, or nil
+  when it isn't found. table-info may be a variable's alias entry (carrying
+  :ast) - resolved through its real source table(s) the same one-hop way
+  join resolution works, since a variable's own pre-seeded column list never
+  carried type information to begin with."
   [references alias column-name table-info]
   (if (:ast table-info)
     (some (fn [{:keys [table schema rename]}]
             (let [raw (raw-column-name rename column-name)]
-              (some #(when (= (:column %) raw) (:type %))
+              (some #(when (= (:column %) raw) %)
                     (columns-for references table schema))))
           (table/resolve-table table-info))
     (let [{:keys [table schema]} table-info]
-      (some #(when (= (:column %) column-name) (:type %))
+      (some #(when (= (:column %) column-name) %)
             (columns-for references table schema)))))
+
+(defn get-column-type
+  "Get the database type for a column from schema references. Returns the
+   database type string or nil if not found. See get-column."
+  [references alias column-name table-info]
+  (:type (get-column references alias column-name table-info)))
+
+(defn convert-value-for-column
+  "convert-value-to-db-type, for the column's entry in the schema references
+  (see get-column). A literal compared with or written to a Postgres enum
+  column becomes a string that carries the enum's type in :enum, [schema
+  name]. pine.eval casts its parameter to that type: Postgres has no `=`
+  between an enum and the varchar a string is bound as."
+  [value {:keys [type enum]}]
+  (if (and enum (#{:string :number :date} (:type value)))
+    (assoc (string (str (literal-text value))) :enum enum)
+    (convert-value-to-db-type value type)))

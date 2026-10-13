@@ -16,6 +16,7 @@
   beamlynx-desktop's credential-store.ts)."
   (:require
    [clojure.string :as s]
+   [pine.computed :as computed]
    [pine.data-types :as dt]))
 
 (def redacted-value "xxxxx")
@@ -130,9 +131,15 @@
   exposed: a raw aggregate like string_agg(email, ',') would otherwise be a
   one-line bypass of the whole policy."
   [state rules {:keys [alias source auto-id column] :as col}]
-  (and (not (and auto-id (= "id" column)))
-       (not (catalog-column? state alias source))
-       (not (some #(rule-matches? state col %) rules))))
+  (if-let [node (:computed col)]
+    ;; A computed value (or an aggregate) is shown only when every column it
+    ;; reads is. Otherwise a condition on a hidden column would leak through
+    ;; its true/false result. One that reads no column, like now(), is shown.
+    (boolean (some #(sensitive-column? state rules (select-keys % [:alias :column :source]))
+                   (computed/columns node)))
+    (and (not (and auto-id (= "id" column)))
+         (not (catalog-column? state alias source))
+         (not (some #(rule-matches? state col %) rules)))))
 
 (defn- dedupe-by-column-name
   "Keep only the first entry for each :column name, preserving order.
@@ -207,15 +214,26 @@
     (or (seq (expand-star state alias)) [col])
     [col]))
 
+(defn- entry-columns
+  "[alias column] for an order:, group: or per entry: the column, or every
+  column a computed column's value reads."
+  [{:keys [alias column computed]}]
+  (if computed
+    (map (juxt :alias :column) (computed/columns computed))
+    [[alias column]]))
+
 (defn- where-columns
-  "[alias column] for every column a where: entry names: the compared column,
-  and a column on the right of the comparison (whose alias defaults to the
-  current table)."
+  "[alias column] for every column a where: entry names: the compared column
+  (or the columns of a computed column's value), and a column or a computed
+  value on the right of the comparison (whose alias defaults to the current
+  table)."
   [current entry]
-  (mapcat (fn [{:keys [alias column value]}]
-            (cond-> [[alias column]]
+  (mapcat (fn [{:keys [value] :as condition}]
+            (cond-> (vec (entry-columns condition))
               (= :column (:type value))
-              (conj (let [[a c] (:value value)] [(or a current) c]))))
+              (conj (let [[a c] (:value value)] [(or a current) c]))
+              (= :computed (:type value))
+              (into (map (juxt :alias :column) (computed/columns (:node value))))))
           (if-let [conditions (:or entry)] conditions [entry])))
 
 (defn check-references
@@ -232,9 +250,9 @@
   [{:keys [where order group limit-per current aliases] :as state} rules]
   (when (seq rules)
     (doseq [[alias column] (concat (mapcat #(where-columns current %) where)
-                                   (map (juxt :alias :column) order)
-                                   (map (juxt :alias :column) group)
-                                   (map (juxt :alias :column) (:columns limit-per)))
+                                   (mapcat entry-columns order)
+                                   (mapcat entry-columns group)
+                                   (mapcat entry-columns (:columns limit-per)))
             :when (and (not (s/blank? column))
                        (not= "id" column)
                        (not (get-in aliases [alias :ast]))

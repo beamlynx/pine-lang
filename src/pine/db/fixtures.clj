@@ -142,7 +142,7 @@
                    ;; relation, rather than being grouped with anything else.
                    ["w"  "department"    "lead_worker_id" "w"  "worker"     "id"]])
 
-;; schema table col pos type len nullable default
+;; schema table col pos type len nullable default [enum-schema]
 (def columns [["x"  "company"   "id"           nil  "integer"  nil  nil  nil]
               ["x"  "company"   "created_at"   nil  "timestamp"  nil  nil  nil]
               ["y"  "employee"  "id"           nil  "integer"  nil  nil  nil]
@@ -189,6 +189,14 @@
               ;; hint even though it has no entry in :refers-to/:referred-by.
               ["public"  "report"   "id"    nil  "integer"            nil  nil  nil]
               ["public"  "report"   "title" nil  "character varying"  nil  nil  nil]
+
+              ;; `attachment.type` is a Postgres enum: its type is
+              ;; public.attachment_type, reported in the ninth value (the
+              ;; type's schema; Postgres's get-columns returns it only for an
+              ;; enum). Used to test that a string compared with it, or
+              ;; written to it, is cast to that type.
+              ["public"  "attachment"  "id"    nil  "integer"          nil  nil  nil]
+              ["public"  "attachment"  "type"  nil  "attachment_type"  nil  nil  nil  "public"]
 
               ;; department/team/worker/shift - see the foreign-keys comment above.
               ["w"  "department"  "id"              nil  "integer"  nil  nil  nil]

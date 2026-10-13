@@ -97,7 +97,7 @@
             {:type :select :value [{:column "perimeter"}]}
             {:type :order :value [{:column "perimeter" :direction "DESC"}]}
             {:type :where :value [{:type :column :value [nil "perimeter" nil]} ">" {:type :number :value 1}]}
-            {:type :group :value {:columns [{:column "perimeter"}] :functions ["count"]}}]
+            {:type :group :value {:columns [{:column "perimeter"}] :functions [{:kind :aggregate :fn "count" :arg nil :filter nil}]}}]
            (p "shape | s: perimeter | o: perimeter | w: perimeter > 1 | g: perimeter"))))
 
   (testing "a date bucket can't follow `per`"

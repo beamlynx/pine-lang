@@ -1547,3 +1547,54 @@
                  (-> "company | where: id = 2.5" generate eval/formatted-query)))
     (is (re-find #"\"id\" IN \('-1', 2\.5\)"
                  (-> "company | where: id in (-1, 2.5)" generate eval/formatted-query)))))
+
+(deftest test-enum-columns
+  ;; attachment.type is a Postgres enum, public.attachment_type (see fixtures).
+  ;; Postgres has no `=` between an enum and the varchar a string is bound as:
+  ;; `operator does not exist: attachment_type = character varying`.
+  (let [enum-string #(assoc (dt/string %) :enum ["public" "attachment_type"])]
+    (testing "a string compared with an enum column is cast to the enum's type"
+      (is (= {:query "SELECT \"a_0\".\"id\" AS \"__a_0__id\", \"a_0\".* FROM \"attachment\" AS \"a_0\" WHERE \"a_0\".\"type\" = ?::\"public\".\"attachment_type\" LIMIT 250"
+              :params (list (enum-string "sharepoint"))}
+             (generate "attachment | where: type = 'sharepoint'")))
+      (is (= {:query "SELECT \"a_0\".\"id\" AS \"__a_0__id\", \"a_0\".* FROM \"attachment\" AS \"a_0\" WHERE \"a_0\".\"type\" != ?::\"public\".\"attachment_type\" LIMIT 250"
+              :params (list (enum-string "sharepoint"))}
+             (generate "attachment | where: type != 'sharepoint'"))))
+
+    (testing "each value of an `in` list is cast"
+      (is (= {:query "SELECT \"a_0\".\"id\" AS \"__a_0__id\", \"a_0\".* FROM \"attachment\" AS \"a_0\" WHERE \"a_0\".\"type\" IN (?::\"public\".\"attachment_type\", ?::\"public\".\"attachment_type\") LIMIT 250"
+              :params (list (enum-string "sharepoint") (enum-string "upload"))}
+             (generate "attachment | where: type in ('sharepoint', 'upload')")))
+      (is (= {:query "SELECT \"a_0\".\"id\" AS \"__a_0__id\", \"a_0\".* FROM \"attachment\" AS \"a_0\" WHERE \"a_0\".\"type\" NOT IN (?::\"public\".\"attachment_type\") LIMIT 250"
+              :params (list (enum-string "upload"))}
+             (generate "attachment | where: type not in ('upload')"))))
+
+    (testing "like compares the enum as text: Postgres has no LIKE for an enum"
+      (is (= {:query "SELECT \"a_0\".\"id\" AS \"__a_0__id\", \"a_0\".* FROM \"attachment\" AS \"a_0\" WHERE \"a_0\".\"type\"::text LIKE ? LIMIT 250"
+              :params (list (enum-string "share%"))}
+             (generate "attachment | where: type like 'share%'")))
+      (is (= {:query "SELECT \"a_0\".\"id\" AS \"__a_0__id\", \"a_0\".* FROM \"attachment\" AS \"a_0\" WHERE \"a_0\".\"type\"::text NOT ILIKE ? LIMIT 250"
+              :params (list (enum-string "SHARE%"))}
+             (generate "attachment | where: type not ilike 'SHARE%'"))))
+
+    (testing "an explicit cast still wins, and null needs no cast"
+      (is (= "SELECT \"a_0\".\"id\" AS \"__a_0__id\", \"a_0\".* FROM \"attachment\" AS \"a_0\" WHERE \"a_0\".\"type\"::text = ? LIMIT 250"
+             (:query (generate "attachment | where: type = 'sharepoint' ::text"))))
+      (is (= "SELECT \"a_0\".\"id\" AS \"__a_0__id\", \"a_0\".* FROM \"attachment\" AS \"a_0\" WHERE \"a_0\".\"type\" IS NULL LIMIT 250"
+             (:query (generate "attachment | where: type is null")))))
+
+    (testing "a string written to an enum column by update! is cast too"
+      (is (= {:queries [{:table "attachment"
+                         :query "UPDATE \"attachment\" SET \"type\" = ?::\"public\".\"attachment_type\" WHERE \"id\" IN ( SELECT \"a_0\".\"id\" FROM \"attachment\" AS \"a_0\" WHERE \"a_0\".\"type\" = ?::\"public\".\"attachment_type\" )"
+                         :params (list (enum-string "upload") (enum-string "sharepoint"))}]}
+             (generate "attachment | where: type = 'sharepoint' | update! type = 'upload'"))))
+
+    (testing "MySQL compares its ENUM columns with strings as they are"
+      (is (= "SELECT `a_0`.`id` AS `__a_0__id`, `a_0`.* FROM `attachment` AS `a_0` WHERE `a_0`.`type` = ? LIMIT 250"
+             (:query (generate-mysql "attachment | where: type = 'sharepoint'"))))
+      (is (= "SELECT `a_0`.`id` AS `__a_0__id`, `a_0`.* FROM `attachment` AS `a_0` WHERE `a_0`.`type` LIKE ? LIMIT 250"
+             (:query (generate-mysql "attachment | where: type like 'share%'")))))
+
+    (testing "SQLite has no enums"
+      (is (= "SELECT \"a_0\".\"id\" AS \"__a_0__id\", \"a_0\".* FROM \"attachment\" AS \"a_0\" WHERE \"a_0\".\"type\" IN (?, ?) LIMIT 250"
+             (:query (generate-sqlite "attachment | where: type in ('sharepoint', 'upload')")))))))
