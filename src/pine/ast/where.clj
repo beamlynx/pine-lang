@@ -86,7 +86,9 @@
                           ;; does. It used to be written bare, which is
                           ;; ambiguous (or names the wrong table) in a join.
                           (= :column (:type value))
-                          (update value :value (fn [[a c ca]] [(resolve-alias (or a current)) c ca]))
+                          (update value :value (fn [[a c ca]]
+                                                 (let [{a :alias c :column} (path/unseal-column state {:alias a :column c})]
+                                                   [(resolve-alias (or a current)) c ca])))
 
                           (#{:symbol :variable :named-result} (:type value))
                           value
