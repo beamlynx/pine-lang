@@ -124,11 +124,11 @@
                         "FROM \"customer\" AS \"c_0\" ) SELECT \"x_1\".\"data.plan\", COUNT(1) AS \"count\" FROM \"x_1\" "
                         "GROUP BY \"x_1\".\"data.plan\" LIMIT 10000")
             :params ["plan"]}
-           (sql "customer | group: data.plan => count"))))
+           (sql "customer | group: data.plan with count"))))
 
   (testing "Two paths into one column stay apart"
     (is (re-find #"GROUP BY \"x_1\".\"data.plan\", \"x_1\".\"data.region\""
-                 (:query (sql "customer | group: data.plan, data.region => count")))))
+                 (:query (sql "customer | group: data.plan, data.region with count")))))
 
   (testing "Params follow the order of their ? in the query: select, where, order"
     (is (= ["a" "a" "b" "1" "c"]
@@ -177,7 +177,7 @@
   (testing "and can't be filtered, sorted or grouped on"
     (doseq [e ["customer | where: data.plan = 'x'"
                "customer | o: data.plan | s: id"
-               "customer | group: data.plan => count"]]
+               "customer | group: data.plan with count"]]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`c_0.data` is hidden by the access policy"
                             (sql :test e [jsonb-hidden]))
           e))))
@@ -262,7 +262,7 @@
              (map #(dissoc % :operation-index) (columns "customer | s: data.plan")))))
 
     (testing "None where there is nothing to edit"
-      (is (empty? (columns "customer | group: data.plan => count")))
+      (is (empty? (columns "customer | group: data.plan with count")))
       (is (empty? (columns "customer | s: data.plan | count:"))))
 
     (testing "None for a JSON column the access policy hides"

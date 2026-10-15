@@ -43,7 +43,7 @@
       (is (= ["Acme" "Bob"] (map :value params)))))
 
   (testing "before a group:, which builds its own WITH list"
-    (let [{:keys [query]} (generate [acme-employees "employee | where: id in acme_emps | g: name => count"])]
+    (let [{:keys [query]} (generate [acme-employees "employee | where: id in acme_emps | g: name with count"])]
       (is (re-find #"^WITH \"acme_emps\" AS \(" query))
       (is (re-find #"IN \( SELECT \"id\" FROM \"acme_emps\" \)" query))))
 

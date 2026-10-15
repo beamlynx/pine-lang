@@ -308,16 +308,18 @@
     (is (= [{:type :group, :value {:columns [{:column "status"}], :functions [{:kind :aggregate :fn "count" :arg nil :filter nil}]}}]
            (p "group: status")))
     (is (= [{:type :group, :value {:columns [{:column "status"}], :functions [{:kind :aggregate :fn "count" :arg nil :filter nil}]}}]
-           (p "group: status => count")))
-    ;; Only count: the others computed over the constant 1.
-    (is (:error (parse "group: status => count, sum")))
-    (is (:error (parse "company | group: name => avg")))
+           (p "group: status with count")))
+    ;; An aggregate other than count needs a value: `total => sum`.
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`sum` needs a value: `x => sum`"
+                          (parse "group: status with count, sum")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`avg` needs a value"
+                          (parse "company | group: name with avg")))
     (is (= [{:type :group, :value {:columns [{:column "name"} {:column "status"}], :functions [{:kind :aggregate :fn "count" :arg nil :filter nil}]}}]
-           (p "group: name, status => count")))
+           (p "group: name, status with count")))
 
     ;; with aliases
     (is (= [{:type :group, :value {:columns [{:alias "x", :column "status"}], :functions [{:kind :aggregate :fn "count" :arg nil :filter nil}]}}]
-           (p "group: x.status  => count"))))
+           (p "group: x.status with count"))))
 
   (testing "Parse date extraction functions in select"
     (is (= [{:type :select, :value [{:column "created_at", :column-function "year"}]}]

@@ -7,7 +7,7 @@
    [pine.ast.value :as value]))
 
 (defn- aggregate-columns
-  "[state columns] for the aggregates after `=>`. A bare `count` stays the
+  "[state columns] for the aggregates after `with`. A bare `count` stays the
   COUNT(1) it always was. Any other is a computed column marked :aggregate,
   named by `as` or by value/default-name."
   [state functions]

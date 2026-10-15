@@ -290,7 +290,7 @@ schema-lookup key at all.
 - **Explicit columns** (`s:`, `g:`, etc.): the columns the user actually selected — using the alias if one
   was given, otherwise the plain column name. A `GROUP`-built named result already includes its aggregate
   column here too; `group.clj` folds it directly in, so it's treated like any other column rather than
-  added separately. (`=> count` is optional to type, but the parser fills in `"count"` whenever it's left
+  added separately. (`with count` is optional to type, but the parser fills in `"count"` whenever it's left
   out — there's no way to write a GROUP with no aggregate at all, so this case is always present in
   practice.)
 - **No explicit columns** (`*`): resolved the same one-hop way as everything else above, straight to the

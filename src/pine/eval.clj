@@ -39,44 +39,6 @@
 
 (declare render-value)
 
-(defn- col-fn-format
-  "Map column function names to TO_CHAR format strings"
-  [col-fn]
-  (case col-fn
-    "year"   "YYYY"
-    "month"  "YYYY-MM"
-    "day"    "YYYY-MM-DD"
-    "week"   "YYYY-MM-DD"
-    "hour"   "YYYY-MM-DD HH24"
-    "minute" "YYYY-MM-DD HH24:MI"))
-
-(defn- col-fn-expr
-  "Render a date-bucketing expression for col-fn (e.g. `select: created_at =>
-  month`). MySQL's shape isn't just a different format string like
-  Postgres's TO_CHAR(DATE_TRUNC(...)) - week in particular needs its own
-  DATE_SUB/WEEKDAY expression, since MySQL has no DATE_TRUNC. WEEKDAY()
-  returns 0 for Monday, matching Postgres's DATE_TRUNC('week') boundary."
-  [col-fn col-ref]
-  (case *dialect*
-    :mysql (case col-fn
-             "year"   (str "DATE_FORMAT(" col-ref ", '%Y')")
-             "month"  (str "DATE_FORMAT(" col-ref ", '%Y-%m')")
-             "day"    (str "DATE_FORMAT(" col-ref ", '%Y-%m-%d')")
-             "week"   (str "DATE_FORMAT(DATE_SUB(" col-ref ", INTERVAL WEEKDAY(" col-ref ") DAY), '%Y-%m-%d')")
-             "hour"   (str "DATE_FORMAT(" col-ref ", '%Y-%m-%d %H')")
-             "minute" (str "DATE_FORMAT(" col-ref ", '%Y-%m-%d %H:%i')"))
-    ;; SQLite has no date type: a date is text (`2024-01-31 10:00:00`), which
-    ;; strftime reads. %w counts Sunday as 0, so (%w + 6) % 7 is the days
-    ;; since Monday - the boundary Postgres's DATE_TRUNC('week') uses.
-    :sqlite (case col-fn
-              "year"   (str "strftime('%Y', " col-ref ")")
-              "month"  (str "strftime('%Y-%m', " col-ref ")")
-              "day"    (str "strftime('%Y-%m-%d', " col-ref ")")
-              "week"   (str "strftime('%Y-%m-%d', " col-ref ", '-' || ((CAST(strftime('%w', " col-ref ") AS INTEGER) + 6) % 7) || ' days')")
-              "hour"   (str "strftime('%Y-%m-%d %H', " col-ref ")")
-              "minute" (str "strftime('%Y-%m-%d %H:%M', " col-ref ")"))
-    (str "TO_CHAR(DATE_TRUNC('" col-fn "', " col-ref "), '" (col-fn-format col-fn) "')")))
-
 (def ^:private mysql-cast-types
   "Translation table for a user's explicit `::cast` (and the internal
   ::text cast used to reconcile a mismatched heuristic join) into MySQL's
@@ -347,7 +309,7 @@
     json-type-of (json-type-sql (q alias column) path)
     path (json-extract :text (q alias column) path)
     ;; Column function (currently date functions)
-    col-fn [(col-fn-expr col-fn (q alias column)) []]
+    col-fn [(computed/bucket-sql *dialect* col-fn (q alias column)) []]
     ;; Symbol-based columns (like aggregates)
     (empty? column) [(if alias (str (q alias) "." symbol) symbol) []]
     ;; Regular columns

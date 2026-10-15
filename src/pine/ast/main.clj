@@ -63,7 +63,7 @@
             :where           []           ;; e.g. {:alias "c" :column "name" :cast nil :operator "=" :value ...}
             :order           []           ;; e.g. [{ :alias "u" :column "name" :direction "DESC" }]
             :group           []           ;; e.g. [{ :alias "u" :column "name" }]
-            :aggregates      []           ;; group: ... => count, e.g. ["count"]
+            :aggregates      []           ;; group: ... with count, e.g. ["count"]
             :update          nil          ;; e.g. { :assignments [{ :column {...} :value {...} }] }
             ;; state
             :index           0

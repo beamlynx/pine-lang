@@ -111,9 +111,9 @@
 
   (testing "A cast after an aggregate goes in the select:, or is refused"
     (converts-to "select company_id, max(salary)::text as m from employee group by company_id"
-                 "employee | group: company_id => max(salary) as max_salary | select: company_id, max_salary::text as m")
+                 "employee | group: company_id with salary => max as max_salary | select: company_id, max_salary::text as m")
     (converts-to "select a, cast(min(x) as text) as m from t group by a"
-                 "t | group: a => min(x) as min_x | select: a, min_x::text as m")
+                 "t | group: a with x => min as min_x | select: a, min_x::text as m")
     (refuses "select company_id, max(salary)::int as m from employee group by company_id" "A cast to int isn't in Pine"))
 
   (testing "A name Pine makes up for an IN set is never a table the SQL reads"
@@ -211,15 +211,15 @@
     (converts-to "select * from t where a = b || 'x'" "t | where: a = concat(b, 'x')")
     (converts-to "update company set name = coalesce(name, 'x') where id = 1" "company | where: id = 1 | update! name = coalesce(name, 'x')")
     (converts-to "update company set name = name || 'x' where id = 1" "company | where: id = 1 | update! name = concat(name, 'x')")
-    (converts-to "select a, sum(x) as s from t group by a order by sum(x)" "t | group: a => sum(x) as s | order: s asc")
+    (converts-to "select a, sum(x) as s from t group by a order by sum(x)" "t | group: a with x => sum as s | order: s asc")
     (converts-to "select coalesce(b, c) as k from t order by coalesce(b, c)" "t | select: coalesce(b, c) as k | order: k asc")
     (converts-to "select a, (a in (select b from k)) as m from t" "k | select: b |= k_bs\n\nt | select: a, a in k_bs as m")
     (converts-to "select x is not null as k from t" "t | select: x is not null as k")
     (converts-to "select a::text as k, cast(b as text) as l from t" "t | select: a::text as k, b::text as l")
     (converts-to "select (coalesce(a, b))::text as k from t" "t | select: coalesce(a, b)::text as k")
     (converts-to "select case x when 1 then 'a' else 'b' end as k from t" "t | select: if x = 1 then 'a' else 'b' as k")
-    (converts-to "select b, count(*) filter (where a = 1) as n from t group by b" "t | group: b => count where a = 1 as n")
-    (converts-to "select a, min(x) from t group by a" "t | group: a => min(x) as min"))
+    (converts-to "select b, count(*) filter (where a = 1) as n from t group by b" "t | group: b with count where a = 1 as n")
+    (converts-to "select a, min(x) from t group by a" "t | group: a with x => min as min"))
 
   (testing "Transaction words are named as written"
     (converts-to "BEGIN WORK; UPDATE company SET name = 'x' WHERE id = 1; END;"

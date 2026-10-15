@@ -101,8 +101,7 @@
            (p "shape | s: perimeter | o: perimeter | w: perimeter > 1 | g: perimeter"))))
 
   (testing "a date bucket can't follow `per`"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"can't be used after `per`"
-                          (p "order | l: 1 per created_at => month"))))
+    (is (:error (parser/parse "order | l: 1 per created_at => month"))))
 
   (testing "the number is checked as for a plain limit"
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"limit: must be between 0 and 10000"

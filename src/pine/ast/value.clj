@@ -71,7 +71,7 @@
                     else-node (assoc :else else-node))])
      :aggregate (do
                   (when-not aggregates?
-                    (throw (ex-info (str "`" (:fn node) "()` is an aggregate. Use it after `=>` in group:.") {})))
+                    (throw (ex-info (str "`" (:fn node) "()` is an aggregate. Use it after `with` in group:.") {})))
                   (let [[state arg] (if (:arg node) (resolve-node state (:arg node) false) [state nil])
                         [state f] (if (:filter node) (resolve-node state (:filter node) false) [state nil])]
                     [state (assoc node :arg arg :filter f)]))
