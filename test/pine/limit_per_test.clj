@@ -185,11 +185,10 @@
   (testing "top N per group: a row number per group, kept up to N, in the order of order:"
     (is (= {:query (str "SELECT \"__pine_rows__\".\"__e_0__id\", \"__pine_rows__\".\"id\", \"__pine_rows__\".\"company_id\", \"__pine_rows__\".\"reports_to\" "
                         "FROM ( SELECT \"e_0\".\"id\" AS \"__e_0__id\", \"e_0\".\"id\", \"e_0\".\"company_id\", \"e_0\".\"reports_to\", "
-                        "ROW_NUMBER() OVER (PARTITION BY \"e_0\".\"company_id\" ORDER BY \"e_0\".\"id\" DESC) AS \"__pine_row__\", "
-                        "ROW_NUMBER() OVER (ORDER BY \"e_0\".\"id\" DESC) AS \"__pine_order__\" "
+                        "\"e_0\".\"company_id\" AS \"__pine_key_1__\", ROW_NUMBER() OVER (PARTITION BY \"e_0\".\"company_id\" ORDER BY \"e_0\".\"id\" DESC) AS \"__pine_row__\" "
                         "FROM \"employee\" AS \"e_0\" ) AS \"__pine_rows__\" "
                         "WHERE \"__pine_rows__\".\"__pine_row__\" <= 3 "
-                        "ORDER BY \"__pine_rows__\".\"__pine_order__\" LIMIT 250")
+                        "ORDER BY \"__pine_rows__\".\"__pine_key_1__\", \"__pine_rows__\".\"__pine_row__\" LIMIT 250")
             :params nil}
            (sql "employee | o: id desc | l: 3 per company_id"))))
 
@@ -214,7 +213,7 @@
                "employee | o: id desc | l: 1 per company_id |= latest | document"]]
       (let [select (outer-select (:query (sql e)))]
         (is (not (s/includes? select "__pine_row__")) e)
-        (is (not (s/includes? select "__pine_order__")) e))))
+        (is (not (s/includes? select "__pine_key_")) e))))
 
   (testing "an explicit select: is kept as written"
     (is (s/starts-with? (:query (sql "employee | s: id, reports_to as boss | o: id desc | l: 1 per company_id"))
@@ -230,14 +229,46 @@
   (testing "a key inside a JSON column groups by its value as text"
     (is (= {:query (str "SELECT \"__pine_rows__\".\"__c_0__id\", \"__pine_rows__\".\"id\", \"__pine_rows__\".\"data\", \"__pine_rows__\".\"uuid_col\" "
                         "FROM ( SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".\"id\", \"c_0\".\"data\", \"c_0\".\"uuid_col\", "
+                        "jsonb_extract_path_text(\"c_0\".\"data\"::jsonb, ?::text) AS \"__pine_key_1__\", "
                         "ROW_NUMBER() OVER (PARTITION BY jsonb_extract_path_text(\"c_0\".\"data\"::jsonb, ?::text) ORDER BY \"c_0\".\"id\" ASC) AS \"__pine_row__\" "
-                        "FROM \"customer\" AS \"c_0\" ) AS \"__pine_rows__\" WHERE \"__pine_rows__\".\"__pine_row__\" <= 1 LIMIT 250")
-            :params [{:type :string :value "region"}]}
+                        "FROM \"customer\" AS \"c_0\" ) AS \"__pine_rows__\" WHERE \"__pine_rows__\".\"__pine_row__\" <= 1 "
+                        "ORDER BY \"__pine_rows__\".\"__pine_key_1__\", \"__pine_rows__\".\"__pine_row__\" LIMIT 250")
+            :params [{:type :string :value "region"} {:type :string :value "region"}]}
            (update (sql "customer | l: 1 per data.region") :params vec))))
 
   (testing "where: before it filters the rows before they are ranked"
     (is (s/includes? (:query (sql "employee | where: reports_to = 1 | o: id desc | l: 1 per company_id"))
                      "FROM \"employee\" AS \"e_0\" WHERE \"e_0\".\"reports_to\" = ? ) AS \"__pine_rows__\""))))
+
+(deftest test-limit-per-result-order
+  ;; `order: created_at | limit: 2 per tenant_id` keeps each tenant's first
+  ;; two rows by created_at. The result comes tenant by tenant, each
+  ;; tenant's rows in created_at order: the order: before `per` decides
+  ;; which rows are first and how a group is sorted, not the order of the
+  ;; whole result.
+  (testing "the result comes in groups, sorted by the group's columns, then each row's place in its group"
+    (is (s/ends-with? (:query (sql "order | o: created_at desc | l: 2 per customer_id"))
+                      (str "ORDER BY \"__pine_rows__\".\"__pine_key_1__\", \"__pine_rows__\".\"__pine_row__\" LIMIT 250"))))
+
+  (testing "the order: before per ranks the rows inside each group, and isn't a second order of the whole result"
+    (let [{:keys [query]} (sql "order | o: created_at desc | l: 2 per customer_id")]
+      (is (= 1 (occurrences "ROW_NUMBER()" query)))
+      (is (s/includes? query "ROW_NUMBER() OVER (PARTITION BY \"o_0\".\"customer_id\" ORDER BY \"o_0\".\"created_at\" DESC)"))))
+
+  (testing "each group column is carried out of the derived table, even when it isn't selected"
+    (let [{:keys [query]} (sql "order | s: id | o: created_at desc | l: 2 per customer_id")]
+      (is (s/includes? query "\"o_0\".\"customer_id\" AS \"__pine_key_1__\""))
+      (is (not (s/includes? (outer-select query) "customer_id")))))
+
+  (testing "several group columns sort in the order they are written"
+    (let [{:keys [query]} (sql "order | o: id desc | l: 1 per customer_id, user_id")]
+      (is (s/includes? query "\"o_0\".\"customer_id\" AS \"__pine_key_1__\", \"o_0\".\"user_id\" AS \"__pine_key_2__\""))
+      (is (s/includes? query (str "ORDER BY \"__pine_rows__\".\"__pine_key_1__\", \"__pine_rows__\".\"__pine_key_2__\", "
+                                  "\"__pine_rows__\".\"__pine_row__\"")))))
+
+  (testing "an order: after it sorts the whole result again"
+    (is (s/ends-with? (:query (sql "employee | o: id desc | l: 1 per company_id | o: reports_to"))
+                      "ORDER BY \"result_1\".\"reports_to\" DESC LIMIT 250"))))
 
 (deftest test-limit-per-key-fallback
   (testing "no order: ranks each group by primary key"
@@ -256,18 +287,17 @@
     (is (s/includes? (:query (sql-expressions ["employee |= staff" "staff | l: 1 per company_id"]))
                      "ROW_NUMBER() OVER (PARTITION BY \"staff\".\"company_id\") AS \"__pine_row__\"")))
 
-  (testing "without order: the result has no overall order"
-    (let [{:keys [query]} (sql "employee | l: 1 per company_id")]
-      (is (not (s/includes? query "__pine_order__")))
-      (is (s/ends-with? query "WHERE \"__pine_rows__\".\"__pine_row__\" <= 1 LIMIT 250")))))
+  (testing "without order: the result still comes in groups"
+    (is (s/ends-with? (:query (sql "employee | l: 1 per company_id"))
+                      (str "WHERE \"__pine_rows__\".\"__pine_row__\" <= 1 "
+                           "ORDER BY \"__pine_rows__\".\"__pine_key_1__\", \"__pine_rows__\".\"__pine_row__\" LIMIT 250")))))
 
 (def ^:private sealed-body
   (str "SELECT \"__pine_rows__\".\"id\", \"__pine_rows__\".\"company_id\", \"__pine_rows__\".\"reports_to\" "
        "FROM ( SELECT \"e_0\".\"id\", \"e_0\".\"company_id\", \"e_0\".\"reports_to\", "
-       "ROW_NUMBER() OVER (PARTITION BY \"e_0\".\"company_id\" ORDER BY \"e_0\".\"id\" DESC) AS \"__pine_row__\", "
-       "ROW_NUMBER() OVER (ORDER BY \"e_0\".\"id\" DESC) AS \"__pine_order__\" "
+       "\"e_0\".\"company_id\" AS \"__pine_key_1__\", ROW_NUMBER() OVER (PARTITION BY \"e_0\".\"company_id\" ORDER BY \"e_0\".\"id\" DESC) AS \"__pine_row__\" "
        "FROM \"employee\" AS \"e_0\" ) AS \"__pine_rows__\" "
-       "WHERE \"__pine_rows__\".\"__pine_row__\" <= 1 ORDER BY \"__pine_rows__\".\"__pine_order__\""))
+       "WHERE \"__pine_rows__\".\"__pine_row__\" <= 1 ORDER BY \"__pine_rows__\".\"__pine_key_1__\", \"__pine_rows__\".\"__pine_row__\""))
 
 (deftest test-limit-per-checkpoint
   (testing "where: after it filters the rows kept per group"
@@ -318,9 +348,9 @@
 (deftest test-limit-per-writes
   (testing "delete! removes the rows kept per group"
     (is (= {:query (str "DELETE FROM \"employee\" WHERE \"id\" IN ( SELECT \"__pine_rows__\".\"id\" "
-                        "FROM ( SELECT \"e_0\".\"id\", ROW_NUMBER() OVER (PARTITION BY \"e_0\".\"company_id\" ORDER BY \"e_0\".\"id\" DESC) AS \"__pine_row__\", "
-                        "ROW_NUMBER() OVER (ORDER BY \"e_0\".\"id\" DESC) AS \"__pine_order__\" FROM \"employee\" AS \"e_0\" ) AS \"__pine_rows__\" "
-                        "WHERE \"__pine_rows__\".\"__pine_row__\" <= 1 ORDER BY \"__pine_rows__\".\"__pine_order__\" )")
+                        "FROM ( SELECT \"e_0\".\"id\", \"e_0\".\"company_id\" AS \"__pine_key_1__\", "
+                        "ROW_NUMBER() OVER (PARTITION BY \"e_0\".\"company_id\" ORDER BY \"e_0\".\"id\" DESC) AS \"__pine_row__\" FROM \"employee\" AS \"e_0\" ) AS \"__pine_rows__\" "
+                        "WHERE \"__pine_rows__\".\"__pine_row__\" <= 1 ORDER BY \"__pine_rows__\".\"__pine_key_1__\", \"__pine_rows__\".\"__pine_row__\" )")
             :params nil}
            (sql "employee | o: id desc | l: 1 per company_id | delete! .id")))))
 
@@ -328,11 +358,10 @@
   (testing "MySQL quotes with backticks"
     (is (= {:query (str "SELECT `__pine_rows__`.`__e_0__id`, `__pine_rows__`.`id`, `__pine_rows__`.`company_id`, `__pine_rows__`.`reports_to` "
                         "FROM ( SELECT `e_0`.`id` AS `__e_0__id`, `e_0`.`id`, `e_0`.`company_id`, `e_0`.`reports_to`, "
-                        "ROW_NUMBER() OVER (PARTITION BY `e_0`.`company_id` ORDER BY `e_0`.`id` DESC) AS `__pine_row__`, "
-                        "ROW_NUMBER() OVER (ORDER BY `e_0`.`id` DESC) AS `__pine_order__` "
+                        "`e_0`.`company_id` AS `__pine_key_1__`, ROW_NUMBER() OVER (PARTITION BY `e_0`.`company_id` ORDER BY `e_0`.`id` DESC) AS `__pine_row__` "
                         "FROM `employee` AS `e_0` ) AS `__pine_rows__` "
                         "WHERE `__pine_rows__`.`__pine_row__` <= 3 "
-                        "ORDER BY `__pine_rows__`.`__pine_order__` LIMIT 250")
+                        "ORDER BY `__pine_rows__`.`__pine_key_1__`, `__pine_rows__`.`__pine_row__` LIMIT 250")
             :params nil}
            (sql "employee | o: id desc | l: 3 per company_id" :test-mysql))))
 
@@ -369,8 +398,8 @@
         (is (s/starts-with? query "SELECT \"__pine_rows__\".\"__r_0__id\", \"__pine_rows__\".\"id\", \"__pine_rows__\".\"title\" FROM ( "))))))
 
 (deftest test-limit-per-params
-  (testing "parameters are in the order their `?` appear: per column, order:, overall order, then where:"
-    (is (= [{:type :string :value "region"} {:type :string :value "age"} {:type :string :value "age"} {:type :number :value 1}]
+  (testing "parameters are in the order their `?` appear: the carried group column, per column, order:, then where:"
+    (is (= [{:type :string :value "region"} {:type :string :value "region"} {:type :string :value "age"} {:type :number :value 1}]
            (vec (:params (sql "customer | where: id = 1 | o: data.age | l: 1 per data.region")))))))
 
 (deftest test-limit-per-api

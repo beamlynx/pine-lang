@@ -600,9 +600,9 @@
     (testing "select: before limit: N per, with order: and per columns that aren't selected"
       (builds "with r as (select id, row_number() over (partition by name order by created_at) as rn from company) select * from r where rn <= 3"
               (str "WITH \"r\" AS ( SELECT \"__pine_rows__\".\"id\" FROM ( SELECT \"c_0\".\"id\", "
-                   "ROW_NUMBER() OVER (PARTITION BY \"c_0\".\"name\" ORDER BY \"c_0\".\"created_at\" ASC) AS \"__pine_row__\", "
-                   "ROW_NUMBER() OVER (ORDER BY \"c_0\".\"created_at\" ASC) AS \"__pine_order__\" FROM \"company\" AS \"c_0\" ) AS \"__pine_rows__\" "
-                   "WHERE \"__pine_rows__\".\"__pine_row__\" <= 3 ORDER BY \"__pine_rows__\".\"__pine_order__\" ) "
+                   "\"c_0\".\"name\" AS \"__pine_key_1__\", "
+                   "ROW_NUMBER() OVER (PARTITION BY \"c_0\".\"name\" ORDER BY \"c_0\".\"created_at\" ASC) AS \"__pine_row__\" FROM \"company\" AS \"c_0\" ) AS \"__pine_rows__\" "
+                   "WHERE \"__pine_rows__\".\"__pine_row__\" <= 3 ORDER BY \"__pine_rows__\".\"__pine_key_1__\", \"__pine_rows__\".\"__pine_row__\" ) "
                    "SELECT \"r\".* FROM \"r\" AS \"r\" LIMIT 250;")))
     (testing "from: back to the changed table, then update!"
       (builds "update employee e set reports_to = 1 from company c where e.company_id = c.id and c.name = 'Acme'"

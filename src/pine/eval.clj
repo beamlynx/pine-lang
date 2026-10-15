@@ -621,19 +621,27 @@
   "The derived table a per-group limit filters." "__pine_rows__")
 (def ^:private group-row-column
   "A row's place in its group, from 1." "__pine_row__")
-(def ^:private overall-row-column
-  "A row's place in the order: of the whole result." "__pine_order__")
+(defn- group-key-column
+  "The name the i-th column after `per` is carried out of the derived table
+  under, from 1, so the outer query can sort the groups by it."
+  [i]
+  (str "__pine_key_" i "__"))
 
-(defn- partition-terms
-  "[sql params] for the columns after `per`. A key inside a JSON column
+(defn- partition-parts
+  "[sql params] for each column after `per`. A key inside a JSON column
   groups by its value as text."
   [columns]
-  (let [parts (map (fn [{:keys [alias column path computed]}]
-                     (cond
-                       computed (render-value computed)
-                       path (json-extract :text (q alias column) path)
-                       :else [(q alias column) []]))
-                   columns)]
+  (map (fn [{:keys [alias column path computed]}]
+         (cond
+           computed (render-value computed)
+           path (json-extract :text (q alias column) path)
+           :else [(q alias column) []]))
+       columns))
+
+(defn- partition-terms
+  "[sql params] for the columns after `per`."
+  [columns]
+  (let [parts (partition-parts columns)]
     [(s/join ", " (map first parts)) (mapcat second parts)]))
 
 (defn- row-number
@@ -679,11 +687,14 @@
   can't be filtered on in the query that computes it, so the query is built
   as usual, with each row's place in its group added, and an outer query
   keeps the rows up to N. The outer query names its columns one by one, so
-  the row numbers stay out of the result. It keeps order: as the order of
-  the whole result through a second row number, because the columns order:
-  names may not be in the result."
+  the row numbers stay out of the result.
+
+  The result comes in groups: each group's rows together, sorted by the
+  group's columns, and inside a group in the order: before `per`, which is
+  also what decides which rows are first. The group's columns may not be in
+  the result, so the inner query carries each one out under its own name."
   [state]
-  (let [{:keys [tables limit where aliases order limit-per]} state
+  (let [{:keys [tables limit where aliases limit-per]} state
         from         (let [{a :alias} (first tables)
                            {table :table schema :schema} (get aliases a)]
                        (str (q schema table) " AS " (q a)))
@@ -696,19 +707,21 @@
         outer-items  (map (fn [{:keys [name]} inner-name]
                             (str (q rows-alias inner-name) (when (not= name inner-name) (str " AS " (q name)))))
                           items names)
+        key-parts    (partition-parts (:columns limit-per))
+        key-names    (map group-key-column (range 1 (inc (count key-parts))))
+        key-items    (map (fn [[expr _] key-name] (str expr " AS " (q key-name))) key-parts key-names)
         [group-row group-row-params] (row-number (:columns limit-per) (:order limit-per) group-row-column)
-        [overall-row overall-row-params] (when (seq order) (row-number nil order overall-row-column))
         [where-clause where-params] (build-where-clause where)
-        inner (s/join " " (filter some? [(str "SELECT " (s/join ", " (concat inner-items (filter some? [group-row overall-row])))
-                                              " FROM")
+        inner (s/join " " (filter some? [(str "SELECT " (s/join ", " (concat inner-items key-items [group-row])) " FROM")
                                          from join where-clause]))
+        order-by (s/join ", " (map #(q rows-alias %) (concat key-names [group-row-column])))
         query (s/join " " (filter some? [(str "SELECT " (s/join ", " outer-items))
                                          (str "FROM ( " inner " ) AS " (q rows-alias))
                                          (str "WHERE " (q rows-alias group-row-column) " <= " (:n limit-per))
-                                         (when (seq order) (str "ORDER BY " (q rows-alias overall-row-column)))
+                                         (str "ORDER BY " order-by)
                                          (when limit (str "LIMIT " limit))]))
         ;; In the order their `?` appear in the query.
-        params (concat (mapcat :params items) group-row-params overall-row-params where-params)]
+        params (concat (mapcat :params items) (mapcat second key-parts) group-row-params where-params)]
     {:query query :params (seq params)}))
 
 (defn- build-plain-select [state]

@@ -8,6 +8,8 @@ Keep the first N rows of each group with `limit: N per <columns>`.
 
 `per` says it in one step. The rows are ranked by the `order:` before it, as a plain `limit:` uses the current order.
 
+The result comes group by group. Each group's rows are together, in the order of the `order:` before `per`. The groups are sorted by the columns after `per`. So the `order:` does two things: it picks which rows count as first, and it sorts the rows inside each group. It doesn't sort the whole result. To sort the whole result, add an `order:` after the limit.
+
 ## Syntax
 
 ```
@@ -34,13 +36,44 @@ Each customer's latest order:
 SELECT "__pine_rows__"."__o_0__id", "__pine_rows__"."id", "__pine_rows__"."customer_id", "__pine_rows__"."user_id"
 FROM (
   SELECT "o_0"."id" AS "__o_0__id", "o_0"."id", "o_0"."customer_id", "o_0"."user_id",
-         ROW_NUMBER() OVER (PARTITION BY "o_0"."customer_id" ORDER BY "o_0"."created_at" DESC) AS "__pine_row__",
-         ROW_NUMBER() OVER (ORDER BY "o_0"."created_at" DESC) AS "__pine_order__"
+         "o_0"."customer_id" AS "__pine_key_1__",
+         ROW_NUMBER() OVER (PARTITION BY "o_0"."customer_id" ORDER BY "o_0"."created_at" DESC) AS "__pine_row__"
   FROM "order" AS "o_0"
 ) AS "__pine_rows__"
 WHERE "__pine_rows__"."__pine_row__" <= 1
-ORDER BY "__pine_rows__"."__pine_order__"
+ORDER BY "__pine_rows__"."__pine_key_1__", "__pine_rows__"."__pine_row__"
 LIMIT 250
+```
+
+### The order of the result
+
+```
+activity | where: type = 'login' | o: created_at asc | l: 2 per tenant_id
+```
+
+Say there are five logins:
+
+```
+09:00  Acme
+09:05  Beta
+09:10  Acme
+09:15  Acme
+09:20  Beta
+```
+
+Each tenant keeps its first two, by `created_at`. Acme's 09:15 is dropped. The result comes tenant by tenant:
+
+```
+09:00  Acme
+09:10  Acme
+09:05  Beta
+09:20  Beta
+```
+
+To get one timeline across the tenants instead, sort again after the limit:
+
+```
+activity | where: type = 'login' | o: created_at asc | l: 2 per tenant_id | o: created_at asc
 ```
 
 ### Top 3 per group
@@ -104,7 +137,7 @@ WITH "result_1" AS (
   FROM ( SELECT ..., ROW_NUMBER() OVER (PARTITION BY "ts_0"."ticket_id" ORDER BY "ts_0"."created_at" DESC) AS "__pine_row__", ...
          FROM "ticket_status" AS "ts_0" ) AS "__pine_rows__"
   WHERE "__pine_rows__"."__pine_row__" <= 1
-  ORDER BY "__pine_rows__"."__pine_order__"
+  ORDER BY "__pine_rows__"."__pine_key_1__", "__pine_rows__"."__pine_row__"
 )
 SELECT "result_1".* FROM "result_1" AS "result_1" WHERE "result_1"."status" = ? LIMIT 250
 ```
@@ -116,7 +149,7 @@ To filter first and then rank, put the `where:` before `limit:`.
 - The query is built as usual, with one more column: each row's place in its group, `ROW_NUMBER() OVER (PARTITION BY <per columns> ORDER BY <order>)`.
 - A row number can't be filtered on in the query that computes it, so that query becomes a derived table, `__pine_rows__`. An outer query keeps the rows numbered up to N.
 - The outer query lists its columns one by one, so the row numbers never reach the result. `*` is spelled out from the schema index.
-- The result keeps the `order:` as its order. The columns `order:` names may not be in the result, so the inner query adds a second row number in that order, `__pine_order__`, and the outer query sorts by it. The partition columns are not put first.
+- The result comes group by group. The outer query sorts by the columns after `per`, then by each row's place in its group, `__pine_row__`. The columns after `per` may not be in the result, so the inner query carries each one out as `__pine_key_1__`, `__pine_key_2__`, and so on. They never reach the result either.
 - The result is capped at 250 rows, like any query. The cap applies to the outer query, after the per-group cut. To raise it, add a plain limit after it: `| limit: 1000`.
 - A derived table can't have two columns with the same name. When names clash, for example `c.id` next to `o.*`, each clashing column is named after its position inside (`__pine_c0__`) and gets its own name back outside.
 - `ROW_NUMBER()` works on Postgres, MySQL 8 and SQLite. Pine doesn't use `DISTINCT ON`, which only Postgres has.
