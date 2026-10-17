@@ -1121,6 +1121,61 @@
     (is (= "SELECT \"c_0\".* FROM \"information_schema\".\"columns\" AS \"c_0\" LIMIT 250"
            (:query (generate "information_schema.columns" [column-type-rule]))))))
 
+(deftest test-access-policy-hide-rules
+  (let [hide (fn [match] {:type "hide" :match match})]
+
+    (testing "a hide rule beats every show rule that matches the same column"
+      (is (= "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".\"id\", 'xxxxx' AS \"data\", 'xxxxx' AS \"uuid_col\" FROM \"customer\" AS \"c_0\" LIMIT 1"
+             (:query (generate "customer | limit: 1" [column-type-rule (hide {:type "column-name" :contains "uuid"})]))))
+      (is (= "SELECT \"o_0\".\"id\" AS \"__o_0__id\", \"o_0\".\"id\", 'xxxxx' AS \"customer_id\", \"o_0\".\"user_id\" FROM \"order\" AS \"o_0\" LIMIT 1"
+             (:query (generate "order | limit: 1" [column-type-rule {:type "foreign-key"}
+                                                   {:type "column" :table "order" :column "customer_id"}
+                                                   (hide {:type "column" :schema "public" :table "order" :column "customer_id"})])))))
+
+    (testing "names match ignoring case"
+      (is (re-find #"'xxxxx' AS \"uuid_col\""
+                   (:query (generate "customer | limit: 1" [column-type-rule (hide {:type "column-name" :contains "UUID"})]))))
+      (is (re-find #"'xxxxx' AS \"uuid_col\""
+                   (:query (generate "customer | limit: 1" [column-type-rule (hide {:type "column-name" :equals "Uuid_Col"})])))))
+
+    (testing "a hidden column can't be filtered, sorted or grouped on"
+      (doseq [e ["customer | where: uuid_col is null | s: id"
+                 "customer | o: uuid_col | s: id"
+                 "customer | group: uuid_col with count"]]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`c_0.uuid_col` is hidden by the access policy"
+                              (generate e [column-type-rule (hide {:type "column-name" :suffix "_col"})]))
+            e)))
+
+    (testing "a computed value reading a hidden column is hidden"
+      (is (re-find #"'xxxxx' AS \"u\""
+                   (:query (generate "customer | s: coalesce(uuid_col, uuid_col) as u"
+                                     [column-type-rule (hide {:type "column-name" :contains "uuid"})])))))
+
+    (testing "a hide rule covers the `id` column too, which is otherwise always shown"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`r_0.id` is hidden"
+                            (generate "report | where: id = 1" [column-type-rule (hide {:type "column-name" :equals "id"})]))))
+
+    (testing "a hide rule with a matcher this version doesn't know hides every column, the key column included"
+      (is (= "SELECT 'xxxxx' AS \"id\", 'xxxxx' AS \"title\" FROM \"report\" AS \"r_0\" LIMIT 1"
+             (:query (generate "report | limit: 1" [column-type-rule (hide {:type "some-future-matcher"})]))))
+      (is (re-find #"'xxxxx' AS \"id\""
+                   (:query (generate "report | limit: 1" [column-type-rule {:type "hide"}])))))
+
+    (testing "catalog relations stay exempt from hide rules: they hold names, not values"
+      (is (= "SELECT \"c_0\".\"table_name\", \"c_0\".\"column_name\" FROM \"information_schema\".\"columns\" AS \"c_0\" LIMIT 250"
+             (:query (generate "information_schema.columns | select: table_name, column_name"
+                               [(hide {:type "column-name" :contains "name"})])))))
+
+    (testing "a `column` show rule names one column of one table, in one schema when it says so"
+      (is (re-find #"\"r_0\".\"title\""
+                   (:query (generate "report | s: title" [{:type "column" :table "report" :column "title"}]))))
+      (is (re-find #"\"r_0\".\"title\""
+                   (:query (generate "report | s: title" [{:type "column" :schema "public" :table "report" :column "title"}]))))
+      (is (re-find #"'xxxxx' AS \"title\""
+                   (:query (generate "report | s: title" [{:type "column" :schema "other" :table "report" :column "title"}]))))
+      (is (re-find #"'xxxxx' AS \"title\""
+                   (:query (generate "report | s: title" [{:type "column" :table "customer" :column "title"}])))))))
+
 (deftest test-build-query-mysql
   ;; Every Postgres assertion above must stay byte-identical through this
   ;; whole file - that's the regression guard for the refactor this MySQL
