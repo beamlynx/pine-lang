@@ -200,6 +200,12 @@
              (:policy (first (get-in (api/api-build ["report | s: coalesce(title, 'x') as t"] nil :test rules true)
                                      [:ast :columns]))))))
 
+    (testing "a column named from the result's header row, as `SELECT *` gives it, is reported too"
+      (let [state (:result (#'api/generate-state "report" nil :test {} rules))]
+        (is (= {:column "title" :alias "r_0"
+                :policy {:hidden true :by (second rules) :table {:schema "public" :table "report"}}}
+               (access-policy/annotate-column state rules {:column :title :alias "r_0"})))))
+
     (testing "no rules, no report"
       (is (not-any? :policy (get-in (api/api-build ["report | s: title"] nil :test) [:ast :columns]))))
 

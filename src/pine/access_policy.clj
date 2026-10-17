@@ -235,10 +235,13 @@
   Left without :policy when it isn't a column of a real table: a column of a
   named result or checkpoint (its body was checked at its source), or the
   bare alias get-columns appends."
-  [{:keys [aliases] :as state} rules {:keys [alias source] :as col}]
+  [{:keys [aliases] :as state} rules col]
   (if-not (map? col)
     col
-    (let [table-info (column-table-info state alias source)]
+    ;; A column of an implicit `SELECT *` is named from the result's header
+    ;; row, as a keyword (api.clj's get-columns).
+    (let [{:keys [alias source] :as col} (update col :column #(if (keyword? %) (name %) %))
+          table-info (column-table-info state alias source)]
       (cond
         (:computed col)
         (assoc col :policy (decide state rules col))
