@@ -179,6 +179,20 @@
               :error-type "sql-unsupported"}
              (with-schema "select name from billing.plan"))))
 
+    (testing "An unqualified column belongs to the one table that has it"
+      (is (= "tenant as t\n | company as company .tenantId = .id\n | select: t.*, company.*"
+             (:expression (with-schema "select * from tenant as t join company on t.id = tenantId"))))
+      (is (= {:error "Line 1: `name` could belong to `t` or `c`. Qualify it, like `t.name`."
+              :error-type "sql-unsupported"}
+             (with-schema "select name from tenant t join company c on c.tenantId = t.id")))
+      (is (= {:error "Line 1: `nope` isn't a column of `t` or `c`."
+              :error-type "sql-unsupported"}
+             (with-schema "select nope from tenant t join company c on c.tenantId = t.id")))
+      (is (= {:error "Line 1: `tenantid` could belong to `t` or `o`. Qualify it, like `t.tenantid`."
+              :error-type "sql-unsupported"}
+             (with-schema "select * from tenant t join other o on o.tenantId = t.id where tenantId = 1"))
+          "A table the schema doesn't have could have the column too"))
+
     (testing "Without a schema, a bare name is folded to lowercase"
       (is (= "tenant as t\n | company as c .tenantid = .id\n | select: t.*, c.*"
              (:expression (t/sql->pine "select * from tenant as t join company as c on t.id = c.tenantId")))))))

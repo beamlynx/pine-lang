@@ -545,7 +545,7 @@ Each is refused with its line.
 | `FULL`, `CROSS` or `NATURAL` join, a comma between tables | Pine joins inner, left or right, on named columns. |
 | A join tied to two earlier tables | Pine joins a table to one other. |
 | `USING` after more than one table | It can't say which table it joins to. Write it with `ON`. |
-| A column in a join that isn't qualified | It could belong to more than one table. |
+| A column in a join that isn't qualified, when more than one table has it, or the schema isn't known | It could belong to more than one table. |
 | `= NULL` | Never true in SQL. Use `IS NULL`. |
 | A cast other than to `text` or `uuid`, in a condition, a value or a join's `ON` | Pine casts to those two. |
 | A comparison with no column | Pine conditions start with a column. |
