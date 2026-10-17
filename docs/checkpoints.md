@@ -72,7 +72,7 @@ LIMIT 250
 ### GROUP checkpoint
 
 ```
-x.company | group: id => count | employee
+x.company | group: id with count | employee
 ```
 
 The GROUP result is sealed as a CTE and employee is joined to it:

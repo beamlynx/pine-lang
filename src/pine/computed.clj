@@ -62,6 +62,50 @@
   {:arity [1 1] :aggregate true
    :render (fn [dialect arg filter] (filtered dialect sql-fn arg filter))})
 
+;; Date buckets: a date as text, cut to its year, month, ... `created_at =>
+;; month` is `'2024-05'`.
+
+(defn- col-fn-format
+  "Map column function names to TO_CHAR format strings"
+  [col-fn]
+  (case col-fn
+    "year"   "YYYY"
+    "month"  "YYYY-MM"
+    "day"    "YYYY-MM-DD"
+    "week"   "YYYY-MM-DD"
+    "hour"   "YYYY-MM-DD HH24"
+    "minute" "YYYY-MM-DD HH24:MI"))
+
+(defn bucket-sql
+  "A date bucket's SQL: `created_at => month`, or `month(created_at)`.
+  MySQL's shape isn't just a different format string like Postgres's TO_CHAR(DATE_TRUNC(...)) - week in particular needs its own
+  DATE_SUB/WEEKDAY expression, since MySQL has no DATE_TRUNC. WEEKDAY()
+  returns 0 for Monday, matching Postgres's DATE_TRUNC('week') boundary."
+  [dialect col-fn col-ref]
+  (case dialect
+    :mysql (case col-fn
+             "year"   (str "DATE_FORMAT(" col-ref ", '%Y')")
+             "month"  (str "DATE_FORMAT(" col-ref ", '%Y-%m')")
+             "day"    (str "DATE_FORMAT(" col-ref ", '%Y-%m-%d')")
+             "week"   (str "DATE_FORMAT(DATE_SUB(" col-ref ", INTERVAL WEEKDAY(" col-ref ") DAY), '%Y-%m-%d')")
+             "hour"   (str "DATE_FORMAT(" col-ref ", '%Y-%m-%d %H')")
+             "minute" (str "DATE_FORMAT(" col-ref ", '%Y-%m-%d %H:%i')"))
+    ;; SQLite has no date type: a date is text (`2024-01-31 10:00:00`), which
+    ;; strftime reads. %w counts Sunday as 0, so (%w + 6) % 7 is the days
+    ;; since Monday - the boundary Postgres's DATE_TRUNC('week') uses.
+    :sqlite (case col-fn
+              "year"   (str "strftime('%Y', " col-ref ")")
+              "month"  (str "strftime('%Y-%m', " col-ref ")")
+              "day"    (str "strftime('%Y-%m-%d', " col-ref ")")
+              "week"   (str "strftime('%Y-%m-%d', " col-ref ", '-' || ((CAST(strftime('%w', " col-ref ") AS INTEGER) + 6) % 7) || ' days')")
+              "hour"   (str "strftime('%Y-%m-%d %H', " col-ref ")")
+              "minute" (str "strftime('%Y-%m-%d %H:%M', " col-ref ")"))
+    (str "TO_CHAR(DATE_TRUNC('" col-fn "', " col-ref "), '" (col-fn-format col-fn) "')")))
+
+(defn- bucket [unit]
+  {:arity [1 1]
+   :render (fn [dialect [arg]] (bucket-sql dialect unit arg))})
+
 (def functions
   {"coalesce" {:arity [2 nil]
                :render (fn [_ args] (str "COALESCE(" (s/join ", " args) ")"))}
@@ -69,8 +113,14 @@
    ;; SQLite has no NOW().
    "now"      {:arity [0 0]
                :render (fn [dialect _] (if (= dialect :sqlite) "CURRENT_TIMESTAMP" "NOW()"))}
+   "minute"   (bucket "minute")
+   "hour"     (bucket "hour")
+   "day"      (bucket "day")
+   "week"     (bucket "week")
+   "month"    (bucket "month")
+   "year"     (bucket "year")
 
-   ;; `count` is written bare: `group: a => count`.
+   ;; `count` is written bare: `group: a with count`.
    "count"    {:arity [0 0] :aggregate true
                :render (fn [dialect _ filter]
                          (if (and filter (= dialect :mysql))
@@ -107,12 +157,12 @@
                       {:error-type "unknown-function" :function fn-name}))
 
       (and aggregate? (not aggregates?))
-      (throw (ex-info (str "`" fn-name "()` is an aggregate. Use it after `=>` in group:, like `group: a => "
-                           fn-name "(b) as " fn-name "_b`.")
+      (throw (ex-info (str "`" fn-name "()` is an aggregate. Use it after `with` in group:, like `group: a with b => "
+                           fn-name " as " fn-name "_b`.")
                       {:error-type "aggregate-outside-group" :function fn-name}))
 
       (and (not aggregate?) aggregates?)
-      (throw (ex-info (str "`" fn-name "()` isn't an aggregate. After `=>` in group: come "
+      (throw (ex-info (str "`" fn-name "()` isn't an aggregate. After `with` in group: come "
                            (s/join ", " (function-names true)) ".")
                       {:error-type "not-an-aggregate" :function fn-name}))
 
@@ -167,6 +217,11 @@
 ;;
 ;; A resolved value written back as Pine. /build sends it to the client as a
 ;; computed column's `text`.
+;;
+;; A function of one value is written with the arrow, `created_at => month`,
+;; `a.id => min`: nothing about its argument can be misread, and it is how a
+;; person appends a step. Anything else is a call: `coalesce(a, b)` keeps
+;; every argument in order, and `any(type = 'x')` keeps a condition whole.
 
 (defn- quote-string [x]
   (str "'" (s/replace (str x) "'" "''") "'"))
@@ -220,17 +275,28 @@
 
 (defn- cast-text [cast] (when cast (str "::" cast)))
 
+(defn- arrow?
+  "Whether a function of `args` is written with the arrow: one argument,
+  which is neither a condition nor an if."
+  [args]
+  (and (= 1 (count args)) (not (#{:condition :if} (:kind (first args))))))
+
 (defn text
   "A resolved computed value as Pine text."
   [node]
   (case (:kind node)
     :column (str (column-text (:alias node) (:column node) (:path node)) (cast-text (:cast node)))
     :literal (literal-text (:value node))
-    :call (str (:fn node) "(" (s/join ", " (map text (:args node))) ")" (cast-text (:cast node)))
+    :call (if (and (arrow? (:args node)) (not (:cast node)))
+            (str (text (first (:args node))) " => " (:fn node))
+            (str (:fn node) "(" (s/join ", " (map text (:args node))) ")" (cast-text (:cast node))))
     :condition (conditions-text (:conditions node))
     :if (str "if " (text (:when node)) " then "
              (let [t (text (:then node))] (if (= :if (:kind (:then node))) (str "(" t ")") t))
              (when-let [e (:else node)] (str " else " (text e))))
-    :aggregate (str (if (:arg node) (str (:fn node) "(" (text (:arg node)) ")") (:fn node))
+    :aggregate (str (cond
+                      (nil? (:arg node)) (:fn node)
+                      (arrow? [(:arg node)]) (str (text (:arg node)) " => " (:fn node))
+                      :else (str (:fn node) "(" (text (:arg node)) ")"))
                     (when-let [f (:filter node)] (str " where " (text f))))
     ""))

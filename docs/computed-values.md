@@ -1,7 +1,8 @@
 # Computed values
 
 A value that isn't just a column: `coalesce(reference_id, concat('att:', a.id))`, `id in edited`,
-`if x is null then 'a' else 'b'`, or an aggregate like `min(a.id) where a.type = 'sharepoint'`.
+`if x is null then 'a' else 'b'`, `created_at => month`, or an aggregate like
+`a.id => min where a.type = 'sharepoint'`.
 
 ```
 company_document as d
@@ -25,7 +26,8 @@ A computed value is one of these, and they nest freely:
 | A column, with an optional cast | `a.id`, `a.id::text`, `a.id ::text` |
 | A literal | `'att:'`, `42`, `-1.5`, `true`, `false`, `null`, `'2024-01-01'` |
 | A variable | `$prefix` |
-| A function call | `coalesce(a, b)`, `concat('att:', a.id)`, `now()` |
+| A function call | `coalesce(a, b)`, `concat('att:', a.id)`, `now()`, `month(created_at)` |
+| A function applied with the arrow | `created_at => month`, `title => coalesce('untitled')` |
 | A condition, as true or false | `type = 'sharepoint'`, `deleted_at is null`, `id in edited`, `id in (1, 2)`, `name like 'A%' or name is null` |
 | A choice | `if x is null then 'none' else x` |
 | Parentheses | `(e.document_id is not null)` |
@@ -35,6 +37,31 @@ A cast is `::text` or `::uuid`, as in `where:`. A cast after a call applies to i
 
 A condition is anything `where:` accepts, including a [named result](named-results.md) after `in` and a
 `$variable`. Several conditions joined with `or` are one value.
+
+### The arrow
+
+`x => f` is `f(x)`, and `x => f(a, b)` is `f(x, a, b)`: the value on the left is the function's first
+argument. Both forms mean the same, everywhere a value goes.
+
+```
+created_at => month                       month(created_at)
+reference_id => coalesce(name, 'none')    coalesce(reference_id, name, 'none')
+name => coalesce('x') => concat('!')      concat(coalesce(name, 'x'), '!')
+a.id::text => min                         min(a.id::text)
+```
+
+The arrow is for exploring: you have a value, you see it needs a function, and you append `=> f` instead of
+going back to wrap it. Steps chain left to right.
+
+- A cast binds tighter than the arrow: `a.id::text => min` casts, then takes the minimum.
+- A condition before an arrow goes in parentheses, `(type = 'x') => any`, or is written as a call,
+  `any(type = 'x')`. Without them, `type = 'x' => any` is a parse error that says so.
+- `now()` and `count` take no value, so they have no arrow form.
+
+**Which form Pine writes.** When Pine writes Pine, a function of exactly one value uses the arrow:
+`created_at => month`, `a.id => min`. Anything else uses the call: `coalesce(a, b)` keeps every argument
+in order, and `any(type = 'x')` keeps a condition whole. This covers SQL to Pine, the `text` that `/build`
+reports, and the examples in the docs. The formatter never rewrites what a person typed.
 
 ### select:
 
@@ -55,6 +82,9 @@ columns.
 | `coalesce(a, b, ...)` | The first argument that isn't NULL. Two or more arguments. |
 | `concat(a, b, ...)` | The arguments as text, one after another. NULL when any of them is NULL, like SQL's `\|\|`. Two or more arguments. |
 | `now()` | The current date and time. |
+| `minute(x)`, `hour(x)`, `day(x)`, `week(x)`, `month(x)`, `year(x)` | A date as text, cut to that unit: `month` gives `'2024-05'`. A week starts on Monday. |
+
+In `select:`, a date bucket on a column needs no `as`: `s: created_at => month` is named `month`.
 
 ### if
 
@@ -91,26 +121,30 @@ later computed value, even one in the same `select:`.
 
 ### Aggregates in group:
 
-After `=>` in `group:`, an aggregate can take a value:
+`group:` lists its keys, then `with` and the aggregates. Without `with`, each group is counted:
+`group: status` is `group: status with count`. An aggregate other than `count` takes a value:
 
 ```
 company_document as d
  | company_document_attachment :left .company_document_id = .id
  | attachment as a :left .id = .attachment_id
- | group: d.id, d.reference_id => count, min(a.id::text) where a.type = 'sharepoint' as sp_attachment,
-          min(a.id::text) as any_attachment, any(a.type = 'sharepoint') as on_sharepoint
+ | group: d.id, d.reference_id with count, a.id::text => min where a.type = 'sharepoint' as sp_attachment,
+          a.id::text => min as any_attachment, any(a.type = 'sharepoint') as on_sharepoint
 ```
 
 | Aggregate | What it gives for each group |
 |---|---|
-| `count` | The number of rows. Written bare, as before. |
-| `min(x)`, `max(x)` | The smallest, or largest, value. |
-| `sum(x)`, `avg(x)` | The total, or the average. |
+| `count` | The number of rows. Written bare. |
+| `x => min`, `x => max` | The smallest, or largest, value. Also `min(x)`, `max(x)`. |
+| `x => sum`, `x => avg` | The total, or the average. Also `sum(x)`, `avg(x)`. |
 | `any(condition)` | True when the condition is true for at least one row. |
 | `all(condition)` | True when the condition is true for every row. |
 
-Every aggregate, `count` included, can take a filter: `min(a.id) where a.type = 'sharepoint'` only reads the
-rows where the condition is true.
+Every aggregate, `count` included, can take a filter: `a.id => min where a.type = 'sharepoint'` only reads
+the rows where the condition is true.
+
+`=>` used to divide the keys from the aggregates: `group: status => count`. That form is now a parse error
+that names the new one.
 
 Without `as`, an aggregate is named after the function and the first column it reads: `min(a.id)` is
 `min_id`, and `any(a.type = 'sharepoint')` is `any_type`. `count` is `count`. Two aggregates with the same
@@ -120,7 +154,7 @@ To keep only some groups, add a `where:` after the `group:`. It filters the grou
 as SQL's `HAVING` does:
 
 ```
-... | group: d.id => any(a.type = 'sharepoint') as on_sharepoint | where: on_sharepoint = true
+... | group: d.id with any(a.type = 'sharepoint') as on_sharepoint | where: on_sharepoint = true
 ```
 
 An aggregate can't be used inside a function. To combine two, name them in `group:` and combine their names
@@ -231,7 +265,7 @@ next to the name in `column`. A computed value on the right of a condition, like
 - A computed value in `select:` needs `as`.
 - The functions are `coalesce`, `concat` and `now`; the aggregates `count`, `min`, `max`, `sum`, `avg`, `any`
   and `all`. Any other name is an error that lists them.
-- An aggregate only goes after `=>` in `group:`, and not inside a function there.
+- An aggregate only goes after `with` in `group:`, and not inside a function there.
 - `where:` takes a function only on the right of a comparison: `created_at > now()`.
 - `update!` can't write a function into a key of a JSON column.
 - No arithmetic (`+`, `-`), and no intervals.
@@ -244,7 +278,7 @@ next to the name in `column`. A computed value on the right of a condition, like
 |---|---|
 | `src/pine/pine.bnf` | `computed-column`, `value`, `call`, `if-value`, `literal`; `aggregate-function`; `call` after a comparison and in `update!`; a cast in `explicit-pair`. |
 | `src/pine/computed.clj` | The node shapes, the one table of functions, the columns a value reads, and the printer that writes a value back as Pine. No dependencies on the rest of Pine. |
-| `src/pine/parser.clj` | `normalize-value` turns a parsed value into nodes; `normalize-aggregate` does the same after `=>`. |
+| `src/pine/parser.clj` | `normalize-value` turns a parsed value into nodes; `normalize-aggregate` does the same after `with`. An `arrow-value` becomes a call with the value as its first argument. |
 | `src/pine/ast/value.clj` | `resolve-node` resolves a value against the state: each column's alias, computed names, conditions as `where:` does them, and literals typed by a column beside them. |
 | `src/pine/ast/path.clj` | `computed-ref` reads a bare computed name as its value. |
 | `src/pine/eval.clj` | `render-value` writes a node as SQL for the dialect. |

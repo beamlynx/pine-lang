@@ -333,7 +333,7 @@
   (testing "group"
     (is (= {:query "WITH \"x_1\" AS ( SELECT \"e_0\".\"status\" AS \"status\" FROM \"email\" AS \"e_0\" ) SELECT \"x_1\".\"status\", COUNT(1) AS \"count\" FROM \"x_1\" GROUP BY \"x_1\".\"status\" LIMIT 10000",
             :params nil}
-           (generate "email | group: status => count"))))
+           (generate "email | group: status with count"))))
 
   (testing "date extraction functions"
     ;; Year extraction
@@ -380,17 +380,17 @@
     ;; Group by name AND month extraction (both specified in group)
     (is (= {:query "WITH \"x_2\" AS ( SELECT \"e_0\".\"name\" AS \"name\", TO_CHAR(DATE_TRUNC('month', \"e_0\".\"created_at\"), 'YYYY-MM') AS \"month\" FROM \"employee\" AS \"e_0\" ) SELECT \"x_2\".\"name\", \"x_2\".\"month\", COUNT(1) AS \"count\" FROM \"x_2\" GROUP BY \"x_2\".\"name\", \"x_2\".\"month\" LIMIT 10000",
             :params nil}
-           (generate "employee | select: name, created_at => month | group: name, created_at => count")))
+           (generate "employee | select: name, created_at => month | group: name, created_at with count")))
 
     ;; Group by just the extracted date (only month in group, month also selected)
     (is (= {:query "WITH \"x_2\" AS ( SELECT TO_CHAR(DATE_TRUNC('month', \"e_0\".\"created_at\"), 'YYYY-MM') AS \"month\" FROM \"employee\" AS \"e_0\" ) SELECT \"x_2\".\"month\", COUNT(1) AS \"count\" FROM \"x_2\" GROUP BY \"x_2\".\"month\" LIMIT 10000",
             :params nil}
-           (generate "employee | select: created_at => month | group: created_at => count")))
+           (generate "employee | select: created_at => month | group: created_at with count")))
 
     ;; Select multiple columns but group by only one (month)
     (is (= {:query "WITH \"x_2\" AS ( SELECT TO_CHAR(DATE_TRUNC('month', \"e_0\".\"created_at\"), 'YYYY-MM') AS \"month\" FROM \"employee\" AS \"e_0\" ) SELECT \"x_2\".\"month\", COUNT(1) AS \"count\" FROM \"x_2\" GROUP BY \"x_2\".\"month\" LIMIT 10000",
             :params nil}
-           (generate "employee | select: name, created_at => month | group: month => count"))))
+           (generate "employee | select: name, created_at => month | group: month with count"))))
 
   (testing "delete action"
     (is (= {:query "DELETE FROM \"company\" WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )",
@@ -427,8 +427,8 @@
                           (generate "company | where: id = 1 | company | delete! .id"))))
 
   (testing "a terminal group: returns at most 10 000 groups; one sealed into a checkpoint keeps them all"
-    (is (clojure.string/ends-with? (:query (generate "email | group: status => count")) " LIMIT 10000"))
-    (is (not (re-find #"LIMIT 10000" (:query (generate "x.company | group: id => count | employee"))))))
+    (is (clojure.string/ends-with? (:query (generate "email | group: status with count")) " LIMIT 10000"))
+    (is (not (re-find #"LIMIT 10000" (:query (generate "x.company | group: id with count | employee"))))))
 
   (testing "a date and time binds as a timestamp"
     (is (= {:query "SELECT \"e_0\".\"id\" AS \"__e_0__id\", \"e_0\".* FROM \"employee\" AS \"e_0\" WHERE \"e_0\".\"created_at\" > ?::timestamp LIMIT 250"
@@ -848,7 +848,7 @@
   (testing "GROUP checkpoint: auto-CTE when a table op follows group"
     (is (= {:query "WITH \"result_1\" AS ( SELECT \"c_0\".\"id\", COUNT(1) AS \"count\" FROM \"x\".\"company\" AS \"c_0\" GROUP BY \"c_0\".\"id\" ) SELECT \"e_1\".\"id\" AS \"__e_1__id\", \"e_1\".* FROM \"result_1\" AS \"result_1\" JOIN \"employee\" AS \"e_1\" ON \"result_1\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
             :params nil}
-           (generate "x.company | group: id => count | employee"))))
+           (generate "x.company | group: id with count | employee"))))
 
   (testing "Checkpoint does not fire for non-table ops after limit"
     ;; LIMIT followed by COUNT: checkpoint holds, COUNT builds its own wrapper CTE
@@ -859,16 +859,16 @@
   (testing "Standalone GROUP without following table still uses build-group-query"
     ;; Existing behaviour must not regress: the GROUP dispatch path is unaffected
     (is (clojure.string/includes?
-         (:query (generate "x.company | group: id => count"))
+         (:query (generate "x.company | group: id with count"))
          "GROUP BY")))
 
   (testing "GROUP followed by LIMIT seals group as CTE, applies limit to outer"
     ;; All three forms should produce equivalent SQL (modulo CTE name)
     (let [expected-cte-body "SELECT \"c_0\".\"id\", COUNT(1) AS \"count\" FROM \"x\".\"company\" AS \"c_0\" GROUP BY \"c_0\".\"id\""
           ;; Auto-named
-          q1 (:query (generate "x.company | group: id => count | l: 1"))
+          q1 (:query (generate "x.company | group: id with count | l: 1"))
           ;; User-named via |=
-          q2 (:query (generate "x.company | group: id => count |= grp | l: 1"))]
+          q2 (:query (generate "x.company | group: id with count |= grp | l: 1"))]
       ;; Both contain the same GROUP CTE body
       (is (clojure.string/includes? q1 expected-cte-body))
       (is (clojure.string/includes? q2 expected-cte-body))
@@ -881,9 +881,9 @@
 
   (testing "GROUP + LIMIT cross-expression baseline matches same-expression form"
     ;; x | l: 1 in a separate expression should produce the same structure
-    (let [q-cross (:query (generate-expressions ["x.company | group: id => count |= grp"
+    (let [q-cross (:query (generate-expressions ["x.company | group: id with count |= grp"
                                                  "grp | l: 1"]))
-          q-same  (:query (generate "x.company | group: id => count |= grp | l: 1"))]
+          q-same  (:query (generate "x.company | group: id with count |= grp | l: 1"))]
       (is (= q-cross q-same))))
 
   (testing "GROUP followed by a complete select: matches the sealed cross-expression form"
@@ -894,9 +894,9 @@
     ;; columns leaking in, stale pre-group alias in WHERE/ORDER BY). The correctly
     ;; sealed cross-expression form is the oracle: same GROUP, split so the second
     ;; expression references the CTE by name, should equal the inline form exactly.
-    (let [q-cross (:query (generate-expressions ["x.company | group: id => count |= grp"
+    (let [q-cross (:query (generate-expressions ["x.company | group: id with count |= grp"
                                                  "grp | s: id"]))
-          q-same  (:query (generate "x.company | group: id => count |= grp | s: id"))]
+          q-same  (:query (generate "x.company | group: id with count |= grp | s: id"))]
       (is (= q-cross q-same))))
 
   (testing "GROUP followed by a complete where: matches the sealed cross-expression form"
@@ -924,7 +924,7 @@
     ;; Without an explicit |=, the checkpoint still seals — just with a generated
     ;; name instead of a user-given one.
     (is (= "WITH \"result_1\" AS ( SELECT \"c_0\".\"id\", COUNT(1) AS \"count\" FROM \"x\".\"company\" AS \"c_0\" GROUP BY \"c_0\".\"id\" ) SELECT \"result_1\".\"id\" FROM \"result_1\" AS \"result_1\" LIMIT 250"
-           (:query (generate "x.company | group: id => count | s: id")))))
+           (:query (generate "x.company | group: id with count | s: id")))))
 
   (testing "Checkpoint feeding a terminal GROUP nests its own CTE (user-named via |=)"
     ;; build-group-query is a separate rendering path from build-select-query
@@ -935,12 +935,12 @@
     ;; that would fail at execution time.
     (is (= {:query "WITH \"pg\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ), \"x_4\" AS ( SELECT \"pg\".\"name\" AS \"name\" FROM \"pg\" AS \"pg\" ) SELECT \"x_4\".\"name\", COUNT(1) AS \"count\" FROM \"x_4\" GROUP BY \"x_4\".\"name\" LIMIT 10000"
             :params nil}
-           (generate "x.company | l: 10 |= pg | s: name | g: name => count"))))
+           (generate "x.company | l: 10 |= pg | s: name | g: name with count"))))
 
   (testing "Checkpoint feeding a terminal GROUP nests its own CTE (auto-named, no |=)"
     (is (= {:query "WITH \"result_1\" AS ( SELECT \"c_0\".* FROM \"x\".\"company\" AS \"c_0\" LIMIT 10 ), \"x_3\" AS ( SELECT \"result_1\".\"name\" AS \"name\" FROM \"result_1\" AS \"result_1\" ) SELECT \"x_3\".\"name\", COUNT(1) AS \"count\" FROM \"x_3\" GROUP BY \"x_3\".\"name\" LIMIT 10000"
             :params nil}
-           (generate "x.company | l: 10 | s: name | g: name => count"))))
+           (generate "x.company | l: 10 | s: name | g: name with count"))))
 
   (testing "Auto-named checkpoints across separate expressions don't collide"
     ;; Each expression starts from a fresh state. If each one picked its
@@ -950,8 +950,8 @@
     ;; second one used to be silently dropped, leaving both named results
     ;; reading from the first CTE.
     (let [query (:query (generate-expressions
-                         ["company as c | employee .company_id | group: c.id => count | s: id, count as emp_count |= x"
-                          "company as c | employee .company_id | group: c.id => count | s: id, count as emp_count2 |= y"
+                         ["company as c | employee .company_id | group: c.id with count | s: id, count as emp_count |= x"
+                          "company as c | employee .company_id | group: c.id with count | s: id, count as emp_count2 |= y"
                           "x | s: emp_count, | y | s: emp_count2,"]))
           x-name (second (re-find #"\"x\" AS \( SELECT \"(result_\d+)\"" query))
           y-name (second (re-find #"\"y\" AS \( SELECT \"(result_\d+)\"" query))]
@@ -1088,7 +1088,7 @@
     ;; GROUP BY used to run and collapse every group to the placeholder. A
     ;; group sealed into a checkpoint grouped by the real column, which
     ;; reveals how many rows share each hidden value, so it is refused too.
-    (doseq [e ["report | group: title => count"
+    (doseq [e ["report | group: title with count"
                "report | where: title like 'a%' | s: id"
                "report | where: title = 'x' | count:"
                "report | o: title | s: id"
@@ -1203,7 +1203,7 @@
   (testing "Group"
     (is (= {:query "WITH `x_1` AS ( SELECT `e_0`.`status` AS `status` FROM `email` AS `e_0` ) SELECT `x_1`.`status`, COUNT(1) AS `count` FROM `x_1` GROUP BY `x_1`.`status` LIMIT 10000"
             :params nil}
-           (generate-mysql "email | group: status => count"))))
+           (generate-mysql "email | group: status with count"))))
 
   (testing "Variable used as table generates a CTE"
     (is (= {:query "WITH `active_companies` AS ( SELECT `c_0`.* FROM `company` AS `c_0` ) SELECT `active_companies`.* FROM `active_companies` AS `active_companies` LIMIT 250"
@@ -1322,7 +1322,7 @@
            (generate-sqlite "company | count:")))
     (is (= {:query "WITH \"x_1\" AS ( SELECT \"e_0\".\"status\" AS \"status\" FROM \"email\" AS \"e_0\" ) SELECT \"x_1\".\"status\", COUNT(1) AS \"count\" FROM \"x_1\" GROUP BY \"x_1\".\"status\" LIMIT 10000"
             :params nil}
-           (generate-sqlite "email | group: status => count"))))
+           (generate-sqlite "email | group: status with count"))))
 
   (testing "Variable used as table generates a CTE"
     (is (= {:query "WITH \"active_companies\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" ) SELECT \"active_companies\".* FROM \"active_companies\" AS \"active_companies\" LIMIT 250"
@@ -1528,7 +1528,7 @@
 
   (testing "a terminal group's CTE doesn't take a named result's name"
     (let [{:keys [query]} (generate-expressions ["company | select: id |= x_1"
-                                                 "x_1 | group: id => count"])]
+                                                 "x_1 | group: id with count"])]
       (is (re-find #"WITH \"x_1\" AS .*, \"x_1_2\" AS" query))
       (is (re-find #"FROM \"x_1_2\"" query))))
 

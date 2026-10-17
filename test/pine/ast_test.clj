@@ -311,7 +311,7 @@
   (testing "Generate ast for `group`"
     (is (= [[{:alias "c" :column "status" :source {:table "company" :schema nil} :operation-index 1} {:symbol "COUNT(1)" :column-alias "count"}]
             [{:alias "c" :column "status" :source {:table "company" :schema nil} :operation-index 1}]]
-           (generate [:columns :group] "company as c | group: c.status => count"))))
+           (generate [:columns :group] "company as c | group: c.status with count"))))
 
   (testing "Generate ast for date extraction functions"
     ;; Helper to filter out auto-id columns

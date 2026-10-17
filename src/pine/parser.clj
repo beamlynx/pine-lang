@@ -116,11 +116,11 @@
 
 (defn- column-info
   "{:alias :column} for a [:column ...] node, with :path when it goes into a
-  JSON value and :column-function when it ends in `=> month`. The alias is
-  only what was written before the first dot: pine.ast.path decides whether
-  it really is an alias."
+  JSON value, and :column-function for a date bucket, `created_at => month`.
+  The alias is only what was written before the first dot: pine.ast.path
+  decides whether it really is an alias."
   [[tag & children :as node]]
-  (when-not (= tag :column)
+  (when-not (#{:column :bucket-column} tag)
     (throw (ex-info "Unknown column pattern" {:_ node})))
   (let [[head & more] children
         [alias column more] (if (= :alias (first head))
@@ -235,12 +235,9 @@
 
 (defn- extract-column-info
   "{:alias :column}, and :path for a JSON path, of a column in where: or
-  update!. A column function (`=> month`) only belongs in select:."
+  update!."
   [column-pattern]
-  (let [info (column-info column-pattern)]
-    (when (:column-function info)
-      (throw (ex-info "Unknown column pattern" {:_ column-pattern})))
-    (merge {:alias nil} info)))
+  (merge {:alias nil} (column-info column-pattern)))
 
 (defn- make-column [column-info & [cast-type]]
   (cond-> (if (:alias column-info)
@@ -546,14 +543,9 @@
     n))
 
 (defn- per-column
-  "One column after `per`. A date bucket like `created_at => month` can't be
-  used there."
+  "One column after `per`."
   [column]
-  (let [info (column-info column)]
-    (when (:column-function info)
-      (throw (ex-info (str "`=> " (:column-function info) "` can't be used after `per`.")
-                      {:error-type "parse"})))
-    info))
+  (column-info column))
 
 (defn- child [tag children]
   (some #(when (= tag (first %)) %) children))
@@ -598,26 +590,53 @@
 ;; -----
 
 (defn- -normalize-group-column [column]
-  (let [info (column-info column)]
-    (when (:column-function info)
-      (throw (ex-info "Unknown GROUP column" {:_ column})))
-    info))
+  (column-info column))
 
 (declare normalize-conditions)
 
+(defn- aggregate-of
+  "[fn-name arg-nodes] for a parsed aggregate: `count`, a call `min(a.id)`,
+  or an arrow `a.id => min`, whose value before the last step is the
+  argument. Nil when it isn't a function at all."
+  [[tag & children :as node]]
+  (case tag
+    :value-column (let [info (column-info (first children))
+                        bare? (and (not (:alias info)) (not (:path info)) (not (child :cast children)))
+                        f (get computed/functions (s/lower-case (:column info)))]
+                    (cond
+                      (and bare? (= "count" (s/lower-case (:column info)))) ["count" []]
+                      (and bare? (:aggregate f))
+                      (throw (ex-info (str "`" (:column info) "` needs a value: `x => " (:column info)
+                                           "`, like `total => " (:column info) "`.")
+                                      {:error-type "arity" :function (:column info)}))))
+    :call (let [[[_ fn-name] & args] children]
+            (when-let [cast (some #(when (= :cast (first %)) (second %)) args)]
+              (throw (ex-info (str "A cast can't follow an aggregate. Cast its argument: `x::" cast " => " fn-name "`.")
+                              {:error-type "parse"})))
+            [fn-name (vec args)])
+    :arrow-value (let [base (vec (butlast children))
+                       step (last children)
+                       arg (if (= 1 (count base)) (first base) (into [:arrow-value] base))]
+                   (case (first step)
+                     :function-name [(-> step second second) [arg]]
+                     :call (let [[_ [_ fn-name] & args] step]
+                             (when-let [cast (some #(when (= :cast (first %)) (second %)) args)]
+                               (throw (ex-info (str "A cast can't follow an aggregate. Cast its argument: `x::" cast " => " fn-name "`.")
+                                               {:error-type "parse"})))
+                             [fn-name (into [arg] args)])))
+    :paren-value (aggregate-of (first children))
+    nil))
+
 (defn- normalize-aggregate
-  "One aggregate after `=>`: {:kind :aggregate :fn :arg :filter}, with
+  "One aggregate after `with`: {:kind :aggregate :fn :arg :filter}, with
   :column-alias when it is named with `as`. `count` takes no argument."
   [[_ head & more]]
   (let [filter-node (some #(when (= :conditions (first %)) %) more)
         alias-node (some #(when (= :alias (first %)) %) more)
-        [fn-name args cast] (if (= "count" head)
-                              ["count" [] nil]
-                              (let [[_ [_ n] & args] head
-                                    cast (some #(when (= :cast (first %)) (second %)) args)]
-                                [n (remove #(= :cast (first %)) args) cast]))]
-    (when cast
-      (throw (ex-info (str "A cast can't follow an aggregate. Cast its argument: `" fn-name "(x::" cast ")`.") {:error-type "parse"})))
+        [fn-name args] (or (aggregate-of head)
+                           (throw (ex-info (str "After `with` in group: come aggregates, like `count` or `total => max`. "
+                                                "There are " (s/join ", " (computed/function-names true)) ".")
+                                           {:error-type "not-an-aggregate"})))]
     (computed/check-call fn-name (count args) true)
     (cond-> {:kind :aggregate
              :fn (s/lower-case fn-name)
@@ -635,6 +654,10 @@
     {:type :group
      :value {:columns (mapv -normalize-group-column columns)
              :functions [{:kind :aggregate :fn "count" :arg nil :filter nil}]}}
+    [:legacy-group-args & _]
+    (throw (ex-info (str "In group:, `with` divides the keys from the aggregates now, and `=>` applies a function. "
+                         "Write `group: status with count`, or just `group: status`, which counts each group.")
+                    {:error-type "parse"}))
     :else (throw (ex-info "Unknown GROUP operation" {:_ payload}))))
 
 ;; -----
@@ -763,6 +786,19 @@
                 args (remove #(= :cast (first %)) args)]
             (computed/check-call fn-name (count args) false)
             (with-cast {:kind :call :fn (s/lower-case fn-name) :args (mapv normalize-value args)} children))
+    :arrow-value (reduce (fn [node [tag & step]]
+                           (case tag
+                             :function-name (let [fn-name (-> step first second)]
+                                              (computed/check-call fn-name 1 false)
+                                              {:kind :call :fn (s/lower-case fn-name) :args [node]})
+                             :call (let [[[_ fn-name] & args] step
+                                         args (remove #(= :cast (first %)) args)]
+                                     (computed/check-call fn-name (inc (count args)) false)
+                                     (with-cast {:kind :call :fn (s/lower-case fn-name)
+                                                 :args (into [node] (map normalize-value args))}
+                                       step))))
+                         (normalize-value (first children))
+                         (rest children))
     (:value-column :cast-column) (with-cast (merge {:kind :column :alias nil} (extract-column-info (first children))) children)
     :literal {:kind :literal :value (normalize-literal node)}
     :variable {:kind :literal :value (dt/variable (first children))}
@@ -853,6 +889,10 @@
       ;; `s: coalesce(a, b)` with no `as`: a computed value has to be named.
       (and (re-find #"(?:select:|s:)[^|]*$" before) (re-find #"[)'0-9]\s*$" before) (re-find #"^\s*(?:,|\||$)" after))
       "A computed value in select: needs a name: `coalesce(a, b) as name`."
+
+;; `type = 'x' => any`: the arrow would apply to 'x', not to the condition.
+      (and (re-find #"^\s*=>" after) (re-find #"(?:[=<>]|\b(?:like|ilike|is|in)\b)[^,|()]*$" before))
+      "A condition before `=>` goes in parentheses, `(type = 'x') => any`, or is written as a call: `any(type = 'x')`."
 
       (and (re-find #"(?:where:|w:)[^|]*$" before) (re-find #"^\s*(?:,|and\b)" after))
       "Join conditions in one where: with `or`. To require several, add a where: for each: `| where: a = 1 | where: b = 2`."

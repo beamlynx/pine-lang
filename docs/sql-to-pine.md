@@ -88,8 +88,8 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `x::text = '1'`, `CAST(x AS uuid) = '...'` | `x = '1' ::text`, `x = '...' ::uuid` |
 | `'2024-01-01'::timestamp` | `'2024-01-01'`: Pine types a value by its column |
 | `SELECT COUNT(*) FROM ... WHERE ...` | `... \| count:` |
-| `SELECT a, COUNT(*) FROM t GROUP BY a` | `t \| group: a => count` |
-| `SELECT a, COUNT(*) AS n FROM t GROUP BY a` | `t \| group: a => count as n` |
+| `SELECT a, COUNT(*) FROM t GROUP BY a` | `t \| group: a with count` |
+| `SELECT a, COUNT(*) AS n FROM t GROUP BY a` | `t \| group: a with count as n` |
 | `SELECT a FROM t GROUP BY a` | `t \| group: a \| select: a`: Pine's count is left out |
 | `ORDER BY a, b DESC` | `order: a asc, b desc` |
 | `LIMIT 10` | `limit: 10` |
@@ -112,12 +112,12 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `(a IN (SELECT b FROM k)) AS m` | a block for the subquery, then `select: a in <block> as m` |
 | `a::text AS k`, `CAST(a AS text) AS k` | `select: a::text as k` |
 | `SELECT s.*, COALESCE(...) AS k FROM s` | `s as s \| select: s.*, coalesce(...) as k` |
-| `MIN(x) AS m ... GROUP BY a` | `group: a => min(x) as m`; also `MAX`, `SUM`, `AVG` |
+| `MIN(x) AS m ... GROUP BY a` | `group: a with x => min as m`; also `MAX`, `SUM`, `AVG` |
 | `MIN(x)` without `AS` | `min(x) as min`, the name Postgres gives it |
-| `MAX(x)::text AS m` | `group: ... => max(x) as max_x \| select: ..., max_x::text as m` |
+| `MAX(x)::text AS m` | `group: ... with x => max as max_x \| select: ..., max_x::text as m` |
 | `MIN(x) FILTER (WHERE c)`, `COUNT(*) FILTER (WHERE c)` | `min(x) where c`, `count where c` |
 | `BOOL_OR(c)`, `BOOL_AND(c)` | `any(c)`, `all(c)` |
-| `GROUP BY a HAVING ...` | `group: a => ... \| where: ...`, by the aggregates' names |
+| `GROUP BY a HAVING ...` | `group: a with ... \| where: ...`, by the aggregates' names |
 | `LEFT JOIN k ON k.c = t.x`, k distinct values, tested with `k.c IS NOT NULL` | `x in k` (see [Tests on a LEFT JOIN](#tests-on-a-left-join)) |
 | `ar."resourceableId" = g.id::text` in `ON` | `.resourceableId = .id ::text` |
 | `UPDATE t SET c = 'v' WHERE ...` | `t \| where: ... \| update! c = 'v'` |
@@ -185,7 +185,7 @@ HAVING BOOL_OR(a.type = 'sharepoint') OR d.reference_id IS NOT NULL
 ```
 document as d
  | attachment as a :left .document_id = .id
- | group: d.id, d.reference_id => min(id::text) where type = 'sharepoint' as min_id, min(id::text) as min_id_2, any(type = 'sharepoint') as any_type
+ | group: d.id, d.reference_id with id::text => min where type = 'sharepoint' as min_id, id::text => min as min_id_2, any(type = 'sharepoint') as any_type
  | where: any_type = true or reference_id is not null
  | select: id, coalesce(min_id, min_id_2) as att
 ```
@@ -481,7 +481,7 @@ Two exceptions:
 - A preview of `limit: N per` doesn't convert yet.
 - A `group:` with an aggregate over a value converts back with the internal names Pine gives the
   aggregated columns: `select: name, id as __pine_a0__ |= x_1`, then
-  `group: name => min(__pine_a0__) as m`. It means the same, but isn't the Pine you started from.
+  `group: name with __pine_a0__ => min as m`. It means the same, but isn't the Pine you started from.
 
 ### Warnings
 

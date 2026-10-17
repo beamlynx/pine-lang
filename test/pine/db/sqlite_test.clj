@@ -204,7 +204,7 @@
     (is (= ["Ann" "Cy"] (selected "person | where: active = true | select: name"))))
 
   (testing "group and count"
-    (is (= [[1 2] [2 1]] (rows "person | select: company_id | group: company_id => count")))
+    (is (= [[1 2] [2 1]] (rows "person | select: company_id | group: company_id with count")))
     (is (= [[3]] (rows "person | count:"))))
 
   (testing "a sealed table's column after a checkpoint is the checkpoint's column"
@@ -229,7 +229,7 @@
   (testing "Aggregates with a filter, any and all"
     (is (= [[1 1 1 0 1] [2 3 1 1 1]]
            (map #(vec (take 5 %))
-                (rows "person | group: company_id => min(id) as first, any(active = true) as some_on, all(active = true) as all_on, count where active = true as n | o: company_id asc")))))
+                (rows "person | group: company_id with min(id) as first, any(active = true) as some_on, all(active = true) as all_on, count where active = true as n | o: company_id asc")))))
 
   (testing "now()"
     (is (= [[2]] (rows "company | where: created_at < now() | count:")))))
@@ -306,4 +306,4 @@
 
   (testing "group by a key"
     (is (= #{[nil 2] ["NO" 1] ["SE" 1]}
-           (set (rows "doc | select: data.country | group: data.country => count"))))))
+           (set (rows "doc | select: data.country | group: data.country with count"))))))

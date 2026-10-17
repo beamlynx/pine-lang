@@ -92,22 +92,22 @@
 
   (testing "Count and group"
     (converts-to "select count(*) from t where a = 1" "t | where: a = 1 | count:")
-    (converts-to "select status, count(*) from t group by status" "t | group: status => count")
+    (converts-to "select status, count(*) from t group by status" "t | group: status with count")
     (converts-to "select status, count(*) as n from t group by status order by n desc"
-                 "t | group: status => count as n | order: n desc")
+                 "t | group: status with count as n | order: n desc")
     (testing "Pine's count column is left out when the SQL has none"
       (converts-to "select status from t group by status order by status"
                    "t | group: status | select: status | order: status asc")
-      (converts-to "select count(*) from t group by status" "t | group: status => count | select: count"))
+      (converts-to "select count(*) from t group by status" "t | group: status with count | select: count"))
     (testing "A grouped column keeps the SQL's name"
       (converts-to "select status as s, count(*) from t group by status order by s"
-                   "t | group: status => count | select: status as s, count | order: s asc"))
+                   "t | group: status with count | select: status as s, count | order: s asc"))
     (testing "ORDER BY a grouped column the SELECT leaves out sorts before the select:"
       (converts-to "select count(*) as n from t group by status order by status"
-                   "t | group: status => count as n | order: status asc | select: n"))
+                   "t | group: status with count as n | order: status asc | select: n"))
     (testing "Two SQL columns of one name: the second is renamed, with a warning"
       (converts-to "select count(*), min(score) as count from t group by a"
-                   "t | group: a => count as count_2, min(score) as count | select: count_2, count"
+                   "t | group: a with count as count_2, score => min as count | select: count_2, count"
                    ["`count_2` is the SQL's column `count`: Pine needs each name once."]))))
 
 (deftest test-joins
@@ -201,7 +201,7 @@
     (converts-to-blocks "WITH \"x_1\" AS ( SELECT \"c_0\".\"name\" AS \"name\" FROM \"company\" AS \"c_0\" ) SELECT \"x_1\".\"name\", COUNT(1) AS \"count\" FROM \"x_1\" GROUP BY \"x_1\".\"name\" LIMIT 10000"
                         "company as c_0 | select: name |= x_1
 
-                         x_1 | group: name => count | limit: 10000")))
+                         x_1 | group: name with count | limit: 10000")))
 
 (deftest test-refusals
   (refuses "select * from t where a = null" "IS NULL")
@@ -278,11 +278,11 @@
 
 (def ^:private multi-block-corpus
   "Pine expressions whose SQL has WITH: it converts back, to several blocks."
-  ["company | group: name => count"
-   "company | group: name => count as n"
-   "company | group: name => min(id) as m"
-   "company | group: name => count where id > 1 as n"
-   "company | group: name => count | where: count > 1"
+  ["company | group: name with count"
+   "company | group: name with count as n"
+   "company | group: name with id => min as m"
+   "company | group: name with count where id > 1 as n"
+   "company | group: name with count | where: count > 1"
    "company | where: id = 1 | count:"])
 
 (deftest test-multi-block-round-trip
@@ -427,7 +427,7 @@
 
   (testing "A GROUP BY in a WITH query has exactly the SQL's columns"
     (converts-to-blocks "with a as (select status, count(*) as n from t group by status) select * from a"
-                        "t | group: status => count as n |= a\n\na")
+                        "t | group: status with count as n |= a\n\na")
     (converts-to-blocks "with a as (select status from t group by status) select * from a"
                         "t | group: status | select: status |= a\n\na")))
 
@@ -796,7 +796,7 @@ COMMIT;
     | attachment as a :left .id = .attachment_id
     | where: d.tenant_id = '86b8ad91-7463-478a-aa43-43a977105bf4'
     | where: d.deleted_at is null
-    | group: d.id, d.company_id, d.reference_id, d.created_at, d.archived_at => min(id::text) where type = 'sharepoint' as min_id, min(id::text) as min_id_2, any(type = 'sharepoint') as any_type
+    | group: d.id, d.company_id, d.reference_id, d.created_at, d.archived_at with id::text => min where type = 'sharepoint' as min_id, id::text => min as min_id_2, any(type = 'sharepoint') as any_type
     | where: any_type = true or reference_id is not null
     | select: id, company_id, reference_id, created_at, archived_at, coalesce(min_id, min_id_2) as any_attachment_id |= sp_docs
 
@@ -932,38 +932,38 @@ COMMIT;
 (deftest test-aggregates
   (testing "An aggregate named with AS is that column of the group:"
     (converts-to "select a, min(b) as first_b, sum(c) as total from t group by a"
-                 "t | group: a => min(b) as first_b, sum(c) as total"))
+                 "t | group: a with b => min as first_b, c => sum as total"))
 
   (testing "FILTER, BOOL_OR and BOOL_AND"
     (converts-to "select a, min(b) filter (where c = 'x') as m, bool_or(c = 'y') as some_y, bool_and(d > 1) as all_d from t group by a"
-                 "t | group: a => min(b) where c = 'x' as m, any(c = 'y') as some_y, all(d > 1) as all_d"))
+                 "t | group: a with b => min where c = 'x' as m, any(c = 'y') as some_y, all(d > 1) as all_d"))
 
   (testing "HAVING is a where: after the group:, on the names"
     (converts-to "select a, count(*) from t group by a having count(*) > 1"
-                 "t | group: a => count | where: count > 1")
+                 "t | group: a with count | where: count > 1")
     (converts-to "select a, max(b) as m from t group by a having max(b) > 10 or a is null"
-                 "t | group: a => max(b) as m | where: m > 10 or a is null"))
+                 "t | group: a with b => max as m | where: m > 10 or a is null"))
 
   (testing "An aggregate only HAVING uses gets a name, and a select: leaves it out"
     (converts-to "select a from t group by a having bool_or(b = 1)"
-                 "t | group: a => any(b = 1) as any_b | where: any_b = true | select: a"))
+                 "t | group: a with any(b = 1) as any_b | where: any_b = true | select: a"))
 
   (testing "A value over aggregates is computed after the group:"
     (converts-to "select a, coalesce(min(b) filter (where c = 1), min(b)) as m from t group by a"
-                 "t | group: a => min(b) where c = 1 as min_b, min(b) as min_b_2 | select: a, coalesce(min_b, min_b_2) as m"))
+                 "t | group: a with b => min where c = 1 as min_b, b => min as min_b_2 | select: a, coalesce(min_b, min_b_2) as m"))
 
   (testing "ORDER BY and LIMIT after them, by name"
     (converts-to "select a, coalesce(min(b), 0) as m from t group by a order by m desc limit 5"
-                 "t | group: a => min(b) as min_b | select: a, coalesce(min_b, 0) as m | order: m desc | limit: 5"))
+                 "t | group: a with b => min as min_b | select: a, coalesce(min_b, 0) as m | order: m desc | limit: 5"))
 
   (testing "Inside a WITH query the columns are exactly the SQL's"
     (converts-to-blocks "with g as (select a, sum(b) as total from t group by a having sum(b) > 1) select * from g where total < 100"
-                        "t | group: a => sum(b) as total | where: total > 1 |= g
+                        "t | group: a with b => sum as total | where: total > 1 |= g
 
                          g | where: total < 100"))
 
   (testing "An aggregate without AS is named as Postgres names it: after its function"
-    (converts-to "select a, sum(b) from t group by a" "t | group: a => sum(b) as sum"))
+    (converts-to "select a, sum(b) from t group by a" "t | group: a with b => sum as sum"))
 
   (testing "Refused"
     (refuses "select a, b, min(c) as m from t group by a" "`b` is selected but not grouped.")

@@ -36,7 +36,7 @@ Each pipe segment maps to a typed operation. Operations are applied left to righ
 | `table`          | Registers the table, resolves FK joins, tracks current context              |
 | `select` / `s:`  | Records which columns to include                                            |
 | `where` / `w:`   | Records filter conditions and parameters                                    |
-| `group` / `g:`   | Records group-by columns and counts rows per group (`=> count`, the default) |
+| `group` / `g:`   | Records group-by columns and the aggregates after `with` (`count`, the default) |
 | `order` / `o:`   | Records sort columns and direction                                          |
 | `limit` / `l:`   | Records the row limit                                                       |
 | `count:`         | Switches operation mode to COUNT                                            |
@@ -47,7 +47,7 @@ Each pipe segment maps to a typed operation. Operations are applied left to righ
 See [pipeline.md](pipeline.md) for how these operations are processed internally.
 
 A step can use values that aren't just columns: `s: coalesce(a, b) as k`, `s: id in edited as was_edited`,
-`group: id => min(a.id) as first_id`. See [computed-values.md](computed-values.md).
+`group: id with a.id => min as first_id`. See [computed-values.md](computed-values.md).
 
 ## How evaluation works
 

@@ -79,7 +79,7 @@ WHERE COALESCE(JSON_TYPE(JSON_EXTRACT(`p_0`.`config`, ?)), 'NULL') = 'NULL'
 
 ```
 customer | o: data.signup.score desc
-customer | group: data.plan => count
+customer | group: data.plan with count
 ```
 
 `order:` sorts JSON values, so numbers sort as numbers. Values of different JSON types sort by type first.

@@ -29,7 +29,7 @@ UPDATE-PARTIAL    := <update-action-op> update-assignments <","> <ws*> partial-u
 UPDATE-ACTION     := <update-action-op> update-assignments
 COUNT             := <count-op>
 
-GROUP             := <group-op>         group-args
+GROUP             := <group-op>         (group-args | legacy-group-args)
 
 select-op         := (<"select:"> | <"s:">) <ws*>
 where-op          := (<"where:">  | <"w:">) <ws*>
@@ -46,13 +46,18 @@ per-op            := <ws+> <"per"> <ws+>
 table-mods        := (<ws+> table-mod)*
 table-mod         := <":"> ("parent"|"child"|"left"|"right") | as-alias | hint-columns
 
-group-args          := columns (<ws*> <"=>"> <ws*> aggregate-functions)?
+(* The keys, then `with` and the aggregates: `group: status with count, total => max`.
+   Without `with`, each group is counted. *)
+group-args          := columns (<ws+> <"with"> <ws+> aggregate-functions)?
+(* `=>` used to divide the keys from the aggregates. Read only to say so. *)
+legacy-group-args   := columns <ws*> <"=>"> <ws*> aggregate-functions
 aggregate-functions := aggregate-function (<","> <ws*> aggregate-function)*
-(* `count`, or a call over a value: min(a.id), any(a.type = 'x'). Any of
-   them may take a filter, `min(a.id) where a.type = 'x'`, and a name,
-   `as first_id`. Which functions are aggregates is pine.computed's
-   function table. See docs/computed-values.md. *)
-aggregate-function  := ("count" | call) (<ws+> <"where"> <ws+> conditions)? (<ws+> as-alias)?
+(* `count`, or a value whose outermost function is an aggregate: min(a.id),
+   a.id => min, any(a.type = 'x'). Any of them may take a filter,
+   `a.id => min where a.type = 'x'`, and a name, `as first_id`. Which
+   functions are aggregates is pine.computed's function table. See
+   docs/computed-values.md. *)
+aggregate-function  := operand (<ws+> <"where"> <ws+> conditions)? (<ws+> as-alias)?
 
 update-assignments := update-assignment (<","> <ws*> update-assignment)*
 update-assignment  := column <ws*> <"="> <ws*> (column|string|number|boolean|null|date|variable|call)
@@ -77,7 +82,11 @@ cast                := <"::"> ("text"|"uuid")
 
 aliased-columns := aliased-column (<","> <ws*> aliased-column)*
 (* A keyword literal is never read as a column: `s: true as t` is the value true. *)
-aliased-column  := !literal-word column <ws*> | !literal-word column <ws+> as-alias <ws*> | alias <"."> star | computed-column
+aliased-column  := (!literal-word column <ws*> | !literal-word column <ws+> as-alias <ws*> | alias <"."> star | bucket-column (<ws+> as-alias)? <ws*>) / computed-column
+(* A date bucket on a column, named after the bucket unless named with as:
+   `created_at => month`. Other values need `as`, so this one is read first. *)
+bucket-column   := !literal-word qualified-symbol <ws*> <"=>"> <ws*> column-function
+column-function := "minute" | "hour" | "day" | "week" | "month" | "year"
 
 (* ---------------
    Computed values
@@ -85,9 +94,16 @@ aliased-column  := !literal-word column <ws*> | !literal-word column <ws+> as-al
    A value that isn't just a column: `coalesce(a, b) as k`, `id in edited as
    was_edited`, `if x is null then 'a' else 'b' as k`. In select: it must
    have a name. See docs/computed-values.md. *)
-computed-column  := (if-value | condition-value | call | literal | variable | cast-column | paren-value) <ws+> as-alias <ws*>
+computed-column  := (if-value | condition-value | arrow-value | call | literal | variable | cast-column | paren-value) <ws+> as-alias <ws*>
 <value>          := if-value | condition-value | operand
-<operand>        := call | literal | variable | value-column | paren-value
+<operand>        := arrow-value | arrow-base
+(* `x => f` is f(x), and `x => f(a, b)` is f(x, a, b): the value on the left
+   is the first argument. Steps chain: `name => coalesce('x') => concat('!')`.
+   A condition goes in parentheses first: `(type = 'x') => any`. *)
+arrow-value      := arrow-base (<ws*> <"=>"> <ws*> arrow-step)+
+<arrow-base>     := call | literal | variable | value-column | paren-value
+<arrow-step>     := call | function-name
+function-name    := symbol
 (* `then` takes no bare if, so an `else` always belongs to the nearest if.
    An if there is written in parentheses. *)
 if-value         := <"if"> <ws+> conditions <ws+> <"then"> <ws+> (condition-value | operand) (<ws+> <"else"> <ws+> value)?
@@ -115,8 +131,7 @@ explicit-columns   := explicit-pair (<","> <ws*> explicit-pair)*
 explicit-pair      := hint-column (<ws*> cast)? <ws*> <"="> <ws*> hint-column (<ws*> cast)?
 
 columns            := column (<","> <ws*> column)*
-column             := qualified-symbol <ws*> <"=>"> <ws*> column-function | qualified-symbol
-column-function    := "minute" | "hour" | "day" | "week" | "month" | "year"
+column             := qualified-symbol
 (* A column, optionally followed by a path into its JSON value:
    c.data.plan, data.tags[0], data.'home address'. The grammar doesn't know
    what an alias is, so `a.b` always parses as alias and column, and

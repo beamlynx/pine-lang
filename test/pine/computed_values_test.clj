@@ -97,12 +97,12 @@
            (-> (parser/parse "g | t .x::uuid = .id") :result second :value :join-column-pairs))))
 
   (testing "Refused"
-    (is (s/includes? (parse-error "t | s: lower(name) as n") "`lower()` isn't a Pine function. There are coalesce(), concat(), now(), and in group: all, any, avg, count, max, min, sum."))
+    (is (s/includes? (parse-error "t | s: lower(name) as n") "`lower()` isn't a Pine function. There are coalesce(), concat(), day(), hour(), minute(), month(), now(), week(), year(), and in group: all, any, avg, count, max, min, sum."))
     (is (s/includes? (parse-error "t | s: coalesce(a) as n") "`coalesce()` takes 2 or more arguments, not 1."))
     (is (s/includes? (parse-error "t | s: now(a) as n") "`now()` takes 0 arguments, not 1."))
-    (is (s/includes? (parse-error "t | s: min(a) as n") "`min()` is an aggregate. Use it after `=>` in group:"))
-    (is (s/includes? (parse-error "t | group: a => coalesce(b, c)") "`coalesce()` isn't an aggregate."))
-    (is (s/includes? (parse-error "t | group: a => min(b)::text") "A cast can't follow an aggregate."))
+    (is (s/includes? (parse-error "t | s: min(a) as n") "`min()` is an aggregate. Use it after `with` in group:"))
+    (is (s/includes? (parse-error "t | group: a with coalesce(b, c)") "`coalesce()` isn't an aggregate."))
+    (is (s/includes? (parse-error "t | group: a with min(b)::text") "A cast can't follow an aggregate."))
     (is (s/includes? (parse-error "t | s: coalesce(a, b)") "A computed value in select: needs a name"))))
 
 ;; ------
@@ -223,32 +223,32 @@
                 "SELECT \"x_1\".\"company_id\", COUNT(1) AS \"count\", MIN(\"x_1\".\"__pine_a0__\"::text) FILTER (WHERE (\"x_1\".\"__pine_a1__\" IS NULL)) AS \"top\", "
                 "BOOL_OR((\"x_1\".\"__pine_a1__\" IS NULL)) AS \"any_reports_to\", MAX(\"x_1\".\"__pine_a0__\") AS \"max_id\", SUM(\"x_1\".\"__pine_a0__\") AS \"sum_id\", "
                 "AVG(\"x_1\".\"__pine_a0__\") AS \"avg_id\", BOOL_AND((\"x_1\".\"__pine_a0__\" > '1')) AS \"all_id\" FROM \"x_1\" GROUP BY \"x_1\".\"company_id\" LIMIT 10000;")
-           (sql "employee | group: company_id => count, min(id::text) where reports_to is null as top, any(reports_to is null), max(id), sum(id), avg(id), all(id > 1)"))))
+           (sql "employee | group: company_id with count, id::text => min where reports_to is null as top, any(reports_to is null), id => max, id => sum, id => avg, all(id > 1)"))))
 
   (testing "MySQL has no FILTER or BOOL_OR"
-    (is (s/includes? (sql :test-mysql "employee | group: company_id => min(id) where reports_to is null as top, any(reports_to is null) as r, count where id > 1")
+    (is (s/includes? (sql :test-mysql "employee | group: company_id with id => min where reports_to is null as top, any(reports_to is null) as r, count where id > 1")
                      "MIN(CASE WHEN (`x_1`.`__pine_a1__` IS NULL) THEN `x_1`.`__pine_a0__` END) AS `top`, MAX((`x_1`.`__pine_a1__` IS NULL)) AS `r`, COUNT(CASE WHEN (`x_1`.`__pine_a0__` > '1') THEN 1 END) AS `count`")))
 
   (testing "SQLite has FILTER, and no BOOL_AND"
-    (is (s/includes? (sql :test-sqlite "employee | group: company_id => min(id) where reports_to is null as top, all(id > 1) as a")
+    (is (s/includes? (sql :test-sqlite "employee | group: company_id with id => min where reports_to is null as top, all(id > 1) as a")
                      "MIN(\"x_1\".\"__pine_a0__\") FILTER (WHERE (\"x_1\".\"__pine_a1__\" IS NULL)) AS \"top\", MIN((\"x_1\".\"__pine_a0__\" > '1')) AS \"a\"")))
 
   (testing "A filter's string is a parameter after the inner query's"
-    (let [{:keys [params]} (build "employee | where: id > 5 | group: company_id => count where reports_to = 3")]
+    (let [{:keys [params]} (build "employee | where: id > 5 | group: company_id with count where reports_to = 3")]
       (is (= [5 3] (map :value params)))))
 
   (testing "In a checkpoint, then filtered by name: SQL's HAVING"
     (is (= (str "WITH \"result_1\" AS ( SELECT \"e_0\".\"company_id\", MIN(\"e_0\".\"id\") AS \"first\", BOOL_OR((\"e_0\".\"reports_to\" IS NULL)) AS \"top\" "
                 "FROM \"employee\" AS \"e_0\" GROUP BY \"e_0\".\"company_id\" ) "
                 "SELECT \"result_1\".* FROM \"result_1\" AS \"result_1\" WHERE (\"result_1\".\"top\" = true OR \"result_1\".\"first\" > '10') LIMIT 250;")
-           (sql "employee | group: company_id => min(id) as first, any(reports_to is null) as top | where: top = true or first > 10"))))
+           (sql "employee | group: company_id with id => min as first, any(reports_to is null) as top | where: top = true or first > 10"))))
 
   (testing "The checkpoint lists the aggregates' names"
-    (is (= ["first" "top"] (:aggregates (first (get-in (api/api-build ["employee | group: company_id => min(id) as first, any(reports_to is null) as top"] nil :test) [:ast :checkpoints]))))))
+    (is (= ["first" "top"] (:aggregates (first (get-in (api/api-build ["employee | group: company_id with id => min as first, any(reports_to is null) as top"] nil :test) [:ast :checkpoints]))))))
 
   (testing "Two aggregates with the same name are refused"
     (is (= "Two aggregates are named `min_id`. Name them apart with `as`, like `min(a.id) as first_id`."
-           (error "employee | group: company_id => min(id), min(id::text)")))))
+           (error "employee | group: company_id with id => min, id::text => min")))))
 
 ;; -------
 ;; update!
@@ -284,7 +284,7 @@
                         "SELECT 'xxxxx' AS \"k\", 'xxxxx' AS \"untitled\", COALESCE(\"r_0\".\"id\", 0) AS \"i\", NOW() AS \"t\"")))
 
   (testing "So is an aggregate over one, or filtered by one"
-    (is (s/includes? (sql :test "report | group: id => min(title) as m, count where title = 'a' as n, max(id)" integers-only)
+    (is (s/includes? (sql :test "report | group: id with title => min as m, count where title = 'a' as n, id => max" integers-only)
                      "'xxxxx' AS \"m\", 'xxxxx' AS \"n\", MAX(\"x_1\".\"__pine_a1__\") AS \"max_id\"")))
 
   (testing "Its name can't be used in where:, order:, group: or after per"

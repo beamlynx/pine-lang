@@ -17,7 +17,7 @@
   3. plan-where puts WHERE into conjunctive normal form: NOT is pushed down
      to the comparisons, OR is distributed over AND. Each AND-ed clause is
      one where:, since Pine joins conditions inside a where: with `or` only.
-  4. plan-select picks select:, group: ... => count, or count:, then
+  4. plan-select picks select:, group: ... with count, or count:, then
      order: and limit:.
   5. render writes the operations, pine.parser/prettify lays them out, and
      pine.parser/parse checks the result reads as Pine.
@@ -575,7 +575,7 @@
       (str (aggregates (:fn e)) (when first-col (str "_" first-col))))))
 
 (defn- agg-pine
-  "An aggregate as Pine, without its name: `min(id::text) where type = 'x'`."
+  "An aggregate as Pine, without its name: `id::text => min where type = 'x'`."
   [ctx e]
   (if (= :count (:kind e))
     (str "count" (when-let [p (:filter e)] (str " where " (conditions-pine (dissoc ctx :agg) p false))))
@@ -584,7 +584,11 @@
         (refuse at (str (s/upper-case f) "() takes one argument in Pine.")))
       (when (and (= :call (:kind (first args))) (aggregate? (first args)))
         (refuse at "An aggregate inside another isn't in Pine."))
-      (str (aggregates f) "(" (expr-pine (dissoc ctx :agg) (first args)) ")"
+      ;; One value takes the arrow, `a.id => min`; a condition or a CASE
+      ;; stays a call, `any(type = 'x')`, so it reads whole.
+      (str (if (#{:pred :case} (:kind (first args)))
+             (str (aggregates f) "(" (expr-pine (dissoc ctx :agg) (first args)) ")")
+             (str (expr-pine (dissoc ctx :agg) (first args)) " => " (aggregates f)))
            (when filter-p (str " where " (conditions-pine (dissoc ctx :agg) filter-p false)))))))
 
 ;; -------
@@ -813,7 +817,7 @@
   "GROUP BY, as steps whose result has exactly the SQL's columns, under
   its names:
 
-    group: <grouped columns> => <each aggregate, named>
+    group: <grouped columns> with <each aggregate, named>
     | where: <HAVING, by the names>
     | order: <ORDER BY, when it sorts on the group's columns>
     | select: <the SQL's columns, by the names>, when they differ
@@ -873,11 +877,11 @@
         agg-name #(get agg-names (akey %))
         group-text (str "group: " (s/join ", " (map col-ref group-cols))
                         (when (seq aggs)
-                          (str " => " (s/join ", " (map #(if (= "count" (agg-name %) (default-agg-name %) (agg-pine ctx %))
+                          (str " with " (s/join ", " (map #(if (= "count" (agg-name %) (default-agg-name %) (agg-pine ctx %))
                                                          ;; A plain count is already called count.
-                                                           (agg-pine ctx %)
-                                                           (str (agg-pine ctx %) " as " (agg-name %)))
-                                                        aggs)))))
+                                                             (agg-pine ctx %)
+                                                             (str (agg-pine ctx %) " as " (agg-name %)))
+                                                          aggs)))))
         refs (into (set (map :t group-cols)) (mapcat #(expr-refs tables %) aggs))
         ;; After the group:, a column is the result's column by its name.
         ;; With no aggregate, Pine adds a count.
@@ -1099,7 +1103,7 @@
                                                       (:expr %) (str (expr-pine ctx (:expr %)) " as " (:as %))
                                                       :else (str (col-ref (:col %)) (when (:as %) (str " as " (:as %)))))
                                                    items)))
-         :group (str "group: " (s/join ", " (map col-ref cols)) " => count")
+         :group (str "group: " (s/join ", " (map col-ref cols)) " with count")
          :count "count:"
          :order (str "order: " (s/join ", " (map #(str (if (:col %) (col-ref (:col %)) (:name %)) " " (:direction %)) items)))
          :limit (str "limit: " n (when (seq (:per o)) (str " per " (s/join ", " (map #(if (:t %) (col-ref %) (:name %)) (:per o))))))
