@@ -407,3 +407,25 @@
     (testing "no connection is an empty list"
       (with-redefs [db/connection-id (atom nil)]
         (is (= {:status 200 :joins []} (post {:query sql :cursor (count sql)})))))))
+
+(deftest test-database-unreachable
+  (let [refused (java.sql.SQLException. "Connection to localhost:5435 refused." "08001")
+        pooled (java.sql.SQLTransientConnectionException.
+                "HikariPool-1 - Connection is not available, request timed out after 10000ms." refused)]
+    (testing "a database that can't be reached is its own error type, with the innermost reason"
+      (is (= {:error-type "database-unreachable"
+              :error "Can't reach the database. Connection to localhost:5435 refused."}
+             (#'api/error-body pooled))))
+
+    (testing "a build that fails to reach the database says so, instead of returning no AST and no reason"
+      (with-redefs [db/init-references (fn [_] (throw pooled))]
+        (let [response (api/api-build ["company"] nil :test)]
+          (is (= "database-unreachable" (:error-type response)))
+          (is (nil? (:ast response))))))
+
+    (testing "connecting to a database that's down says so"
+      (with-redefs [pine.db.connections/add-connection-pool (fn [_] (throw (RuntimeException. "Failed to initialize pool" refused)))]
+        (is (= "database-unreachable" (:error-type (api/create-connection {}))))))
+
+    (testing "an error in the query itself is not that"
+      (is (nil? (:error-type (#'api/error-body (java.sql.SQLException. "column x does not exist" "42703"))))))))
