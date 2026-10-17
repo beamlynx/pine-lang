@@ -3,11 +3,19 @@
 
   A policy is a vector of rule maps, each carrying a :type discriminant
   (a string, since rules travel as JSON over HTTP -- see api.clj's
-  :access-policy param). When a request's :access-policy is non-empty,
-  every SELECT column is checked against it: a column is shown as-is if
-  it's the hidden `id` key column, or any rule matches; otherwise it's
-  rendered as a fixed literal directly in the generated SQL, so the real
-  value never leaves the database.
+  :access-policy param). Most rules show a column. A `hide` rule wraps one
+  of those matchers and hides what it matches, whatever any show rule says:
+
+    {:type \"hide\" :match {:type \"column-name\" :contains \"token\"}}
+
+  It is a type of its own, not a flag on the others, because an older
+  pine-lang ignores fields it doesn't know and would read a flagged rule as
+  a show rule. An unknown type never matches, so the column stays hidden.
+
+  When a request's :access-policy is non-empty, every SELECT column is
+  checked against it (see decide). A hidden column is rendered as a fixed
+  literal directly in the generated SQL, so the real value never leaves the
+  database.
 
   This module carries zero policy *content* of its own -- no hardcoded
   allow-list, no notion of MCP. It only knows how to evaluate whatever
@@ -35,6 +43,16 @@
     (filterv #(and (map? %) (string? (:type %))) raw)
     []))
 
+(defn annotate-mode?
+  "Whether a request asked only to be told how the policy treats each result
+  column, with nothing masked or refused: `access-policy-mode` is exactly
+  \"annotate\". Anything else, absent or misspelled, enforces. It lets the
+  owner's own unmasked tab show which columns an agent can't see. Not a
+  security boundary for the same reason sanitize-rules isn't one: a caller
+  could as well send no rules."
+  [params]
+  (= "annotate" (:access-policy-mode params)))
+
 (defn- column-db-type
   "Resolve the real Postgres type for a SELECT column descriptor, using its
   own already-resolved :source (set by ast/select.clj/ast/group.clj) when
@@ -52,6 +70,19 @@
   itself rather than looking up one column's type on it."
   [{:keys [aliases]} alias source]
   (or source (get aliases alias)))
+
+(defn- resolved-schema
+  "The schema of a column's real table. An unqualified table resolves the
+  way pine.db.references' resolve-bare-tables resolves it: the one schema
+  that has the table, or `public` among several. nil when that is still
+  ambiguous."
+  [references {:keys [table schema]}]
+  (or schema
+      (let [schemas (keep (fn [[s data]] (when (get-in data [:table table]) s)) (:schema references))]
+        (cond
+          (= 1 (count schemas))           (first schemas)
+          (some #{"public"} schemas)      "public"
+          :else                           nil))))
 
 (def ^:private catalog-schemas
   "Postgres's own schema-introspection views, not application data. The MCP
@@ -94,15 +125,27 @@
    (some (fn [[_target-table entry]] (contains? (:via entry) column))
          (get-in references [:table table :refers-to]))))
 
-(defn- rule-matches?
-  "Whether one access-policy rule exempts this column from redaction.
-  Unrecognized :type values never match -- fail-closed, and forward-
-  compatible with a rule type a different pine-lang version doesn't know
-  about yet."
-  [state {:keys [column alias source]} rule]
-  (case (:type rule)
+(defn- name-matches?
+  "Whether a column name matches a column-name matcher's `suffix`,
+  `contains` or `equals`, ignoring case: `accessToken`, `access_token` and
+  `ACCESS_TOKEN` all contain `token`. A matcher with none of the three
+  matches nothing."
+  [column {:keys [suffix contains equals]}]
+  (let [column (s/lower-case column)
+        lower  #(when (and (string? %) (not (s/blank? %))) (s/lower-case %))]
+    (boolean
+     (or (some->> (lower suffix) (s/ends-with? column))
+         (some->> (lower contains) (s/includes? column))
+         (some->> (lower equals) (= column))))))
+
+(defn- matcher-matches?
+  "Whether a matcher (a show rule, or the :match of a hide rule, with
+  `hiding?` true) covers this column. Unrecognized :type values never
+  match."
+  [state {:keys [column alias source]} matcher hiding?]
+  (case (:type matcher)
     "column-type"
-    (contains? (set (:allow rule)) (column-db-type state alias column source))
+    (contains? (set (:allow matcher)) (column-db-type state alias column source))
 
     "foreign-key"
     (let [{:keys [table]} (column-table-info state alias source)]
@@ -110,36 +153,102 @@
            (foreign-key-source-column? (:references state) table column)))
 
     "column-name"
-    (and (:suffix rule) (not (s/blank? column)) (s/ends-with? column (:suffix rule)))
+    (and (not (s/blank? column)) (name-matches? column matcher))
+
+    ;; One exact column of one real table: what the results grid's
+    ;; right-click menu writes. A rule without :schema matches the table in
+    ;; any schema. When the table's schema can't be told, a hide rule
+    ;; matches and a show rule doesn't, so the doubt keeps it hidden.
+    "column"
+    (let [{:keys [table] :as table-info} (column-table-info state alias source)
+          schema (when table (resolved-schema (:references state) table-info))]
+      (boolean
+       (and table (= table (:table matcher)) (= column (:column matcher))
+            (or (nil? (:schema matcher))
+                (= schema (:schema matcher))
+                (and hiding? (nil? schema))))))
 
     false))
 
-(defn sensitive-column?
-  "Whether a SELECT column descriptor should be redacted under `rules`.
-  Only meaningful when `rules` is non-empty -- callers gate on that
-  themselves (an empty/absent policy means no redaction at all, same as
-  before this module existed).
+(defn- hide-rule? [rule] (= "hide" (:type rule)))
 
-  The hidden `id` column pine adds for editing, and Postgres's own catalog
-  views (information_schema/pg_catalog -- see catalog-schemas), are always
-  exempt. Other hidden key columns are not: a primary key can be any
+(def ^:private known-matchers #{"column-type" "foreign-key" "column-name" "column"})
+
+(defn- hide-matches?
+  "Whether a hide rule covers this column. A hide rule whose matcher this
+  version doesn't know (a newer client's matcher, or a malformed one) covers
+  every column. Treating it as matching nothing would let a show rule expose
+  what the hide rule was written to protect. For a hide rule, failing closed
+  means hiding."
+  [state col {:keys [match]}]
+  (if (and (map? match) (contains? known-matchers (:type match)))
+    (matcher-matches? state col match true)
+    true))
+
+(defn decide
+  "How the policy treats one SELECT column descriptor: {:hidden bool}, plus
+  :by, the rule that decided it, when one did. Only meaningful when `rules`
+  is non-empty.
+
+  Hide rules are checked first. A match hides the column whatever any show
+  rule says: a hide rule is a guarantee. Then any show rule shows it.
+  Otherwise it is hidden. Unknown defaults to protected, so a column pine
+  can't resolve a type or table for stays hidden. A raw aggregate like
+  string_agg(email, ',') would otherwise be a one-line bypass.
+
+  Postgres's own catalog views (see catalog-schemas) are always shown, hide
+  rules included: they hold names, not values. The hidden `id` column pine
+  adds for editing is shown too, unless a hide rule covers it. Other hidden key columns are not exempt: a primary key can be any
   column, `email` included. ast/select.clj leaves them out instead when the
   policy hides them.
-  Everything else is redacted unless some rule in `rules` matches --
-  including columns pine can't resolve a type or table for at all, such as
-  aggregates/computed expressions. Unknown defaults to protected, not
-  exposed: a raw aggregate like string_agg(email, ',') would otherwise be a
-  one-line bypass of the whole policy."
+
+  A computed value (or an aggregate) is shown only when every column it
+  reads is. Otherwise a condition on a hidden column would leak through its
+  true/false result. One that reads no column, like now(), is shown."
   [state rules {:keys [alias source auto-id column] :as col}]
   (if-let [node (:computed col)]
-    ;; A computed value (or an aggregate) is shown only when every column it
-    ;; reads is. Otherwise a condition on a hidden column would leak through
-    ;; its true/false result. One that reads no column, like now(), is shown.
-    (boolean (some #(sensitive-column? state rules (select-keys % [:alias :column :source]))
-                   (computed/columns node)))
-    (and (not (and auto-id (= "id" column)))
-         (not (catalog-column? state alias source))
-         (not (some #(rule-matches? state col %) rules)))))
+    {:hidden (boolean (some #(:hidden (decide state rules (select-keys % [:alias :column :source])))
+                            (computed/columns node)))}
+    (let [hide (when-not (catalog-column? state alias source)
+                 (some #(when (and (hide-rule? %) (hide-matches? state col %)) %) rules))]
+      (cond
+        hide                                 {:hidden true :by hide}
+        (catalog-column? state alias source) {:hidden false}
+        (and auto-id (= "id" column))        {:hidden false}
+        :else
+        (if-let [show (some #(when (and (not (hide-rule? %)) (matcher-matches? state col % false)) %) rules)]
+          {:hidden false :by show}
+          {:hidden true})))))
+
+(defn sensitive-column?
+  "Whether a SELECT column descriptor should be redacted under `rules`. See
+  decide. Callers gate on `rules` being non-empty themselves: an empty or
+  absent policy means no redaction at all."
+  [state rules col]
+  (:hidden (decide state rules col)))
+
+(defn annotate-column
+  "A result column with :policy added, saying how `rules` treat it, so a
+  client can show it and edit the policy from it: {:hidden :by :table}.
+  :table is the column's real {:schema :table}, which is what a `column`
+  rule names. A computed value gets :hidden only.
+  Left without :policy when it isn't a column of a real table: a column of a
+  named result or checkpoint (its body was checked at its source), or the
+  bare alias get-columns appends."
+  [{:keys [aliases] :as state} rules {:keys [alias source] :as col}]
+  (if-not (map? col)
+    col
+    (let [table-info (column-table-info state alias source)]
+      (cond
+        (:computed col)
+        (assoc col :policy (decide state rules col))
+
+        (and (:table table-info) (not (:ast (get aliases alias))) (not (s/blank? (:column col))))
+        (assoc col :policy (assoc (decide state rules col)
+                                  :table {:schema (resolved-schema (:references state) table-info)
+                                          :table  (:table table-info)}))
+
+        :else col))))
 
 (defn- dedupe-by-column-name
   "Keep only the first entry for each :column name, preserving order.
@@ -243,8 +352,8 @@
   on a hidden column still read its values: `where: title like 'a%'`
   repeated letter by letter recovers a hidden title from row counts alone.
 
-  Exempt: the `id` column (rows are already shown with their id), columns of
-  a named result or checkpoint (its query was built under the same policy,
+  Exempt: the `id` column, unless a hide rule covers it (rows are already
+  shown with their id), columns of a named result or checkpoint (its query was built under the same policy,
   so a hidden column there already holds the redacted literal), and
   catalog relations."
   [{:keys [where order group limit-per current aliases] :as state} rules]
@@ -254,9 +363,10 @@
                                    (mapcat entry-columns group)
                                    (mapcat entry-columns (:columns limit-per)))
             :when (and (not (s/blank? column))
-                       (not= "id" column)
                        (not (get-in aliases [alias :ast]))
-                       (sensitive-column? state rules {:alias alias :column column}))]
+                       ;; :auto-id lets `id` through the way the hidden key
+                       ;; column is, which a hide rule still overrides.
+                       (sensitive-column? state rules {:alias alias :column column :auto-id (= "id" column)}))]
       (throw (ex-info (str "`" alias "." column "` is hidden by the access policy, so it can't be used in "
                            "where:, order:, group: or after `per`.")
                       {:error-type "policy" :alias alias :column column})))))

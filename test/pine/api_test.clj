@@ -1,6 +1,7 @@
 (ns pine.api-test
   (:require [cheshire.core :as json]
             [clojure.test :refer [deftest is testing]]
+            [pine.access-policy :as access-policy]
             [pine.api :as api]
             [pine.db.main :as db]
             [pine.db.references :as refs]))
@@ -173,6 +174,39 @@
 
   (testing "an update! with a trailing comma"
     (is (= "incomplete" (:error-type (api/api-eval ["company | where: id = 1 | u! name = 'x',"] :test))))))
+
+(deftest test-build-reports-the-access-policy-per-column
+  (let [rules      [{:type "column-type" :allow ["integer"]}
+                    {:type "hide" :match {:type "column-name" :equals "title"}}]
+        policy-of  (fn [response column]
+                     (:policy (some #(when (= column (:column %)) %) (get-in response [:ast :columns]))))]
+
+    (testing "enforced: masked in the SQL, and each column says why"
+      (let [response (api/api-build ["report | s: title, id"] nil :test rules false)]
+        (is (re-find #"'xxxxx' AS \"title\"" (:query response)))
+        (is (= {:hidden true :by (second rules) :table {:schema "public" :table "report"}}
+               (policy-of response "title")))
+        (is (= {:hidden false :by (first rules) :table {:schema "public" :table "report"}}
+               (policy-of response "id")))))
+
+    (testing "annotated: nothing masked or refused, the same report"
+      (let [response (api/api-build ["report | where: title = 'x' | s: title, id"] nil :test rules true)]
+        (is (nil? (:query-error response)))
+        (is (not (re-find #"xxxxx" (:query response))))
+        (is (true? (:hidden (policy-of response "title"))))))
+
+    (testing "a computed value says only whether it is hidden"
+      (is (= {:hidden true}
+             (:policy (first (get-in (api/api-build ["report | s: coalesce(title, 'x') as t"] nil :test rules true)
+                                     [:ast :columns]))))))
+
+    (testing "no rules, no report"
+      (is (not-any? :policy (get-in (api/api-build ["report | s: title"] nil :test) [:ast :columns]))))
+
+    (testing "only an exact \"annotate\" skips enforcing"
+      (is (true? (access-policy/annotate-mode? {:access-policy-mode "annotate"})))
+      (doseq [mode [nil "enforce" "Annotate" true]]
+        (is (false? (access-policy/annotate-mode? {:access-policy-mode mode})) (pr-str mode))))))
 
 (defn- request
   ([method uri] (request method uri {}))

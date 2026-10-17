@@ -222,6 +222,17 @@
       (assoc :pending-assignments
              (into {} (for [[k v] (:pending-assignments state)] [k (prune-var-ast v)])))))
 
+(defn- annotate-columns
+  "Each result column with :policy, how the access policy treats it (see
+  pine.access-policy/annotate-column). Unchanged when no rules were sent.
+  The state built without rules has had its :references dropped
+  (ast/main.clj's post-handle), so they are looked up again here."
+  [state conn-id rules columns]
+  (if (seq rules)
+    (let [state (cond-> state (not (:references state)) (assoc :references (db/init-references conn-id)))]
+      (mapv #(access-policy/annotate-column state rules %) columns))
+    columns))
+
 (defn api-build
   ([expressions]
    (api-build expressions nil nil))
@@ -230,8 +241,14 @@
   ([expressions cursor connection-id]
    (api-build expressions cursor connection-id []))
   ([expressions cursor connection-id access-policy]
+   (api-build expressions cursor connection-id access-policy false))
+  ;; annotate? true builds with no policy applied, and only reports on each
+  ;; column how the policy would treat it (see /api/v1/build's
+  ;; access-policy-mode).
+  ([expressions cursor connection-id policy-rules annotate?]
    (let [conn-id (or connection-id @db/connection-id)
-         connection-name (connections/get-connection-name conn-id)]
+         connection-name (connections/get-connection-name conn-id)
+         access-policy (if annotate? [] policy-rules)]
      (try
        (let [exprs         (if (string? expressions) [expressions] expressions)
              context-exprs (butlast exprs)
@@ -268,7 +285,7 @@
                   ;; value in this request. Never an error here: a template
                   ;; keeps its hints. /eval is the one that refuses.
                    :variables (variables/report exprs variables/*bindings*)
-                   :ast (prune-ast state)}
+                   :ast (prune-ast (update state :columns #(annotate-columns state conn-id policy-rules %)))}
                   (-> last-expr trim-pipes (generate-state nil conn-id named-results access-policy) :result build-sql)))))))
        (catch Exception e
          (log-exception "api-build" e)
@@ -309,8 +326,13 @@
   ;; human's own UI runs delete!/update! on purpose. The MCP relay is the one
   ;; caller that passes false, unconditionally.
   ([expressions connection-id access-policy allow-writes]
+   (api-eval expressions connection-id access-policy allow-writes false))
+  ;; annotate? true runs with no policy applied, and only reports on each
+  ;; column how the policy would treat it. Never sent for an agent's query.
+  ([expressions connection-id policy-rules allow-writes annotate?]
    (let [conn-id (or connection-id @db/connection-id)
-         connection-name (connections/get-connection-name conn-id)]
+         connection-name (connections/get-connection-name conn-id)
+         access-policy (if annotate? [] policy-rules)]
      (try
        (let [exprs         (if (string? expressions) [expressions] expressions)
              context-exprs (butlast exprs)
@@ -338,7 +360,8 @@
                                op-type (get-in last-state [:operation :type])
                                columns (if (effects/writes? op-type)
                                          (get-columns rows)
-                                         (get-columns last-state rows))]
+                                         (annotate-columns last-state conn-id policy-rules
+                                                           (get-columns last-state rows)))]
                            {:connection-id connection-name
                             :version version
                             :result rows
@@ -740,7 +763,8 @@
   (POST "/api/v1/build" {params :params}
     (let [{:keys [expressions expression cursor connection-id]} params
           exprs (or expressions (when expression [expression]))
-          rules (access-policy/sanitize-rules (:access-policy params))]
+          rules (access-policy/sanitize-rules (:access-policy params))
+          annotate? (access-policy/annotate-mode? params)]
       (or
        (param-problem params)
        (response
@@ -748,7 +772,7 @@
          (too-long-response exprs)
          (connection-problem connection-id)
          (let [built (with-variables params exprs
-                       #(api-build % (usable-cursor cursor) connection-id rules))]
+                       #(api-build % (usable-cursor cursor) connection-id rules annotate?))]
           ;; api-build only sees the blocks left after values blocks are taken
           ;; out, so the doc comes from the full list here.
            (cond-> built
@@ -757,6 +781,7 @@
     (let [{:keys [expressions expression connection-id]} params
           exprs (or expressions (when expression [expression]))
           rules (access-policy/sanitize-rules (:access-policy params))
+          annotate? (access-policy/annotate-mode? params)
           ;; Only an explicit false turns writes off - a missing or malformed
           ;; value must never read as "allowed to write" by accident, and must
           ;; never read as "refuse everything" for the callers that don't send it.
@@ -775,7 +800,7 @@
                 :error (variables/missing-message unbound)
                 :unbound (vec unbound)}
                (with-run-id (:run-id params)
-                 #(api-eval query-exprs connection-id rules allow-writes))))))))))
+                 #(api-eval query-exprs connection-id rules allow-writes annotate?))))))))))
 
   ;; raw SQL execution
   (POST "/api/v1/sql" {params :params}
