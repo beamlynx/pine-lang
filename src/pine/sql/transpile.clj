@@ -132,23 +132,42 @@
   [{:keys [alias table]}]
   (or alias table))
 
+(defn- has-column?
+  "Whether `tbl` has the column, ignoring case unless it is quoted."
+  [tbl n quoted]
+  (some #(if quoted (= n %) (.equalsIgnoreCase ^String n ^String %)) (:db-columns tbl)))
+
 (defn- resolve-column
-  "{:t :name} for a SQL column, looking only at `tables` (the ones in scope)."
+  "{:t :name} for a SQL column, looking only at `tables` (the ones in scope).
+  An unqualified column with several tables belongs to the one table that
+  has it, as in SQL. That needs every table's columns; without them, the
+  column must be qualified."
   [tables {:keys [qualifier name quoted at]}]
   (pine-name! name at)
-  (cond
-    qualifier
-    (if-let [t (first (keep-indexed (fn [i tbl] (when (= qualifier (table-key tbl)) i)) tables))]
-      {:t t :name (column-name (nth tables t) name quoted at)}
-      (refuse at (str "`" qualifier "` isn't a table in this query.")))
+  (let [owners (when (every? #(seq (:db-columns %)) tables)
+                 (keep-indexed (fn [i tbl] (when (has-column? tbl name quoted) i)) tables))]
+    (cond
+      qualifier
+      (if-let [t (first (keep-indexed (fn [i tbl] (when (= qualifier (table-key tbl)) i)) tables))]
+        {:t t :name (column-name (nth tables t) name quoted at)}
+        (refuse at (str "`" qualifier "` isn't a table in this query.")))
 
-    (= 1 (count tables))
-    {:t 0 :name (column-name (first tables) name quoted at)}
+      (= 1 (count tables))
+      {:t 0 :name (column-name (first tables) name quoted at)}
 
-    :else
-    (refuse at (str "`" name "` could belong to "
-                    (s/join " or " (map #(str "`" (table-key %) "`") tables))
-                    ". Qualify it, like `" (table-key (first tables)) "." name "`."))))
+      (= 1 (count owners))
+      (let [t (first owners)]
+        {:t t :name (column-name (nth tables t) name quoted at)})
+
+      (and owners (empty? owners))
+      (refuse at (str "`" name "` isn't a column of "
+                      (s/join " or " (map #(str "`" (table-key %) "`") tables)) "."))
+
+      :else
+      (let [candidates (if (next owners) (map #(nth tables %) owners) tables)]
+        (refuse at (str "`" name "` could belong to "
+                        (s/join " or " (map #(str "`" (table-key %) "`") candidates))
+                        ". Qualify it, like `" (table-key (first candidates)) "." name "`."))))))
 
 ;; -------
 ;; VALUES

@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Fixed
+- **SQL to Pine: a column without its table, in a query with a join.** `select * from tenant as t join company on t.id = tenantId` used to be refused, because `tenantId` could belong to `t` or `company`. Now the schema decides, as in SQL: the column belongs to the one table that has it. A column that several tables have is still refused, and so is one that no table has. Without the schema, or with a table the schema doesn't have, the column must still be qualified.
 
 ## [0.49.0] - 2026-10-17
 ### Added
