@@ -69,9 +69,38 @@
 
 ;; An exception's message and, when it carries one, its :error-type
 ;; (write-refused, unresolved-join, ...), so a client can tell kinds apart.
+(defn- causes
+  "e and every exception under it, outermost first."
+  [^Throwable e]
+  (take-while some? (iterate #(.getCause ^Throwable %) e)))
+
+(defn- unreachable?
+  "Whether e failed because the database couldn't be reached, rather than
+  because of what was asked of it: refused, timed out, shut down, or not
+  accepting connections. SQLState class 08 is a connection error; 57P01 to
+  57P03 are Postgres shutting down or starting up."
+  [^Throwable e]
+  (some (fn [c]
+          (or (instance? java.sql.SQLTransientConnectionException c)
+              (instance? java.sql.SQLNonTransientConnectionException c)
+              (instance? java.net.ConnectException c)
+              (instance? java.net.UnknownHostException c)
+              (instance? java.net.NoRouteToHostException c)
+              (and (instance? java.sql.SQLException c)
+                   (let [state (or (.getSQLState ^java.sql.SQLException c) "")]
+                     (or (str/starts-with? state "08") (#{"57P01" "57P02" "57P03"} state))))))
+        (causes e)))
+
 (defn- error-body [^Throwable e]
-  (cond-> {:error (or (.getMessage e) (str "Failed (" (.getSimpleName (class e)) ")."))}
-    (:error-type (ex-data e)) (assoc :error-type (:error-type (ex-data e)))))
+  (if (unreachable? e)
+    ;; The innermost message says why ("Connection to localhost:5435
+    ;; refused"). The outer ones are the pool's, like "HikariPool-1 -
+    ;; Connection is not available, request timed out after 10000ms."
+    {:error-type "database-unreachable"
+     :error (str "Can't reach the database. "
+                 (or (some #(.getMessage ^Throwable %) (reverse (causes e))) ""))}
+    (cond-> {:error (or (.getMessage e) (str "Failed (" (.getSimpleName (class e)) ")."))}
+      (:error-type (ex-data e)) (assoc :error-type (:error-type (ex-data e))))))
 
 (defn- build-sql
   "The SQL preview for /build. Building it can fail where the AST didn't: an
@@ -243,10 +272,12 @@
                   (-> last-expr trim-pipes (generate-state nil conn-id named-results access-policy) :result build-sql)))))))
        (catch Exception e
          (log-exception "api-build" e)
-         {:connection-id connection-name
-          ;; Never a null error: some exceptions (a NullPointerException)
-          ;; have no message, and a client reads {:error nil} as success.
-          :error (or (.getMessage e) (str "Couldn't build this expression (" (.getSimpleName (class e)) ")."))})))))
+         (if (unreachable? e)
+           (assoc (error-body e) :connection-id connection-name)
+           {:connection-id connection-name
+            ;; Never a null error: some exceptions (a NullPointerException)
+            ;; have no message, and a client reads {:error nil} as success.
+            :error (or (.getMessage e) (str "Couldn't build this expression (" (.getSimpleName (class e)) ")."))}))))))
 
 (defn- get-columns
   ([rows]
@@ -367,14 +398,14 @@
     {:connection-id (connections/add-connection-pool connection)}
     (catch Exception e
       (log-exception "create-connection" e)
-      {:error (.getMessage e)})))
+      (error-body e))))
 
 (defn connect [id]
   (try
     (-> id test-connection :connection-id set-connection-pool)
     (catch Exception e
       (log-exception "connect" e)
-      {:error (.getMessage e)})))
+      (error-body e))))
 
 (defn disconnect [id]
   (try

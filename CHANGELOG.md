@@ -58,6 +58,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - `sum`, `avg`, `min`, `max` and `string_agg` after `=>` in `group:`. They take no column, so they computed over the constant 1: a sum equal to the count, an average of 1, and `STRING_AGG(1)`, which Postgres refuses. Only `count` remains until a column can be named.
 
 ### Fixed
+- A database that can't be reached is reported as such. `/build`, `/eval`, `/sql` and connecting return `error-type: "database-unreachable"`, with the reason, like "Can't reach the database. Connection refused". It used to be the connection pool's own message, like "HikariPool-1 - Connection is not available, request timed out after 10000ms.", and a failed `/build` had no `error-type` at all. A client can now tell a database that's down from a mistake in the expression.
 - A table written with its schema, like `public.company`, is always the table. A named result of the same name (`|= company`) used to take its place, so the query read the named result, and `update!` or `delete!` on the table was refused as a change to a named result.
 - A `group:` after a named result called `x_1` (or `x_2`, and so on) no longer fails with "WITH query name specified more than once". The group's own CTE now picks a name nothing else uses.
 - `update! active = false` on a Postgres boolean column works. The value was sent as the text `'false'`, which Postgres refused. On SQLite it was stored as that text; now it is stored as 0 or 1.
