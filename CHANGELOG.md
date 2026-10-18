@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [0.50.0] - 2026-10-18
 ### Added
 - **Access policy: hide rules.** A rule can now hide columns as well as show them: `{"type": "hide", "match": {"type": "column-name", "contains": "token"}}`. A hide rule beats every show rule, so a `uuid` column called `reset_token` stays hidden even though uuids are shown. It also covers `where:`, `order:`, `group:`, `per`, computed values and the `id` column. A hide rule whose match Pine doesn't know hides every column. See [access-policy.md](docs/access-policy.md).
 - **Access policy: more ways to name a column.** `column-name` takes `contains` and `equals` as well as `suffix`, and ignores case. A new `column` rule names one column of one table: `{"type": "column", "schema": "public", "table": "user", "column": "email"}`.
