@@ -18,7 +18,7 @@ services:
       retries: 10
 
   pine:
-    image: ahmadnazir/pine:0.49.0
+    image: ahmadnazir/pine:0.50.0
     container_name: pine_server
     depends_on:
       sample-db-ecommerce:
