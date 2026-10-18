@@ -75,4 +75,19 @@ When rules are sent, each column in `/eval`'s `columns` and `/build`'s `ast.colu
 
 A computed value has `hidden` only. A column of a named result or a checkpoint has no `policy` entry. Its query was checked where it was built.
 
+## A refused query
+
+A query that names a hidden column in `where:`, `order:`, `group:` or after `per` is refused with `error-type: "policy"`. The error also says which column, in `hidden-column`:
+
+```json
+"hidden-column": {
+  "alias": "a_0",
+  "column": "type",
+  "hidden": true,
+  "table": {"schema": "public", "table": "activity"}
+}
+```
+
+It has `by`, the rule that hid it, when a hide rule did. Without `by`, no Allow rule matched, so an owner can allow the column with a `column` rule. With a hide rule in `by`, a `column` rule wouldn't help: the hide rule always wins.
+
 When Pine can't tell which schema an unqualified table is in, a `column` rule with a `schema` matches it as a hide rule and doesn't match it as a show rule. The doubt keeps the column hidden.
