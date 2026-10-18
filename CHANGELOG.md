@@ -3,6 +3,14 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Added
+- **Access policy: hide rules.** A rule can now hide columns as well as show them: `{"type": "hide", "match": {"type": "column-name", "contains": "token"}}`. A hide rule beats every show rule, so a `uuid` column called `reset_token` stays hidden even though uuids are shown. It also covers `where:`, `order:`, `group:`, `per`, computed values and the `id` column. A hide rule whose match Pine doesn't know hides every column. See [access-policy.md](docs/access-policy.md).
+- **Access policy: more ways to name a column.** `column-name` takes `contains` and `equals` as well as `suffix`, and ignores case. A new `column` rule names one column of one table: `{"type": "column", "schema": "public", "table": "user", "column": "email"}`.
+- **Access policy: a report on each column.** When a policy is sent, each column in `/eval`'s `columns` and `/build`'s `ast.columns` has `policy`: whether it is hidden, the rule that decided, and its real table. `access-policy-mode: "annotate"` reports without hiding or refusing anything, so the owner's own tab can mark what an agent can't see.
+
+### Changed
+- `column-name` rules ignore case: `{"suffix": "_id"}` now also matches `user_ID`.
+
 ### Fixed
 - **SQL to Pine: a column without its table, in a query with a join.** `select * from tenant as t join company on t.id = tenantId` used to be refused, because `tenantId` could belong to `t` or `company`. Now the schema decides, as in SQL: the column belongs to the one table that has it. A column that several tables have is still refused, and so is one that no table has. Without the schema, or with a table the schema doesn't have, the column must still be qualified.
 
