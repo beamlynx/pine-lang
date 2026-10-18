@@ -6,6 +6,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Added
 - **Access policy: hide rules.** A rule can now hide columns as well as show them: `{"type": "hide", "match": {"type": "column-name", "contains": "token"}}`. A hide rule beats every show rule, so a `uuid` column called `reset_token` stays hidden even though uuids are shown. It also covers `where:`, `order:`, `group:`, `per`, computed values and the `id` column. A hide rule whose match Pine doesn't know hides every column. See [access-policy.md](docs/access-policy.md).
 - **Access policy: more ways to name a column.** `column-name` takes `contains` and `equals` as well as `suffix`, and ignores case. A new `column` rule names one column of one table: `{"type": "column", "schema": "public", "table": "user", "column": "email"}`.
+- **Access policy: a refusal names the column.** When a query is refused because it filters, sorts or groups on a hidden column, the error has `hidden-column`: the alias and column, the real `table`, and `by`, the rule that hid it (absent when no Allow rule matched). A client can then ask the owner to allow that column.
 - **Access policy: a report on each column.** When a policy is sent, each column in `/eval`'s `columns` and `/build`'s `ast.columns` has `policy`: whether it is hidden, the rule that decided, and its real table. `access-policy-mode: "annotate"` reports without hiding or refusing anything, so the owner's own tab can mark what an agent can't see.
 
 ### Changed

@@ -365,11 +365,16 @@
                                    (mapcat entry-columns order)
                                    (mapcat entry-columns group)
                                    (mapcat entry-columns (:columns limit-per)))
+            :let [col {:alias alias :column column :auto-id (= "id" column)}]
             :when (and (not (s/blank? column))
                        (not (get-in aliases [alias :ast]))
                        ;; :auto-id lets `id` through the way the hidden key
                        ;; column is, which a hide rule still overrides.
-                       (sensitive-column? state rules {:alias alias :column column :auto-id (= "id" column)}))]
+                       (sensitive-column? state rules col))]
+      ;; :hidden says which real column was refused, and the rule that hid
+      ;; it, so a client can ask the owner to allow it (see api.clj's
+      ;; error-body). Same shape as annotate-column's :policy.
       (throw (ex-info (str "`" alias "." column "` is hidden by the access policy, so it can't be used in "
                            "where:, order:, group: or after `per`.")
-                      {:error-type "policy" :alias alias :column column})))))
+                      {:error-type "policy" :alias alias :column column
+                       :hidden (:policy (annotate-column state rules col))})))))

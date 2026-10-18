@@ -214,6 +214,20 @@
       (doseq [mode [nil "enforce" "Annotate" true]]
         (is (false? (access-policy/annotate-mode? {:access-policy-mode mode})) (pr-str mode))))))
 
+(deftest test-eval-refusal-names-the-hidden-column
+  (testing "a query refused by the policy says which real column, and which rule hid it"
+    (let [rules    [{:type "column-type" :allow ["integer"]}
+                    {:type "hide" :match {:type "column-name" :contains "tit"}}]
+          response (api/api-eval ["report | where: title = 'x'"] :test rules false)]
+      (is (= "policy" (:error-type response)))
+      (is (= {:alias "r_0" :column "title" :hidden true :by (second rules)
+              :table {:schema "public" :table "report"}}
+             (:hidden-column response)))))
+  (testing "hidden for lack of an Allow rule: no :by"
+    (let [response (api/api-eval ["report | where: title = 'x'"] :test [{:type "column-type" :allow ["integer"]}] false)]
+      (is (not (contains? (:hidden-column response) :by)))
+      (is (= "title" (get-in response [:hidden-column :column]))))))
+
 (defn- request
   ([method uri] (request method uri {}))
   ([method uri headers]

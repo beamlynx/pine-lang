@@ -100,7 +100,12 @@
      :error (str "Can't reach the database. "
                  (or (some #(.getMessage ^Throwable %) (reverse (causes e))) ""))}
     (cond-> {:error (or (.getMessage e) (str "Failed (" (.getSimpleName (class e)) ")."))}
-      (:error-type (ex-data e)) (assoc :error-type (:error-type (ex-data e))))))
+      (:error-type (ex-data e)) (assoc :error-type (:error-type (ex-data e)))
+      ;; A policy refusal names the hidden column: {:alias :column :hidden
+      ;; :by :table}, :by being the rule that hid it, if any
+      ;; (pine.access-policy/check-references).
+      (:hidden (ex-data e)) (assoc :hidden-column (merge (select-keys (ex-data e) [:alias :column])
+                                                         (:hidden (ex-data e)))))))
 
 (defn- build-sql
   "The SQL preview for /build. Building it can fail where the AST didn't: an
