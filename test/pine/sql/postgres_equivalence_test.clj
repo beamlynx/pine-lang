@@ -281,7 +281,8 @@ WHERE d.id = g.id AND kf.id IS NULL AND g.archived_at IS NULL")
       AND NOT EXISTS (SELECT 1 FROM user_tenant_role utr WHERE utr.\"userId\" = u.id AND utr.deleted_at IS NULL AND utr.archived_at IS NULL)"
    "SELECT u.id FROM \"user\" u WHERE NOT EXISTS (SELECT 1 FROM user_tenant_role r WHERE r.\"userId\" = u.key)"
    "SELECT u.id FROM \"user\" u WHERE u.archived_at IS NOT NULL OR NOT EXISTS (SELECT 1 FROM user_tenant_role r WHERE u.key = r.\"userId\" AND r.archived_at IS NULL)"
-   "SELECT u.id FROM \"user\" u WHERE NOT (u.id = 3 OR EXISTS (SELECT * FROM user_tenant_role r WHERE r.\"userId\" = u.key))"])
+   "SELECT u.id FROM \"user\" u WHERE NOT (u.id = 3 OR EXISTS (SELECT * FROM user_tenant_role r WHERE r.\"userId\" = u.key))"
+   "WITH k AS (SELECT \"userId\" FROM user_tenant_role) SELECT u.id FROM \"user\" u WHERE NOT EXISTS (SELECT 1 FROM k WHERE k.\"userId\" = u.key)"])
 
 (deftest test-exists-on-postgres
   (if-not server

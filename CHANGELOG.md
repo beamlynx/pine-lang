@@ -5,7 +5,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ## [Unreleased]
 ### Added
 - **SQL to Pine: EXISTS and NOT EXISTS.** `WHERE EXISTS (SELECT 1 FROM k WHERE k.c = t.x AND ...)` converts to a block for `k` and `where: x in <block>`. `NOT EXISTS` converts to `not in`. The subquery must be tied to the outer query by that one equality. Under a `NOT`, the conversion guards against NULLs unless the schema shows the columns are `NOT NULL`, so the rows match what `NOT EXISTS` keeps. A test on a real Postgres checks this with NULLs on both sides. `EXISTS` outside `WHERE` is still refused. See `docs/sql-to-pine.md`.
-- **SQL to Pine: COUNT(column).** `COUNT(x)` converts to `count where x is not null`, so it counts the same rows as SQL. It also works in `HAVING`. `COUNT(DISTINCT ...)` is still refused, now with a message about `DISTINCT` alone.
+- **SQL to Pine: COUNT(column).** In `group:`, `COUNT(x)` converts to `count where x is not null`, so it counts the same rows as SQL. It also works in `HAVING`. On its own, without `GROUP BY`, it converts to `where: x is not null | count:`. `COUNT(DISTINCT ...)` is still refused, now with a message about `DISTINCT` alone.
 
 ## [0.50.0] - 2026-10-18
 ### Added

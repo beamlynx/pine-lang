@@ -1015,15 +1015,20 @@
       (plan-aggregated tables current items stmt warn!)
 
       (some #(= :count (:kind %)) items)
-      (do (when-let [f (first (filter :filter items))]
+      (do (when-let [f (first (filter #(and (:filter %) (not (:column %))) items))]
             (refuse (:at f) "COUNT(*) FILTER needs GROUP BY. Without one, put the condition in WHERE."))
+          (when-let [c (first (filter #(and (= :count (:kind %)) (:column %)) items))]
+            (when (or (next items) (= :and (:op (:filter c))))
+              (refuse (:at c) "Without GROUP BY, COUNT(column) converts only on its own, with no FILTER.")))
           (when (next items)
             (refuse (:at (first (remove #(= :count (:kind %)) items))) "A column next to COUNT(*) needs GROUP BY."))
           (when (seq order) (refuse (:at (first order)) "ORDER BY on a single COUNT(*) isn't converted. Remove it."))
           (when limit (refuse (:at limit) "LIMIT on a single COUNT(*) isn't converted. Remove it."))
           (when (and (:as (first items)) (not= "count" (:as (first items))))
             (warn! (str "COUNT(*) AS " (:as (first items)) ": Pine names the count column `count`.") :columns))
-          [{:op :count}])
+          ;; COUNT(x) on its own counts the rows where x isn't NULL.
+          (conj (mapv (fn [c] {:op :where :clause c}) (some->> (:filter (first items)) vector (plan-where tables)))
+                {:op :count}))
 
       :else
       (plan-plain tables current items stmt window warn!))))
@@ -1298,6 +1303,8 @@
   query through that one equality and nowhere else. A column qualified by
   none of the subquery's tables is the outer query's."
   [{sq :subquery at :at}]
+  (when-let [e (first (find-nodes #(= :exists (:op %)) (:where sq)))]
+    (refuse (:at e) "An EXISTS inside another EXISTS isn't converted."))
   (let [inner (set (map table-key (query-tables sq)))
         outer? (fn [c] (boolean (and (:qualifier c) (not (inner (:qualifier c))))))
         refers? (fn [x] (some outer? (expr-columns x)))
@@ -1635,7 +1642,8 @@
     (mapv (fn [{n :name q :query :as e}]
             (if (@nullable n)
               (let [{c :column at :at} (first (:select q))]
-                (assoc-in e [:query :where]
+                ;; Not :simple any more, so narrow-in-sets keeps the filter.
+                (assoc-in (dissoc e :simple) [:query :where]
                           (and-of (concat (some-> (:where q) conjuncts)
                                           [{:op :is-null :negated true :at at
                                             :left {:kind :column :column c :at at}}]))))

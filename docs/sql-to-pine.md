@@ -118,7 +118,8 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `MIN(x)` without `AS` | `min(x) as min`, the name Postgres gives it |
 | `MAX(x)::text AS m` | `group: ... with x => max as max_x \| select: ..., max_x::text as m` |
 | `MIN(x) FILTER (WHERE c)`, `COUNT(*) FILTER (WHERE c)` | `min(x) where c`, `count where c` |
-| `COUNT(x)` | `count where x is not null`: SQL counts the rows where `x` isn't NULL |
+| `COUNT(x) ... GROUP BY a` | `group: a with count where x is not null`: SQL counts the rows where `x` isn't NULL |
+| `SELECT COUNT(x) FROM t` | `t \| where: x is not null \| count:` |
 | `BOOL_OR(c)`, `BOOL_AND(c)` | `any(c)`, `all(c)` |
 | `GROUP BY a HAVING ...` | `group: a with ... \| where: ...`, by the aggregates' names |
 | `LEFT JOIN k ON k.c = t.x`, k distinct values, tested with `k.c IS NOT NULL` | `x in k` (see [Tests on a LEFT JOIN](#tests-on-a-left-join)) |
@@ -349,7 +350,8 @@ order, joined to the rest of its `WHERE` with `AND`. The subquery may not refer 
 anywhere else. A column qualified by none of the subquery's tables is the outer query's, so an
 alias the subquery reuses is its own, as in SQL. What the subquery selects doesn't matter, so
 `SELECT 1` and `SELECT *` both convert. Its `ORDER BY` and `LIMIT` are left out: they don't change
-whether a row exists. `GROUP BY`, `HAVING` and `DISTINCT ON` in it are refused.
+whether a row exists. `GROUP BY`, `HAVING` and `DISTINCT ON` in it are refused, and so is an
+`EXISTS` inside another.
 
 `EXISTS` is true or false, never NULL. Pine's `in` is NULL when `x` is NULL, or when `x` isn't in
 the block and the block holds a NULL. Where a NULL drops the row just as false would, nothing more
@@ -575,6 +577,7 @@ Each is refused with its line.
 | `DELETE` without a connection, or on a table with no primary key | `delete!` names rows by the key. |
 | `IS DISTINCT FROM` another column | Compare with a value. |
 | `COUNT(DISTINCT ...)` | Pine's count counts rows. |
+| `COUNT(x)` next to another column or count without `GROUP BY` | Needs `GROUP BY`. |
 | `COUNT(x) FILTER (WHERE ...)` | It needs `x is not null` and the filter, and a count's filter joins its conditions with `or`. |
 | A column next to `COUNT(*)` without `GROUP BY` | Needs `GROUP BY`. |
 | `ORDER BY` or `LIMIT` on a single `COUNT(*)` | Remove them. |

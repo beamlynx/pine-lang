@@ -958,6 +958,15 @@ COMMIT;
     (converts-to "select u.id, count(*) as roles, count(r.archived_at) as archived from u join r on r.u_id = u.id group by u.id having count(*) = count(r.archived_at)"
                  "u as u | r .u_id = .id | group: u.id with count as roles, count where archived_at is not null as archived | where: roles = archived"))
 
+  (testing "COUNT(column) keeps the qualifier of an earlier table"
+    (converts-to "select u.id, count(u.email) as n from u join r on r.u_id = u.id group by u.id"
+                 "u as u | r .u_id = .id | group: u.id with count where u.email is not null as n"))
+
+  (testing "Without GROUP BY, COUNT(column) on its own is a where: and count:"
+    (converts-to "select count(x) from t where y = 1"
+                 "t | where: y = 1 | where: x is not null | count:")
+    (refuses "select count(*), count(x) from t" "Without GROUP BY, COUNT(column) converts only on its own"))
+
   (testing "COUNT(column) with FILTER needs AND, which a count's filter doesn't have"
     (refuses "select a, count(b) filter (where c = 1) as n from t group by a" "COUNT(column) with FILTER isn't in Pine"))
 
@@ -1083,6 +1092,18 @@ t | where: a = 1 or id is null or id not in k_t_ids"))
                         "k | where: t_id is not null | select: t_id |= k_t_ids
 
 t | where: id is null or id not in k_t_ids | update! a = 1"))
+
+  (testing "NOT EXISTS over a WITH query keeps the guard: the WITH query isn't narrowed"
+    (converts-to-blocks "with k as (select t_id from m) select * from t where not exists (select 1 from k where k.t_id = t.id)"
+                        "m | select: t_id |= k
+
+k | where: t_id is not null | select: t_id |= k_t_ids
+
+t | where: id is null or id not in k_t_ids"))
+
+  (testing "An EXISTS inside another is refused"
+    (refuses "select * from t where exists (select 1 from k where k.t_id = t.id and exists (select 1 from m where m.k_id = k.id))"
+             "An EXISTS inside another EXISTS isn't converted."))
 
   (testing "The subquery must be tied to the outer query by one equality, and only by it"
     (refuses "select * from t where exists (select 1 from k where k.x = 1)" "doesn't refer to the outer query")
