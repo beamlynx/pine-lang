@@ -952,6 +952,24 @@ COMMIT;
     (converts-to "select a, min(b) filter (where c = 'x') as m, bool_or(c = 'y') as some_y, bool_and(d > 1) as all_d from t group by a"
                  "t | group: a with b => min where c = 'x' as m, any(c = 'y') as some_y, all(d > 1) as all_d"))
 
+  (testing "COUNT(column) counts the rows where the column isn't NULL"
+    (converts-to "select a, count(b) as n from t group by a"
+                 "t | group: a with count where b is not null as n")
+    (converts-to "select u.id, count(*) as roles, count(r.archived_at) as archived from u join r on r.u_id = u.id group by u.id having count(*) = count(r.archived_at)"
+                 "u as u | r .u_id = .id | group: u.id with count as roles, count where archived_at is not null as archived | where: roles = archived"))
+
+  (testing "COUNT(column) keeps the qualifier of an earlier table"
+    (converts-to "select u.id, count(u.email) as n from u join r on r.u_id = u.id group by u.id"
+                 "u as u | r .u_id = .id | group: u.id with count where u.email is not null as n"))
+
+  (testing "Without GROUP BY, COUNT(column) on its own is a where: and count:"
+    (converts-to "select count(x) from t where y = 1"
+                 "t | where: y = 1 | where: x is not null | count:")
+    (refuses "select count(*), count(x) from t" "Without GROUP BY, COUNT(column) converts only on its own"))
+
+  (testing "COUNT(column) with FILTER needs AND, which a count's filter doesn't have"
+    (refuses "select a, count(b) filter (where c = 1) as n from t group by a" "COUNT(column) with FILTER isn't in Pine"))
+
   (testing "HAVING is a where: after the group:, on the names"
     (converts-to "select a, count(*) from t group by a having count(*) > 1"
                  "t | group: a with count | where: count > 1")
@@ -1043,3 +1061,61 @@ COMMIT;
                         "employee as e | select: company_id |= k
 
                          company as c | k :left .company_id = .id | select: c.id, company_id is not null as has_staff")))
+
+(deftest test-exists
+  (testing "EXISTS is `in`: the subquery selects the column it is tied by"
+    (converts-to-blocks "select * from t where exists (select 1 from k where k.t_id = t.id and k.x = 1)"
+                        "k | where: x = 1 | select: t_id |= k_t_ids
+
+t | where: id in k_t_ids"))
+
+  (testing "Either side of the equality may be the outer column, and the subquery may join"
+    (converts-to-blocks "select * from t where exists (select * from k join m on m.k_id = k.id where t.id = k.t_id and m.z = 2 limit 1)"
+                        "k as k | m .k_id = .id | where: z = 2 | select: k.t_id |= k_t_ids
+
+t | where: id in k_t_ids"))
+
+  (testing "NOT EXISTS is `not in`, guarded against NULLs without the schema"
+    (converts-to-blocks "select * from t where not exists (select 1 from k where k.t_id = t.id)"
+                        "k | where: t_id is not null | select: t_id |= k_t_ids
+
+t | where: id is null or id not in k_t_ids"))
+
+  (testing "Under OR, NOT EXISTS stays one where: step"
+    (converts-to-blocks "select * from t where a = 1 or not exists (select 1 from k where k.t_id = t.id)"
+                        "k | where: t_id is not null | select: t_id |= k_t_ids
+
+t | where: a = 1 or id is null or id not in k_t_ids"))
+
+  (testing "NOT EXISTS picks the rows an UPDATE changes"
+    (converts-to-blocks "update t set a = 1 where not exists (select 1 from k where k.t_id = t.id)"
+                        "k | where: t_id is not null | select: t_id |= k_t_ids
+
+t | where: id is null or id not in k_t_ids | update! a = 1"))
+
+  (testing "NOT EXISTS over a WITH query keeps the guard: the WITH query isn't narrowed"
+    (converts-to-blocks "with k as (select t_id from m) select * from t where not exists (select 1 from k where k.t_id = t.id)"
+                        "m | select: t_id |= k
+
+k | where: t_id is not null | select: t_id |= k_t_ids
+
+t | where: id is null or id not in k_t_ids"))
+
+  (testing "An EXISTS inside another is refused"
+    (refuses "select * from t where exists (select 1 from k where k.t_id = t.id and exists (select 1 from m where m.k_id = k.id))"
+             "An EXISTS inside another EXISTS isn't converted."))
+
+  (testing "The subquery must be tied to the outer query by one equality, and only by it"
+    (refuses "select * from t where exists (select 1 from k where k.x = 1)" "doesn't refer to the outer query")
+    (refuses "select * from t where exists (select 1 from k where k.t_id = t.id or k.x = 1)" "tied to the outer query by one equality")
+    (refuses "select * from t where exists (select 1 from k where k.t_id = t.id and k.x = t.y)" "tied to the outer query by one equality")
+    (refuses "select * from t where exists (select 1 from k where k.t_id > t.id)" "tied to the outer query by one equality")
+    (refuses "select * from t where exists (select 1 from k join m on m.t_id = t.id where k.t_id = t.id)" "also refers to it elsewhere"))
+
+  (testing "An alias the subquery reuses is the subquery's own"
+    (refuses "select * from t u where exists (select 1 from k u where u.x = 1)" "doesn't refer to the outer query"))
+
+  (testing "Elsewhere than WHERE, EXISTS is refused"
+    (refuses "select (exists (select 1 from k where k.t_id = t.id)) as e from t" "EXISTS converts only in WHERE")
+    (refuses "select * from t join k on k.t_id = t.id and exists (select 1 from m where m.k_id = k.id)" "EXISTS converts only in WHERE")
+    (refuses "select * from t where exists (select k.t_id from k where k.t_id = t.id group by k.t_id)" "GROUP BY")))

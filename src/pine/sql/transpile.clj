@@ -320,6 +320,7 @@
                      :value {:kind :set :name (:set p)}}
               (:guard p) (assoc :guard true))
     :call-truthy (refuse (:at p) (str "Functions like " (get-in p [:call :fn]) "() aren't in Pine here."))
+    :exists (refuse (:at p) "EXISTS converts only in WHERE.")
     :in (let [_ (when (:subquery p) (refuse (:at p) "A subquery here isn't in Pine. One converts after IN in WHERE."))
               vs (mapv value (:values p))]
           (when-not (every? #(#{:string :number} (:kind %)) vs)
@@ -597,7 +598,9 @@
   "An aggregate as Pine, without its name: `id::text => min where type = 'x'`."
   [ctx e]
   (if (= :count (:kind e))
-    (str "count" (when-let [p (:filter e)] (str " where " (conditions-pine (dissoc ctx :agg) p false))))
+    (do (when (and (:column e) (= :and (:op (:filter e))))
+          (refuse (:at e) "COUNT(column) with FILTER isn't in Pine. It needs the column to be NOT NULL and the FILTER to hold, and the conditions of a count's filter are joined with `or`."))
+        (str "count" (when-let [p (:filter e)] (str " where " (conditions-pine (dissoc ctx :agg) p false)))))
     (let [{f :fn args :args filter-p :filter at :at} e]
       (when (not= 1 (count args))
         (refuse at (str (s/upper-case f) "() takes one argument in Pine.")))
@@ -1012,15 +1015,20 @@
       (plan-aggregated tables current items stmt warn!)
 
       (some #(= :count (:kind %)) items)
-      (do (when-let [f (first (filter :filter items))]
+      (do (when-let [f (first (filter #(and (:filter %) (not (:column %))) items))]
             (refuse (:at f) "COUNT(*) FILTER needs GROUP BY. Without one, put the condition in WHERE."))
+          (when-let [c (first (filter #(and (= :count (:kind %)) (:column %)) items))]
+            (when (or (next items) (= :and (:op (:filter c))))
+              (refuse (:at c) "Without GROUP BY, COUNT(column) converts only on its own, with no FILTER.")))
           (when (next items)
             (refuse (:at (first (remove #(= :count (:kind %)) items))) "A column next to COUNT(*) needs GROUP BY."))
           (when (seq order) (refuse (:at (first order)) "ORDER BY on a single COUNT(*) isn't converted. Remove it."))
           (when limit (refuse (:at limit) "LIMIT on a single COUNT(*) isn't converted. Remove it."))
           (when (and (:as (first items)) (not= "count" (:as (first items))))
             (warn! (str "COUNT(*) AS " (:as (first items)) ": Pine names the count column `count`.") :columns))
-          [{:op :count}])
+          ;; COUNT(x) on its own counts the rows where x isn't NULL.
+          (conj (mapv (fn [c] {:op :where :clause c}) (some->> (:filter (first items)) vector (plan-where tables)))
+                {:op :count}))
 
       :else
       (plan-plain tables current items stmt window warn!))))
@@ -1289,10 +1297,50 @@
        {:table n :at (:at tref)}])
     [state tref]))
 
+(defn- exists->in
+  "EXISTS (SELECT ... FROM k WHERE k.c = t.x AND ...) as x IN (SELECT k.c
+  FROM k WHERE ...), marked :exists. The subquery must refer to the outer
+  query through that one equality and nowhere else. A column qualified by
+  none of the subquery's tables is the outer query's."
+  [{sq :subquery at :at}]
+  (when-let [e (first (find-nodes #(= :exists (:op %)) (:where sq)))]
+    (refuse (:at e) "An EXISTS inside another EXISTS isn't converted."))
+  (let [inner (set (map table-key (query-tables sq)))
+        outer? (fn [c] (boolean (and (:qualifier c) (not (inner (:qualifier c))))))
+        refers? (fn [x] (some outer? (expr-columns x)))
+        parts (some-> (:where sq) conjuncts)
+        [pair & more] (filter refers? parts)
+        {:keys [op operator left right]} pair
+        [k-col t-col] (when (and (= :compare op) (= "=" operator)
+                                 (= :column (:kind left)) (= :column (:kind right))
+                                 (not (:cast left)) (not (:cast right)))
+                        (let [[l r] [(:column left) (:column right)]]
+                          (cond (and (outer? r) (not (outer? l))) [l r]
+                                (and (outer? l) (not (outer? r))) [r l])))
+        tied "EXISTS converts when its subquery is tied to the outer query by one equality, such as `r.user_id = u.id`, joined to the rest of its WHERE with AND."
+        sq (-> sq
+               (assoc :where (and-of (remove #{pair} parts))
+                      :select [{:kind :column :column k-col :at (:at k-col)}])
+               (dissoc :order :limit :distinct))]
+    (cond
+      (nil? pair) (refuse at (str tied " This one doesn't refer to the outer query."))
+      (or more (nil? k-col)) (refuse at tied)
+      (some outer? (concat (query-columns sq) (some-> (:where sq) predicate-columns)))
+      (refuse at (str tied " This one also refers to it elsewhere."))
+      (or (seq (:group sq)) (:having sq) (:distinct-on sq))
+      (refuse at "EXISTS with GROUP BY, HAVING or DISTINCT ON in its subquery isn't converted.")
+      (some-> (:limit sq) :value zero?)
+      (refuse at "EXISTS with LIMIT 0 is always false."))
+    {:op :in :negated false :exists true :at at
+     :left {:kind :column :column t-col :at (:at t-col)}
+     :subquery sq}))
+
 (defn- flatten-predicate
-  "A subquery after IN becomes an entry, and the condition `x in <entry>`."
+  "A subquery after IN becomes an entry, and the condition `x in <entry>`.
+  EXISTS is first an IN (exists->in)."
   [state {:keys [op] :as p}]
   (case op
+    :exists (flatten-predicate state (exists->in p))
     (:and :or) (let [[state args] (reduce (fn [[st acc] a] (let [[st a] (flatten-predicate st a)] [st (conj acc a)]))
                                           [state []] (:args p))]
                  [state (assoc p :args args)])
@@ -1314,7 +1362,8 @@
                  (update :taken conj n)
                  (update :entries conj (cond-> {:name n :query sq :in-set-only true :at (:at p)}
                                          simple? (assoc :simple {:src (:table src) :col (:name col)}))))
-             {:op :in-set :negated (:negated p) :left (:left p) :set n :at (:at p)}])
+             (cond-> {:op :in-set :negated (:negated p) :left (:left p) :set n :at (:at p)}
+               (:exists p) (assoc :exists true))])
           [state p])
     [state p]))
 
@@ -1322,6 +1371,8 @@
   "A subquery after IN in a selected value, `(a IN (SELECT ...)) AS k`,
   becomes an entry too, and the value `a in <entry>`."
   [state items]
+  (when-let [e (first (find-nodes #(= :exists (:op %)) items))]
+    (refuse (:at e) "EXISTS converts only in WHERE."))
   (let [st (atom state)
         items (walk/prewalk (fn [n]
                               (if (and (map? n) (= :in (:op n)) (:subquery n))
@@ -1561,6 +1612,44 @@
      []
      (map-indexed vector entries))))
 
+(defn- exists-guards
+  "EXISTS is true or false, never NULL. Its `x in k` is NULL when x is NULL,
+  or when x isn't in k and k holds a NULL. Under no NOT, NULL drops the row
+  as false would, so the in stays as it is. Under a NOT, the rows with no
+  match must stay: the in becomes `x is not null and x in k`, and k leaves
+  out NULL, each unless the schema shows it can't be NULL."
+  [entries]
+  (let [nullable (atom #{})
+        guard (fn guard [all q p negate]
+                (case (:op p)
+                  (:and :or) (assoc p :args (mapv #(guard all q % negate) (:args p)))
+                  :not (assoc p :arg (guard all q (:arg p) (not negate)))
+                  :in-set (if-not (:exists p)
+                            p
+                            (let [p (dissoc p :exists)
+                                  src (entry-named all (:set p))
+                                  c (get-in src [:query :select 0 :column :name])]
+                              (when-not (or (not negate) (output-not-null? all (:query src) c (:at p)))
+                                (swap! nullable conj (:set p)))
+                              (if (or (not negate) (not-null? all q (get-in p [:left :column]) 0))
+                                p
+                                {:op :and :at (:at p)
+                                 :args [{:op :is-null :negated true :left (:left p) :at (:at p)} p]})))
+                  p))
+        entries (mapv (fn [{q :query :as e}]
+                        (if (:where q) (assoc-in e [:query :where] (guard entries q (:where q) false)) e))
+                      entries)]
+    (mapv (fn [{n :name q :query :as e}]
+            (if (@nullable n)
+              (let [{c :column at :at} (first (:select q))]
+                ;; Not :simple any more, so narrow-in-sets keeps the filter.
+                (assoc-in (dissoc e :simple) [:query :where]
+                          (and-of (concat (some-> (:where q) conjuncts)
+                                          [{:op :is-null :negated true :at at
+                                            :left {:kind :column :column c :at at}}]))))
+              e))
+          entries)))
+
 (defn- semi-join
   "{:join <index> :k-col :t-col :set <entry name>} when join `ji` of `q` is
   `LEFT JOIN k ON k.c = t.x`, `k` is a WITH query of distinct values of c
@@ -1793,6 +1882,7 @@
                         ctes)
           [state main-q] (flatten-query state main)
           entries (-> (conj (:entries state) {:name nil :query main-q :at (:at main)})
+                      exists-guards
                       narrow-in-sets
                       semi-joins
                       anti-joins

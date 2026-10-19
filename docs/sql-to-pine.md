@@ -103,6 +103,8 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `FROM (SELECT ...) x` | a block ending in `\|= x`, then `x \| ...` |
 | `x IN (SELECT c FROM t ...)` | a block for the subquery, then `where: x in <block>` |
 | `LEFT JOIN k ON k.c = t.x WHERE k.c IS NULL` | `where: x not in k` |
+| `EXISTS (SELECT 1 FROM k WHERE k.c = t.x AND ...)` | a block for `k`, then `where: x in <block>` (see [EXISTS](#exists)) |
+| `NOT EXISTS (...)`, the same | `where: x not in <block>`, guarded against NULLs |
 | `ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn`, kept with `rn = 1` or `rn <= N` | `order: o \| limit: N per p` |
 | `SELECT DISTINCT ON (p) ... ORDER BY p, o` | `order: p, o \| limit: 1 per p` |
 | `COALESCE(a, b)`, `a \|\| b`, `NOW()` | `coalesce(a, b)`, `concat(a, b)`, `now()` (see [Computed values](#computed-values)) |
@@ -116,6 +118,8 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `MIN(x)` without `AS` | `min(x) as min`, the name Postgres gives it |
 | `MAX(x)::text AS m` | `group: ... with x => max as max_x \| select: ..., max_x::text as m` |
 | `MIN(x) FILTER (WHERE c)`, `COUNT(*) FILTER (WHERE c)` | `min(x) where c`, `count where c` |
+| `COUNT(x) ... GROUP BY a` | `group: a with count where x is not null`: SQL counts the rows where `x` isn't NULL |
+| `SELECT COUNT(x) FROM t` | `t \| where: x is not null \| count:` |
 | `BOOL_OR(c)`, `BOOL_AND(c)` | `any(c)`, `all(c)` |
 | `GROUP BY a HAVING ...` | `group: a with ... \| where: ...`, by the aggregates' names |
 | `LEFT JOIN k ON k.c = t.x`, k distinct values, tested with `k.c IS NOT NULL` | `x in k` (see [Tests on a LEFT JOIN](#tests-on-a-left-join)) |
@@ -323,6 +327,40 @@ NULL.
 A `NOT IN (SELECT ...)` written in the SQL converts as it is: it has the same NULL rules as Pine's
 `not in`.
 
+### EXISTS
+
+`EXISTS` asks whether a row has a related row. Pine asks that with `in`:
+
+```sql
+SELECT * FROM "user" u
+WHERE EXISTS (SELECT 1 FROM user_tenant_role r WHERE r."userId" = u.id AND r.type = 'counterparty')
+```
+
+```
+user_tenant_role as r
+ | where: type = 'counterparty'
+ | select: userId |= user_tenant_role_userIds
+
+user as u
+ | where: id in user_tenant_role_userIds
+```
+
+It converts when the subquery is tied to the outer query by one equality, `k.c = t.x` in either
+order, joined to the rest of its `WHERE` with `AND`. The subquery may not refer to the outer query
+anywhere else. A column qualified by none of the subquery's tables is the outer query's, so an
+alias the subquery reuses is its own, as in SQL. What the subquery selects doesn't matter, so
+`SELECT 1` and `SELECT *` both convert. Its `ORDER BY` and `LIMIT` are left out: they don't change
+whether a row exists. `GROUP BY`, `HAVING` and `DISTINCT ON` in it are refused, and so is an
+`EXISTS` inside another.
+
+`EXISTS` is true or false, never NULL. Pine's `in` is NULL when `x` is NULL, or when `x` isn't in
+the block and the block holds a NULL. Where a NULL drops the row just as false would, nothing more
+is needed. Under a `NOT`, it isn't: `NOT EXISTS` keeps a row whose `x` is NULL. So under a `NOT`,
+unless the schema says the columns are `NOT NULL`, the condition is `x is null or x not in k`, and
+`k` leaves out its NULLs with `where: c is not null`, as for [rows with no match](#rows-with-no-match).
+
+`EXISTS` converts only in `WHERE`, of a `SELECT`, `UPDATE` or `DELETE`.
+
 ### Top N per group
 
 A `ROW_NUMBER()` numbers the rows of each group. A later query that keeps the first ones is Pine's
@@ -521,7 +559,8 @@ Each is refused with its line.
 | `HAVING` without `GROUP BY` | Not converted. |
 | `WITH RECURSIVE`, `MATERIALIZED`, `RETURNING` | Not in Pine. |
 | A subquery other than in `FROM`, `JOIN` or after `IN` | Not in Pine. |
-| A function other than `COALESCE`, `NOW()` and the aggregates above; `EXISTS`; arithmetic | Not in Pine. |
+| A function other than `COALESCE`, `NOW()` and the aggregates above; arithmetic | Not in Pine. |
+| `EXISTS` outside `WHERE`, or not tied to the outer query by one equality | See [EXISTS](#exists). |
 | `CONCAT()` on Postgres; `\|\|` on MySQL | Postgres's `CONCAT()` skips NULLs: write `a \|\| b`. MySQL reads `\|\|` as OR. |
 | `AND`, `BETWEEN` or `IS [NOT] DISTINCT FROM` inside a value | Pine joins a value's conditions with `or`. |
 | A computed value without `AS`, other than an aggregate | Pine names every computed value. |
@@ -537,7 +576,9 @@ Each is refused with its line.
 | `UPDATE` or `DELETE` with no condition of its own | Pine refuses to change every row. |
 | `DELETE` without a connection, or on a table with no primary key | `delete!` names rows by the key. |
 | `IS DISTINCT FROM` another column | Compare with a value. |
-| `COUNT(column)`, `COUNT(DISTINCT ...)` | Pine's count counts rows. |
+| `COUNT(DISTINCT ...)` | Pine's count counts rows. |
+| `COUNT(x)` next to another column or count without `GROUP BY` | Needs `GROUP BY`. |
+| `COUNT(x) FILTER (WHERE ...)` | It needs `x is not null` and the filter, and a count's filter joins its conditions with `or`. |
 | A column next to `COUNT(*)` without `GROUP BY` | Needs `GROUP BY`. |
 | `ORDER BY` or `LIMIT` on a single `COUNT(*)` | Remove them. |
 | A selected column that isn't grouped | Not in SQL either. |
@@ -597,14 +638,17 @@ itself last, with no name. An `UPDATE` or `DELETE` becomes the query that picks 
 `:action` (`write->query`). Then, in order:
 
 1. `flatten-query` makes each subquery in `FROM`, `JOIN` or after `IN` an entry. After `IN`, the
-   condition becomes `{:op :in-set}`, Pine's `in` with a named result.
-2. `narrow-in-sets` uses a `WITH` query itself after `IN`, when that is all it's used for.
-3. `semi-joins` turns a `LEFT JOIN` to distinct values, tested only with `IS [NOT] NULL`, into `in`,
+   condition becomes `{:op :in-set}`, Pine's `in` with a named result. `EXISTS` first becomes an
+   `IN` (`exists->in`), and its `:in-set` is marked `:exists`.
+2. `exists-guards` adds NULL guards to each `:exists` set under a `NOT`, unless `not-null?` finds
+   the columns `NOT NULL`.
+3. `narrow-in-sets` uses a `WITH` query itself after `IN`, when that is all it's used for.
+4. `semi-joins` turns a `LEFT JOIN` to distinct values, tested only with `IS [NOT] NULL`, into `in`,
    marking each test `:guard` when `not-null?` can't show both columns are `NOT NULL`.
-4. `anti-joins` turns `LEFT JOIN k ... WHERE k.c IS NULL` into `not in`, with NULL guards unless
+5. `anti-joins` turns `LEFT JOIN k ... WHERE k.c IS NULL` into `not in`, with NULL guards unless
    `not-null?` finds both columns `NOT NULL` in the schema.
-5. `drop-unused-windows` leaves out a `ROW_NUMBER()` no later query uses.
-6. `plan-windows` finds what every user of a `ROW_NUMBER()` keeps (`rn-limit`), removes that test
+6. `drop-unused-windows` leaves out a `ROW_NUMBER()` no later query uses.
+7. `plan-windows` finds what every user of a `ROW_NUMBER()` keeps (`rn-limit`), removes that test
    from them, and records N on the numbered entry.
 
 Each entry is then one block (`transpile-query`), with the earlier entries' names and columns in

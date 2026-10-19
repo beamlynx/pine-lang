@@ -31,7 +31,8 @@ select-list   := select-item (<ws?> <","> <ws?> select-item)*
 select-item   := star | alias-star | count-star as-alias? | row-number as-alias? | column as-alias? | computed as-alias?
 star          := <"*">
 alias-star    := identifier <ws?> <"."> <ws?> <"*">
-count-star    := <COUNT> <ws?> <"("> <ws?> (<"*"> | <"1">) <ws?> <")"> filter?
+(* COUNT(column) counts the rows where the column isn't NULL. *)
+count-star    := <COUNT> <ws?> <"("> <ws?> (<"*"> | <"1"> | column) <ws?> <")"> filter?
 (* ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...): Pine's limit: N per,
    when a later query keeps rows with rn = 1 or rn <= N. *)
 row-number    := <ROW_NUMBER> <ws?> <"("> <ws?> <")"> <ws?> <OVER> <ws?> <"("> <ws?> partition? window-order? <")">
@@ -72,7 +73,7 @@ and           := not-expr (<ws?> <AND> <ws?> not-expr)+
 not           := <NOT> <ws?> not-expr
 <paren>       := <"("> <ws?> or-expr <ws?> <")">
 
-<comparison>  := compare | like | is-null | is-distinct | in | in-select | between | truthy | call-truthy
+<comparison>  := compare | like | is-null | is-distinct | in | in-select | between | exists | truthy | call-truthy
 (* A function or a count is compared too: in HAVING (`COUNT(1) > 1`), and
    so a function in WHERE is refused by name rather than at a parse error. *)
 compare       := cmp-operand <ws?> cmp-op <ws?> cmp-operand
@@ -86,6 +87,10 @@ is-null       := cmp-operand <ws> <IS> <ws> negated? <NULL>
 is-distinct   := operand <ws> <IS> <ws> negated? <DISTINCT> <ws> <FROM> <ws> operand
 in            := operand <ws> negated? <IN> <ws?> <"("> <ws?> operand (<ws?> <","> <ws?> operand)* <ws?> <")">
 in-select     := operand <ws> negated? <IN> <ws?> <"("> <ws?> select <ws?> <")">
+(* NOT EXISTS is `not` around this. *)
+exists        := <EXISTS> <ws?> <"("> <ws?> (select | exists-select) <ws?> <")">
+(* What an EXISTS selects doesn't matter, so `SELECT 1` reads there too. *)
+exists-select := <SELECT> <ws> (number | string | null | boolean) <ws> from join* where? group? having? order? limit?
 between       := operand <ws> negated? <BETWEEN> <ws> operand <ws> <AND> <ws> operand
 (* `WHERE active`: a column on its own is a boolean test. *)
 truthy        := column
@@ -137,7 +142,7 @@ case-subject  := value <ws>
 simple-when   := <WHEN> <ws> value <ws> <THEN> <ws> value <ws>
 (* A condition that isn't a column or a function on its own, so an argument
    like COALESCE(x, ...) reads as a value, not as `WHERE x`. *)
-strict-predicate := or | and | not | compare | like | is-null | is-distinct | in | in-select | between
+strict-predicate := or | and | not | compare | like | is-null | is-distinct | in | in-select | exists | between
 (* CURRENT_TIMESTAMP and LOCALTIMESTAMP are the time now, as NOW() is. *)
 now           := <NOW> <ws?> <"("> <ws?> <")"> | <CURRENT_TIMESTAMP> | <LOCALTIMESTAMP>
 
@@ -184,6 +189,7 @@ DESC    := #"(?i)desc\b"
 TRUE    := #"(?i)true\b"
 FALSE   := #"(?i)false\b"
 COUNT   := #"(?i)count\b"
+EXISTS  := #"(?i)exists\b"
 CAST    := #"(?i)cast\b"
 DISTINCT := #"(?i)distinct\b"
 ROW_NUMBER := #"(?i)row_number\b"

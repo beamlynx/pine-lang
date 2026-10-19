@@ -112,6 +112,7 @@
           {:op :in :negated (negated? node) :left l :values (vec vs) :at (at node)})
     :in-select {:op :in :negated (negated? node) :left (first (operands node))
                 :subquery (select-query (child node :select)) :at (at node)}
+    :exists {:op :exists :subquery (select-query (or (child node :select) (child node :exists-select))) :at (at node)}
     :is-distinct (let [[l r] (operands node)]
                    {:op :is-distinct :negated (negated? node) :left l :right r :at (at node)})
     :between (let [[l lo hi] (operands node)]
@@ -119,19 +120,26 @@
     :truthy {:op :truthy :column (column (first args)) :at (at node)}))
 
 (def ^:private predicate-tags
-  #{:or :and :not :compare :like :is-null :is-distinct :in :in-select :between :truthy :call-truthy :strict-predicate :predicate})
+  #{:or :and :not :compare :like :is-null :is-distinct :in :in-select :exists :between :truthy :call-truthy :strict-predicate :predicate})
 
 (defn- expr
   "A value: an operand, or a computed value as
   {:kind :call :fn :args :filter :cast}, {:kind :concat :args},
   {:kind :case :whens [[predicate value] ...] :else}, or {:kind :pred
-  :pred} for a condition used as a value. COUNT(*) is {:kind :count}."
+  :pred} for a condition used as a value. COUNT(*) is {:kind :count}.
+  COUNT(x) is a count with the filter `x IS NOT NULL`, and :column x."
   [[tag & args :as node]]
   (case tag
     :operand (operand node)
     :cast-operand (operand node)
-    :count-star (cond-> {:kind :count :at (at node)}
-                  (child node :filter) (assoc :filter (predicate (second (child node :filter)))))
+    :count-star (let [c (child node :column)
+                      not-null (when c {:op :is-null :negated true :left (assoc (literal c) :at (at c)) :at (at c)})
+                      f (some-> (child node :filter) second predicate)]
+                  (cond-> {:kind :count :at (at node)}
+                    c (assoc :column (column c))
+                    (or not-null f) (assoc :filter (if (and not-null f)
+                                                     {:op :and :args [not-null f] :at (at node)}
+                                                     (or not-null f)))))
     :computed (let [inner (first args)]
                 (if (predicate-tags (first inner))
                   {:kind :pred :pred (predicate inner) :at (at node)}
@@ -236,7 +244,9 @@
               :group (assoc acc :group (mapv column args))
               :having (assoc acc :having (predicate (first args)))
               :order (assoc acc :order (mapv order-item args))
-              :limit (assoc acc :limit {:value (Long/parseLong (first args)) :at (at node)})))
+              :limit (assoc acc :limit {:value (Long/parseLong (first args)) :at (at node)})
+              ;; `SELECT 1` in EXISTS: nothing to keep.
+              (:number :string :null :boolean) acc))
           {:kind :select :joins [] :at (at node)}
           clauses))
 
@@ -286,7 +296,7 @@
    "recursive" "WITH RECURSIVE isn't in Pine."
    "materialized" "MATERIALIZED isn't in Pine. Remove it: Pine decides how a named result runs."
    "returning" "RETURNING isn't in Pine. update! and delete! report how many rows they changed."
-   "exists" "EXISTS isn't in Pine."
+   "exists" "EXISTS converts only in WHERE."
    "over" "A window function isn't in Pine."
    "window" "A window function isn't in Pine."
    "nulls" "NULLS FIRST and NULLS LAST aren't in Pine."
@@ -375,8 +385,11 @@
       (odd? (count (re-seq #"'" (s/replace text "''" ""))))
       ["A string is missing its closing quote." "sql-parse-error"]
 
-      (re-find #"(?i)\bcount\s*\(\s*$" before)
-      ["Only COUNT(*) converts. COUNT(column) skips nulls and COUNT(DISTINCT ...) counts values, and Pine's count does neither." "sql-unsupported"]
+      (and (re-find #"(?i)\bcount\s*\(\s*$" before) (= word "distinct"))
+      ["COUNT(DISTINCT ...) isn't in Pine. Pine counts rows, not distinct values." "sql-unsupported"]
+
+      (re-find #"(?i)\bcount\s*\([^()]*$" before)
+      ["Only COUNT(*) and COUNT(column) convert." "sql-unsupported"]
 
       (or (re-find #";\s*$" before) (re-find #"^\s*;\s*\S" after))
       ["Only one statement converts at a time." "sql-unsupported"]
