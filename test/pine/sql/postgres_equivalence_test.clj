@@ -191,18 +191,19 @@ WHERE d.id = g.id AND kf.id IS NULL AND g.archived_at IS NULL")
 
 (defn- with-database
   "Run f with a fresh database, filled with the fixture, and drop it after."
-  [f]
-  (let [uri (URI. server)
-        admin (spec uri (subs (.getPath uri) 1))
-        dbname (str "pine_equivalence_" (System/currentTimeMillis))]
-    (jdbc/execute! admin [(str "CREATE DATABASE " dbname)] {:transaction? false})
-    (try
-      (let [db (spec uri dbname)]
-        (doseq [statement (fixture-sql)]
-          (jdbc/execute! db [statement]))
-        (f db dbname))
-      (finally
-        (jdbc/execute! admin [(str "DROP DATABASE IF EXISTS " dbname " WITH (FORCE)")] {:transaction? false})))))
+  ([f] (with-database (fixture-sql) f))
+  ([statements f]
+   (let [uri (URI. server)
+         admin (spec uri (subs (.getPath uri) 1))
+         dbname (str "pine_equivalence_" (System/currentTimeMillis))]
+     (jdbc/execute! admin [(str "CREATE DATABASE " dbname)] {:transaction? false})
+     (try
+       (let [db (spec uri dbname)]
+         (doseq [statement statements]
+           (jdbc/execute! db [statement]))
+         (f db dbname))
+       (finally
+         (jdbc/execute! admin [(str "DROP DATABASE IF EXISTS " dbname " WITH (FORCE)")] {:transaction? false}))))))
 
 (defn- sql-deleted
   "The ids the SQL's UPDATE changes, in a transaction that is rolled back."
@@ -251,6 +252,59 @@ WHERE d.id = g.id AND kf.id IS NULL AND g.archived_at IS NULL")
                 (let [result (api/api-eval (s/split expression #"\n\s*\n") id)]
                   (is (nil? (:error result)) (str (:error result)))
                   (is (= from-sql (set (map (comp str :id) (jdbc/query db ["SELECT id FROM company_document WHERE deleted_at IS NOT NULL AND id <> ?::uuid" (doc-id "07")]))))))))
+            (finally
+              (connections/remove-connection-pool id)
+              (db/clear-connection-if id))))))))
+
+;; EXISTS and NOT EXISTS become `in` and `not in`, which differ from them on
+;; NULLs. Users: 1 has a counterparty role, all archived. 2 has one that is
+;; still active. 3 has no roles. 4 has an archived counterparty role and a
+;; role with a NULL user next to it. 5 has no roles and a NULL key. 6 is
+;; archived. `key` is a nullable copy of the id, so the outer column can be
+;; NULL too; "userId" can be NULL on the inner side.
+(def ^:private exists-fixture
+  ["CREATE TABLE \"user\" (id int PRIMARY KEY, key int, user_type text NOT NULL, archived_at timestamptz)"
+   "CREATE TABLE user_tenant_role (id int PRIMARY KEY, \"userId\" int, type text NOT NULL, deleted_at timestamptz, archived_at timestamptz)"
+   "INSERT INTO \"user\" VALUES (1, 1, 'managed', NULL), (2, 2, 'managed', NULL), (3, 3, 'managed', NULL),
+      (4, 4, 'managed', NULL), (5, NULL, 'managed', NULL), (6, 6, 'managed', now())"
+   "INSERT INTO user_tenant_role VALUES
+      (1, 1, 'counterparty', NULL, now()), (2, 1, 'counterparty_officer', now(), NULL),
+      (3, 2, 'counterparty', NULL, NULL),
+      (4, 4, 'counterparty', NULL, now()), (5, NULL, 'other', NULL, NULL),
+      (6, 6, 'counterparty', NULL, now())"])
+
+(def ^:private exists-queries
+  "SELECTs of user ids. The first is the one reported: users whose roles
+  are all archived or deleted. The key column may be NULL on both sides."
+  ["SELECT u.id FROM \"user\" u WHERE u.user_type = 'managed' AND u.archived_at IS NULL
+      AND EXISTS (SELECT 1 FROM user_tenant_role utr WHERE utr.\"userId\" = u.id AND utr.type IN ('counterparty', 'counterparty_officer'))
+      AND NOT EXISTS (SELECT 1 FROM user_tenant_role utr WHERE utr.\"userId\" = u.id AND utr.deleted_at IS NULL AND utr.archived_at IS NULL)"
+   "SELECT u.id FROM \"user\" u WHERE NOT EXISTS (SELECT 1 FROM user_tenant_role r WHERE r.\"userId\" = u.key)"
+   "SELECT u.id FROM \"user\" u WHERE u.archived_at IS NOT NULL OR NOT EXISTS (SELECT 1 FROM user_tenant_role r WHERE u.key = r.\"userId\" AND r.archived_at IS NULL)"
+   "SELECT u.id FROM \"user\" u WHERE NOT (u.id = 3 OR EXISTS (SELECT * FROM user_tenant_role r WHERE r.\"userId\" = u.key))"])
+
+(deftest test-exists-on-postgres
+  (if-not server
+    (println "Skipping the Postgres EXISTS check: set PINE_TEST_POSTGRES_URL to run it.")
+    (with-database exists-fixture
+      (fn [db dbname]
+        (let [{:keys [host port user password]} db
+              id (connections/add-connection-pool {:dbtype "postgres" :host host :port port :dbname dbname
+                                                   :user user :password password})
+              pine-ids (fn [expression]
+                         (let [result (api/api-eval (s/split expression #"\n\s*\n") id)]
+                           (is (nil? (:error result)) (str (:error result)))
+                           (set (map first (rest (:result result))))))]
+          (try
+            (testing "The reported query keeps the users whose roles are all archived or deleted"
+              (is (= #{1 4} (set (map :id (jdbc/query db [(first exists-queries)]))))))
+            (doseq [sql exists-queries
+                    references [(db/init-references id) nil]]
+              (testing (str (if references "With" "Without") " the schema: " sql)
+                (let [{:keys [expression error]} (t/sql->pine sql references)]
+                  (is (nil? error) error)
+                  (when expression
+                    (is (= (set (map :id (jdbc/query db [sql]))) (pine-ids expression)) expression)))))
             (finally
               (connections/remove-connection-pool id)
               (db/clear-connection-if id))))))))
