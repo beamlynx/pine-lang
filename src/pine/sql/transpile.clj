@@ -1381,8 +1381,44 @@
                             items)]
     [@st items]))
 
+(defn- positions
+  "GROUP BY 1 and ORDER BY 1 as what they number in the SELECT. GROUP BY
+  takes the selected column, and ORDER BY sorts by the item's name, or by
+  the item itself when it has none."
+  [{:keys [select] :as q}]
+  (let [item (fn [n at clause]
+               (let [i (dec n)]
+                 (when-not (< -1 i (count select))
+                   (refuse at (str clause " " n ": the SELECT has only " (count select) (if (= 1 (count select)) " column." " columns."))))
+                 (when (some #(#{:star :alias-star} (:kind %)) (take (inc i) select))
+                   (refuse at (str clause " " n " counts past a `*`, whose columns aren't known here. Name the column.")))
+                 (nth select i)))
+        group-col (fn [{:keys [position at] :as g}]
+                    (if-not position
+                      g
+                      (let [{:keys [kind column]} (item position at "GROUP BY")]
+                        (if (= :column kind)
+                          (assoc column :at at)
+                          (refuse at (str "GROUP BY " position " numbers a value, not a column. Only a column is grouped in Pine."))))))
+        order-target (fn [{:keys [target at] :as o}]
+                       (if-not (= :position (:kind target))
+                         o
+                         (let [n (Long/parseLong (:value target))
+                               {:keys [kind as column expr] :as it} (item n at "ORDER BY")]
+                           (assoc o :target
+                                  (cond
+                                    as {:kind :column :column {:name as :at at}}
+                                    (= :column kind) {:kind :column :column column}
+                                    (= :count kind) (dissoc it :as)
+                                    (= :expr kind) {:kind :expr :expr expr}
+                                    :else (refuse at (str "ORDER BY " n " numbers a ROW_NUMBER() without a name, which isn't converted.")))))))]
+    (cond-> q
+      (seq (:group q)) (update :group #(mapv group-col %))
+      (seq (:order q)) (update :order #(mapv order-target %)))))
+
 (defn- flatten-query [state q]
-  (let [[state from] (flatten-table state (:from q))
+  (let [q (positions q)
+        [state from] (flatten-table state (:from q))
         [state joins] (reduce (fn [[st acc] j] (let [[st t] (flatten-table st (:table j))] [st (conj acc (assoc j :table t))]))
                               [state []] (:joins q))
         [state where] (if (:where q) (flatten-predicate state (:where q)) [state nil])

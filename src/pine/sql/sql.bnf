@@ -104,7 +104,8 @@ cast-fn       := <CAST> <ws?> <"("> <ws?> value <ws> <AS> <ws> type-name <ws?> <
 special-value := CURRENT_DATE | CURRENT_TIME | LOCALTIME | CURRENT_USER | SESSION_USER
 type-name     := #"(?i)[A-Za-z_][A-Za-z0-9_]*(?:\s+(?:with|without)\s+time\s+zone)?"
 
-group         := <ws> <GROUP> <ws> <BY> <ws> column (<ws?> <","> <ws?> column)*
+(* A position, GROUP BY 1, is the selected column it numbers. *)
+group         := <ws> <GROUP> <ws> <BY> <ws> (column | position) (<ws?> <","> <ws?> (column | position))*
 having        := <ws> <HAVING> <ws?> predicate
 order         := <ws> <ORDER> <ws> <BY> <ws> order-item (<ws?> <","> <ws?> order-item)*
 order-item    := (column | count-star | position | computed) (<ws> direction)?

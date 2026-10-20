@@ -121,6 +121,7 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `COUNT(x) ... GROUP BY a` | `group: a with count where x is not null`: SQL counts the rows where `x` isn't NULL |
 | `SELECT COUNT(x) FROM t` | `t \| where: x is not null \| count:` |
 | `BOOL_OR(c)`, `BOOL_AND(c)` | `any(c)`, `all(c)` |
+| `GROUP BY 1, 2`, `ORDER BY 2 DESC` | the selected columns they number; `ORDER BY` uses the item's name when it has one |
 | `GROUP BY a HAVING ...` | `group: a with ... \| where: ...`, by the aggregates' names |
 | `LEFT JOIN k ON k.c = t.x`, k distinct values, tested with `k.c IS NOT NULL` | `x in k` (see [Tests on a LEFT JOIN](#tests-on-a-left-join)) |
 | `ar."resourceableId" = g.id::text` in `ON` | `.resourceableId = .id ::text` |
@@ -582,7 +583,8 @@ Each is refused with its line.
 | A column next to `COUNT(*)` without `GROUP BY` | Needs `GROUP BY`. |
 | `ORDER BY` or `LIMIT` on a single `COUNT(*)` | Remove them. |
 | A selected column that isn't grouped | Not in SQL either. |
-| `ORDER BY 1`, `NULLS FIRST` | Name the column; no null ordering. |
+| `ORDER BY 1` or `GROUP BY 1` after a `*`, `GROUP BY` a position that numbers a value | Name the column. |
+| `NULLS FIRST` | No null ordering. |
 | `FULL`, `CROSS` or `NATURAL` join, a comma between tables | Pine joins inner, left or right, on named columns. |
 | A join tied to two earlier tables | Pine joins a table to one other. |
 | `USING` after more than one table | It can't say which table it joins to. Write it with `ON`. |
