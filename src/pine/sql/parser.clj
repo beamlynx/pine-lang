@@ -241,7 +241,10 @@
               :from (assoc acc :from (table-ref (first args)))
               :join (update acc :joins conj (join node))
               :where (assoc acc :where (predicate (first args)))
-              :group (assoc acc :group (mapv column args))
+              :group (assoc acc :group (mapv #(if (= :position (first %))
+                                                {:position (Long/parseLong (second %)) :at (at %)}
+                                                (column %))
+                                             args))
               :having (assoc acc :having (predicate (first args)))
               :order (assoc acc :order (mapv order-item args))
               :limit (assoc acc :limit {:value (Long/parseLong (first args)) :at (at node)})

@@ -232,7 +232,7 @@
   (refuses "select * from a join b using (x) join c using (y)" "USING after more than one table")
   (refuses "select * from a join a on a.x = a.y" "Two tables are called `a`")
   (refuses "select * from \"my table\"" "can't be written as a name")
-  (refuses "select * from t order by 1" "position")
+  (refuses "select * from t order by 1" "ORDER BY 1 counts past a `*`")
   (refuses "select * from t order by count(*)" "needs GROUP BY")
   (refuses "select a, count(*) from t" "needs GROUP BY")
   (refuses "select count(*) from t limit 1" "LIMIT on a single COUNT(*)")
@@ -1119,3 +1119,20 @@ t | where: id is null or id not in k_t_ids"))
     (refuses "select (exists (select 1 from k where k.t_id = t.id)) as e from t" "EXISTS converts only in WHERE")
     (refuses "select * from t join k on k.t_id = t.id and exists (select 1 from m where m.k_id = k.id)" "EXISTS converts only in WHERE")
     (refuses "select * from t where exists (select k.t_id from k where k.t_id = t.id group by k.t_id)" "GROUP BY")))
+
+(deftest test-positions
+  (testing "ORDER BY a position sorts by that selected column, under its name"
+    (converts-to "select a, b from t order by 2, 1 desc" "t | select: a, b | order: b asc, a desc")
+    (converts-to "select a, coalesce(b, 'x') as k from t order by 2" "t | select: a, coalesce(b, 'x') as k | order: k asc"))
+
+  (testing "GROUP BY a position groups by that selected column"
+    (converts-to "select a, count(*) from t group by 1 order by 2 desc" "t | group: a with count | order: count desc")
+    (converts-to-blocks "with s as (select a, b, count(*) as n from t group by 1, 2) select a, count(*) as subjects, max(n) as max_n from s group by 1 order by 3 desc limit 20"
+                        "t | group: a, b with count as n |= s
+
+s | group: a with count as subjects, n => max as max_n | order: max_n desc | limit: 20"))
+
+  (testing "A position that numbers no column, a value, or past a `*` is refused"
+    (refuses "select a from t order by 3" "ORDER BY 3: the SELECT has only 1 column.")
+    (refuses "select coalesce(a, b) as k, count(*) from t group by 1" "GROUP BY 1 numbers a value, not a column.")
+    (refuses "select *, a from t group by 2" "GROUP BY 2 counts past a `*`")))
