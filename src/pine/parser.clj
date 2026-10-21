@@ -253,8 +253,11 @@
     (:path column-info) (assoc :path (:path column-info))))
 
 (defn- make-condition [column-pattern operator rhs & [cast-type]]
-  (let [column-info (extract-column-info column-pattern)
-        column-dt (make-column column-info cast-type)
+  (let [column-dt (if (= :column (first column-pattern))
+                    (make-column (extract-column-info column-pattern) cast-type)
+                    ;; A function on the left, `jsonb_typeof(data) = 'array'`.
+                    ;; Its :value has the shape a column's has, for the cast.
+                    {:type :computed :node (normalize-value column-pattern) :value [nil nil cast-type]})
         value-dt (cond
                    (and (vector? rhs) (= (first rhs) :call))
                    {:type :computed :node (normalize-value rhs)}

@@ -3,6 +3,7 @@
             [clojure.string :as s]
             [pine.ast.path :as path]
             [pine.ast.table :as table]
+            [pine.computed :as computed]
             [pine.data-types :as dt]))
 
 (defn- convert-by-type
@@ -94,9 +95,16 @@
   the column is a path into a JSON value, and :computed when it is the name
   of a computed column."
   [state current resolve-alias [column operator value :as triple]]
-  (if-let [ref (path/computed-ref state (let [[a c] (:value column)] {:alias a :column c :path (:path column)}))]
-    (resolve-computed-condition state ref (get-in column [:value 2]) operator value)
-    (resolve-condition* state current resolve-alias triple)))
+  (if (= :computed (:type column))
+    ;; A function on the left, `jsonb_typeof(data) = 'array'`. It is told
+    ;; to the client by the current table and the value as Pine, as a
+    ;; computed name is by its name.
+    (let [node (resolve-computed-value state (:node column))]
+      (resolve-computed-condition state {:alias current :column (computed/call-text node) :computed node}
+                                  (get-in column [:value 2]) operator value))
+    (if-let [ref (path/computed-ref state (let [[a c] (:value column)] {:alias a :column c :path (:path column)}))]
+      (resolve-computed-condition state ref (get-in column [:value 2]) operator value)
+      (resolve-condition* state current resolve-alias triple))))
 
 (defn- resolve-condition*
   [state current resolve-alias [column operator value]]

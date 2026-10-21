@@ -38,6 +38,24 @@ A cast is `::text` or `::uuid`, as in `where:`. A cast after a call applies to i
 A condition is anything `where:` accepts, including a [named result](named-results.md) after `in` and a
 `$variable`. Several conditions joined with `or` are one value.
 
+### A function on the left of a condition
+
+A condition can start with a function of a column, not only the column:
+
+```
+customer | where: jsonb_typeof(data) = 'array'
+customer | where: data => jsonb_typeof = 'array'
+customer | s: if jsonb_typeof(data) = 'array' then data else data.items as list
+```
+
+- The arrow binds tighter than the comparison: `data => jsonb_typeof = 'array'` is `jsonb_typeof(data) = 'array'`.
+- A literal it is compared with is sent as written. There is no column to type it by.
+- A cast at the end applies to the function's value: `jsonb_typeof(data) = 'x' ::text`.
+- When Pine writes Pine, the left side is written as a call, so the text never depends on how tightly the
+  arrow binds.
+- `/build` reports the condition in `ast.where` with the current table's alias, the call as Pine in `column`,
+  and `computed`, `text` and `uses`, as for a computed name.
+
 ### The arrow
 
 `x => f` is `f(x)`, and `x => f(a, b)` is `f(x, a, b)`: the value on the left is the function's first
@@ -287,8 +305,8 @@ next to the name in `column`. A computed value on the right of a condition, like
 ## Constraints
 
 - A computed value in `select:` needs `as`.
-- The functions are `coalesce`, `concat` and `now`; the aggregates `count`, `min`, `max`, `sum`, `avg`, `any`
-  and `all`. Any other name is an error that lists them.
+- The functions are those in [Functions](#functions); the aggregates `count`, `min`, `max`, `sum`, `avg`,
+  `any` and `all`. Any other name is an error that lists them.
 - An aggregate only goes after `with` in `group:`, and not inside a function there.
 - `where:` takes a function only on the right of a comparison: `created_at > now()`.
 - `update!` can't write a function into a key of a JSON column.
