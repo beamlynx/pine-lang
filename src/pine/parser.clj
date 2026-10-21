@@ -189,14 +189,17 @@
 ;; ORDER
 ;; ------
 
-(defn- -normalize-order-col [column]
-  (let [normalize-direction (fn [d] (if d (s/upper-case d) "DESC"))]
-    (match column
-      [:order-column col]   (assoc (column-info col) :direction "DESC")
-      [:order-column col d] (assoc (column-info col) :direction (normalize-direction d))
-
-      :else
-      (throw (ex-info "Unknown ORDER operation" {:_ column})))))
+(defn- -normalize-order-col
+  "`a`, `a asc`, `a nulls first` or `a desc nulls last`. Without a
+  direction, DESC."
+  [column]
+  (if (= :order-column (first column))
+    (let [[_ col & more] column
+          direction (first (filter string? more))
+          nulls (some #(when (and (vector? %) (= :nulls-order (first %))) (second %)) more)]
+      (cond-> (assoc (column-info col) :direction (if direction (s/upper-case direction) "DESC"))
+        nulls (assoc :nulls (s/upper-case nulls))))
+    (throw (ex-info "Unknown ORDER operation" {:_ column}))))
 
 (defn -normalize-order [payload type]
   (match payload

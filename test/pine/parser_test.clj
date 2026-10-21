@@ -212,6 +212,11 @@
     (is (= [{:type :where-partial :value {:complete-conditions [] :partial-condition {:alias "e" :column ""}}}]
            (-> "company | w: e." p rest))))
 
+  (testing "Parse `order` with nulls first or last"
+    (is (= [{:type :order :value [{:column "a" :direction "ASC" :nulls "FIRST"}]}] (p "o: a asc nulls first")))
+    (is (= [{:type :order :value [{:column "a" :direction "DESC" :nulls "LAST"} {:column "b" :direction "DESC"}]}]
+           (p "o: a nulls last, b"))))
+
   (testing "Parse `order-partial` expressions"
     (is (= [{:type :order-partial, :value []}]                                  (p "order:")))
     (is (= [{:type :order-partial, :value []}]                                  (p "o: ")))
