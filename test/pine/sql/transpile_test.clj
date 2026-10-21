@@ -90,6 +90,13 @@
     (converts-to "select * from t order by a, b desc limit 5" "t | order: a asc, b desc | limit: 5")
     (converts-to "select name as n from t order by n" "t | select: name as n | order: name asc"))
 
+  (testing "NULLS FIRST and NULLS LAST"
+    (converts-to "select * from t order by a nulls first, b desc nulls last" "t | order: a asc nulls first, b desc nulls last")
+    (converts-to "select a, count(*) from t group by a order by a nulls first" "t | group: a with count | order: a asc nulls first")
+    (converts-to-blocks "select * from (select *, row_number() over (partition by a order by b nulls last) as rn from t) x where rn = 1"
+                        "t | order: b asc nulls last | limit: 1 per a |= x\n\nx"
+                        ["`rn` from ROW_NUMBER() isn't a column in Pine: `x` keeps the first rows of each group instead."]))
+
   (testing "Count and group"
     (converts-to "select count(*) from t where a = 1" "t | where: a = 1 | count:")
     (converts-to "select status, count(*) from t group by status" "t | group: status with count")

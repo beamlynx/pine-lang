@@ -308,7 +308,19 @@
            (generate "company | order: name desc, age desc")))
     (is (= {:query "SELECT \"e\".\"id\" AS \"__e__id\", \"d_1\".\"id\" AS \"__d_1__id\", \"d_1\".* FROM \"employee\" AS \"e\" JOIN \"document\" AS \"d_1\" ON \"e\".\"id\" = \"d_1\".\"employee_id\" ORDER BY \"e\".\"name\" DESC, \"d_1\".\"title\" ASC LIMIT 250",
             :params nil}
-           (generate "employee as e | document | order: e.name desc, title asc"))))
+           (generate "employee as e | document | order: e.name desc, title asc")))
+
+    (testing "with nulls first or last"
+      (is (= {:query "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" ORDER BY \"c_0\".\"country\" ASC NULLS FIRST, \"c_0\".\"name\" DESC NULLS LAST LIMIT 250",
+              :params nil}
+             (generate "company | order: country asc nulls first, name nulls last")))
+      (is (= {:query "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"c_0\".* FROM \"company\" AS \"c_0\" ORDER BY \"c_0\".\"country\" ASC NULLS FIRST LIMIT 250",
+              :params nil}
+             (generate-sqlite "company | order: country asc nulls first")))
+      ;; MySQL has no NULLS FIRST: it sorts by whether the value is NULL first.
+      (is (= {:query "SELECT `c_0`.`id` AS `__c_0__id`, `c_0`.* FROM `company` AS `c_0` ORDER BY `c_0`.`country` IS NULL DESC, `c_0`.`country` ASC, `c_0`.`name` IS NULL ASC, `c_0`.`name` DESC LIMIT 250",
+              :params nil}
+             (generate-mysql "company | order: country asc nulls first, name desc nulls last")))))
 
   (testing "columns"
     (is (= {:query "SELECT \"c\".\"id\", \"c\".\"id\" AS \"__c__id\" FROM \"company\" AS \"c\" LIMIT 250",

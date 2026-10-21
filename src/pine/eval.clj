@@ -385,16 +385,27 @@
     {:sql (str "SELECT " (s/join ", " (map item-sql items)) " FROM")
      :params (mapcat :params items)}))
 
+(defn- order-term
+  "[sql params] for one sort key. MySQL has no NULLS FIRST or NULLS LAST, so
+  it sorts by whether the value is NULL first: `x IS NULL DESC` puts the
+  NULLs first."
+  [c params direction nulls]
+  (cond
+    (nil? nulls) [(str c " " direction) params]
+    (= *dialect* :mysql) [(str c " IS NULL " (if (= nulls "FIRST") "DESC" "ASC") ", " c " " direction)
+                          (concat params params)]
+    :else [(str c " " direction " NULLS " nulls) params]))
+
 (defn- order-terms
   "[sql params] for a list of order columns: `\"a\".\"b\" DESC, ...`. A key
   inside a JSON column sorts as a JSON value, so numbers sort as numbers."
   [order]
-  (let [parts (map (fn [{:keys [alias column direction path computed]}]
+  (let [parts (map (fn [{:keys [alias column direction nulls path computed]}]
                      (let [[c params] (cond
                                         computed (render-value computed)
                                         path (json-extract :json (q alias column) path)
                                         :else [(q alias column) []])]
-                       [(str c " " direction) params]))
+                       (order-term c params direction nulls)))
                    order)]
     [(s/join ", " (map first parts)) (mapcat second parts)]))
 

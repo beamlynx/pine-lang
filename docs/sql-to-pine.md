@@ -92,6 +92,7 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `SELECT a, COUNT(*) AS n FROM t GROUP BY a` | `t \| group: a with count as n` |
 | `SELECT a FROM t GROUP BY a` | `t \| group: a \| select: a`: Pine's count is left out |
 | `ORDER BY a, b DESC` | `order: a asc, b desc` |
+| `ORDER BY a NULLS FIRST`, `b DESC NULLS LAST` | `order: a asc nulls first, b desc nulls last` |
 | `LIMIT 10` | `limit: 10` |
 | `$name` | `$name`, a Pine variable |
 | `x IS DISTINCT FROM 'v'` | `where: x != 'v' or x is null` |
@@ -584,7 +585,6 @@ Each is refused with its line.
 | `ORDER BY` or `LIMIT` on a single `COUNT(*)` | Remove them. |
 | A selected column that isn't grouped | Not in SQL either. |
 | `ORDER BY 1` or `GROUP BY 1` after a `*`, `GROUP BY` a position that numbers a value | Name the column. |
-| `NULLS FIRST` | No null ordering. |
 | `FULL`, `CROSS` or `NATURAL` join, a comma between tables | Pine joins inner, left or right, on named columns. |
 | A join tied to two earlier tables | Pine joins a table to one other. |
 | `USING` after more than one table | It can't say which table it joins to. Write it with `ON`. |

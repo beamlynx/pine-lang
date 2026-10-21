@@ -694,8 +694,10 @@
   (when (and (= :column kind) (not (:qualifier column)))
     (first (filter #(= (:name column) (:as %)) items))))
 
-(defn- sort-word [d]
-  (if (= d :desc) "desc" "asc"))
+(defn- sort-word
+  "An ORDER BY item's direction as Pine writes it: `asc`, `desc nulls first`."
+  [{d :direction n :nulls}]
+  (str (if (= d :desc) "desc" "asc") (when n (str " nulls " (name n)))))
 
 (defn- missing-function
   "The first function in `x` that Pine has no equivalent for, or nil."
@@ -714,21 +716,21 @@
   "order: items for ORDER BY items that name columns. `what` names where
   they are, for a refusal."
   [tables items order what]
-  (mapv (fn [{:keys [target direction at]}]
+  (mapv (fn [{:keys [target at] :as item}]
           (let [aliased (order-target items target)]
             (case (:kind target)
               :count (refuse at (str "ORDER BY COUNT(*) " what "needs GROUP BY."))
               :position (refuse at (str "ORDER BY a position " what "isn't in Pine. Name the column."))
               :expr (if-let [n (selected-name items (:expr target))]
-                      {:name n :direction (sort-word direction)}
+                      {:name n :direction (sort-word item)}
                       (if-let [f (missing-function (:expr target))]
                         (refuse at (str "ORDER BY " f "(...) " what "isn't in Pine: " f "() isn't."))
                         (refuse at (str "ORDER BY an expression " what "isn't converted yet. Select it with a name, and sort by the name."))))
               :column (if (= :expr (:kind aliased))
                         ;; A computed value's name: Pine sorts by its value.
-                        {:name (:as aliased) :direction (sort-word direction)}
+                        {:name (:as aliased) :direction (sort-word item)}
                         {:col (resolve-column tables (:column (or aliased target)))
-                         :direction (sort-word direction)}))))
+                         :direction (sort-word item)}))))
         order))
 
 (defn- window-ops
@@ -745,9 +747,9 @@
     (warn! "ROW_NUMBER() has no ORDER BY, so the SQL keeps any row of each group. Pine keeps the first in primary key order."))
   (cond-> []
     (seq order) (conj {:op :order
-                       :items (vec (map-indexed (fn [i {:keys [target direction] :as item}]
+                       :items (vec (map-indexed (fn [i {:keys [target] :as item}]
                                                   (if (= :expr (:kind target))
-                                                    {:name (named (:expr target) "order" (inc i)) :direction (sort-word direction)}
+                                                    {:name (named (:expr target) "order" (inc i)) :direction (sort-word item)}
                                                     (first (order-items tables [] [item] "inside ROW_NUMBER() "))))
                                                 order))})
     true (conj {:op :limit :n n
@@ -954,7 +956,7 @@
         select-needed? (not= (map :text outputs) result-columns)
         ;; Each ORDER BY item as a name before the select: (the group's
         ;; columns) and after it (the SQL's names), where it has one.
-        order-names (for [{:keys [target direction at]} order]
+        order-names (for [{:keys [target at] :as item} order]
                       (let [output-of (fn [k v] (some #(when (= v (k %)) (:name %)) outputs))
                             [pre post]
                             (case (:kind target)
@@ -971,7 +973,7 @@
                                                 g (or (group-name c) (refuse at (str "`" (:name col) "` isn't grouped, so it can't be sorted on after GROUP BY.")))]
                                             [g (output-of :group g)])))
                               :position (refuse at "ORDER BY a position isn't in Pine. Name the column."))]
-                        {:pre pre :post post :direction (sort-word direction) :at at}))
+                        {:pre pre :post post :direction (sort-word item) :at at}))
         order-place (cond
                       (empty? order-names) nil
                       (not select-needed?) :pre

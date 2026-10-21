@@ -220,14 +220,15 @@
     true (assoc :at (at node))
     alias (assoc :as (identifier (second alias)))))
 
-(defn- order-item [[_ [kind value :as target] direction :as node]]
-  {:target (case kind
-             :column {:kind :column :column (column target)}
-             :count-star (expr target)
-             :position {:kind :position :value value}
-             :computed {:kind :expr :expr (expr target)})
-   :direction (some-> direction second second s/lower-case keyword)
-   :at (at node)})
+(defn- order-item [[_ [kind value :as target] & more :as node]]
+  (cond-> {:target (case kind
+                     :column {:kind :column :column (column target)}
+                     :count-star (expr target)
+                     :position {:kind :position :value value}
+                     :computed {:kind :expr :expr (expr target)})
+           :direction (some-> (child node :direction) second second s/lower-case keyword)
+           :at (at node)}
+    (child node :nulls-order) (assoc :nulls (-> (child node :nulls-order) second first name s/lower-case keyword))))
 
 (defn- select-query
   "A SELECT as a map: :select, :from, :joins, :where, :group, :order,
@@ -302,7 +303,6 @@
    "exists" "EXISTS converts only in WHERE."
    "over" "A window function isn't in Pine."
    "window" "A window function isn't in Pine."
-   "nulls" "NULLS FIRST and NULLS LAST aren't in Pine."
    "escape" "LIKE ... ESCAPE isn't in Pine."
    "similar" "SIMILAR TO isn't in Pine. Use like or ilike."
    "lateral" "LATERAL isn't in Pine."

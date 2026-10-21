@@ -120,7 +120,10 @@ keyword          := #"(?:true|false|null|if|then|else)(?![A-Za-z0-9_-])"
 <as-alias>         := <"as"> <ws+> alias
 
 order-columns := order-column (<","> <ws*> order-column)*
-order-column  := column | column <ws+> ("desc"|"asc")
+(* `o: a asc nulls first` puts the rows whose `a` is NULL first. Without
+   `nulls`, each database puts them where it does by default. *)
+order-column  := column (<ws+> ("desc"|"asc"))? (<ws+> nulls-order)?
+nulls-order   := <"nulls"> <ws+> ("first"|"last")
 
 hint-column     := <"."> symbol
 
