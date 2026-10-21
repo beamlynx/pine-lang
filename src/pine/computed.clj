@@ -35,6 +35,10 @@
 ;; - :render     (fn [dialect args]) for a function, where args are the
 ;;               arguments' SQL; (fn [dialect arg filter]) for an
 ;;               aggregate, where arg and filter are SQL or nil
+;; - :json-args  true for a function that reads JSON: each argument is
+;;               rendered as a JSON value, not as text, and :render gets
+;;               [sql params] pairs and returns [sql params], so it can
+;;               write an argument twice
 
 (defn- concat-sql
   "NULL when any argument is NULL, like SQL's `||`, on every database.
@@ -57,6 +61,34 @@
     (nil? filter) (str sql-fn "(" arg ")")
     (= dialect :mysql) (str sql-fn "(CASE WHEN " filter " THEN " arg " END)")
     :else (str sql-fn "(" arg ") FILTER (WHERE " filter ")")))
+
+(defn- twice
+  "[sql params] for `f` of the SQL `x`, where `f` writes `x` twice: `x`'s
+  parameters are bound twice, in the order its `?`s appear."
+  [[x params] f]
+  [(f x) (concat params params)])
+
+(defn- json-typeof-sql
+  "Postgres's names for a JSON value's type, on every database: object,
+  array, string, number, boolean or null. NULL when there is no value."
+  [dialect [arg]]
+  (case dialect
+    :mysql (twice arg (fn [x] (str "CASE JSON_TYPE(" x ") WHEN 'INTEGER' THEN 'number' WHEN 'UNSIGNED INTEGER' THEN 'number'"
+                                   " WHEN 'DOUBLE' THEN 'number' WHEN 'DECIMAL' THEN 'number' ELSE LOWER(JSON_TYPE(" x ")) END")))
+    :sqlite (twice arg (fn [x] (str "CASE json_type(" x ") WHEN 'true' THEN 'boolean' WHEN 'false' THEN 'boolean'"
+                                    " WHEN 'integer' THEN 'number' WHEN 'real' THEN 'number' WHEN 'text' THEN 'string'"
+                                    " ELSE json_type(" x ") END")))
+    (let [[x params] arg] [(str "jsonb_typeof(" x ")") params])))
+
+(defn- json-array-length-sql
+  "The number of items in a JSON array. Postgres refuses a value that
+  isn't an array. MySQL's JSON_LENGTH counts an object's keys and SQLite's
+  json_array_length gives 0, so there the value is NULL instead."
+  [dialect [arg]]
+  (case dialect
+    :mysql (twice arg (fn [x] (str "CASE WHEN JSON_TYPE(" x ") = 'ARRAY' THEN JSON_LENGTH(" x ") END")))
+    :sqlite (twice arg (fn [x] (str "CASE WHEN json_type(" x ") = 'array' THEN json_array_length(" x ") END")))
+    (let [[x params] arg] [(str "jsonb_array_length(" x ")") params])))
 
 (defn- aggregate [sql-fn]
   {:arity [1 1] :aggregate true
@@ -113,6 +145,9 @@
    ;; SQLite has no NOW().
    "now"      {:arity [0 0]
                :render (fn [dialect _] (if (= dialect :sqlite) "CURRENT_TIMESTAMP" "NOW()"))}
+   ;; Named after Postgres's own: SQL written for Postgres converts as it is.
+   "jsonb_typeof"       {:arity [1 1] :json-args true :render json-typeof-sql}
+   "jsonb_array_length" {:arity [1 1] :json-args true :render json-array-length-sql}
    "minute"   (bucket "minute")
    "hour"     (bucket "hour")
    "day"      (bucket "day")

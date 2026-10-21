@@ -83,8 +83,26 @@ columns.
 | `concat(a, b, ...)` | The arguments as text, one after another. NULL when any of them is NULL, like SQL's `\|\|`. Two or more arguments. |
 | `now()` | The current date and time. |
 | `minute(x)`, `hour(x)`, `day(x)`, `week(x)`, `month(x)`, `year(x)` | A date as text, cut to that unit: `month` gives `'2024-05'`. A week starts on Monday. |
+| `jsonb_typeof(x)` | The type of a JSON value: `object`, `array`, `string`, `number`, `boolean` or `null`. NULL when there is no value, such as a missing key. |
+| `jsonb_array_length(x)` | The number of items in a JSON array. See [JSON values](#json-values). |
 
 In `select:`, a date bucket on a column needs no `as`: `s: created_at => month` is named `month`.
+
+### JSON values
+
+`jsonb_typeof()` and `jsonb_array_length()` read their argument as JSON. They are named after Postgres's own
+functions, so SQL written for Postgres converts as it is, but they work on every database.
+
+```
+customer | s: data.tags => jsonb_array_length as tag_count
+customer | s: jsonb_array_length(if data.kind = 'list' then data else data.items) as n
+```
+
+- A key inside a JSON column is its JSON value here, not its text. Elsewhere, `data.tags` is shown as text.
+- An `if` passes this on to its branches, so `data` and `data.items` are both JSON.
+- A string literal is JSON text: `jsonb_typeof('[1, 2]')` is `array`.
+- `jsonb_array_length` of a value that isn't an array is an error on Postgres, as Postgres's own function is.
+  MySQL and SQLite give NULL. Check the type first when the value may not be an array.
 
 ### if
 
@@ -215,12 +233,18 @@ couldn't end in `update!`.
 | `min(x) where c` | `MIN(x) FILTER (WHERE c)` | `MIN(CASE WHEN c THEN x END)` | `MIN(x) FILTER (WHERE c)` |
 | `count where c` | `COUNT(1) FILTER (WHERE c)` | `COUNT(CASE WHEN c THEN 1 END)` | `COUNT(1) FILTER (WHERE c)` |
 | a condition | `(c)`, true or false | `(c)`, 1 or 0 | `(c)`, 1 or 0 |
+| `jsonb_typeof(x)` | `jsonb_typeof(x)` | `JSON_TYPE(x)`, renamed | `json_type(x)`, renamed |
+| `jsonb_array_length(x)` | `jsonb_array_length(x)` | `JSON_LENGTH(x)` when `x` is an array | `json_array_length(x)` when `x` is an array |
+| a key, inside these two | `jsonb_extract_path(c::jsonb, ...)` | `JSON_EXTRACT(c, ...)` | `(c -> ...)` |
 
 - `concat` is NULL when any argument is, on every database. Postgres's and SQLite's own `concat()` skip NULLs,
   so `||` is used there. Postgres has no `||` for two numbers, so each argument is cast to text. MySQL's
   `CONCAT()` is already NULL on a NULL argument, and its `||` means OR.
 - On MySQL and SQLite a condition is 1, 0 or NULL, so `MAX` and `MIN` give the same as `BOOL_OR` and
   `BOOL_AND`, NULL over only NULLs included.
+- MySQL and SQLite name JSON types differently: `INTEGER`, `DOUBLE`, `true`, `text`. Pine maps them to
+  Postgres's names, so `jsonb_typeof` gives the same text everywhere. SQLite's `json_extract` gives a string's
+  text, not its JSON, so a key is read there with `->`.
 - Numbers, `true`, `false` and `null` are written into the SQL. Strings and dates are parameters, as
   everywhere else.
 - A string beside a column takes the column's type, as in `where:`. `coalesce(uuid_col, '...')` sends a uuid,
@@ -310,6 +334,8 @@ its `:column`, and the evaluator renders the node there.
 Add an entry to `pine.computed/functions`, with its arity and a `:render` function per dialect. The grammar
 accepts any name before `(`, and `check-call` reads the same table for errors. Mark an aggregate with
 `:aggregate true`; its `:render` gets the argument's and the filter's SQL.
+Mark a function that reads JSON with `:json-args true`. Its arguments are rendered as JSON (`render-json` in
+`pine.eval`), and its `:render` gets `[sql params]` pairs and returns one, so it can write an argument twice.
 
 ### The terminal group:
 
