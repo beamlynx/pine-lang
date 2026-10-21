@@ -13,7 +13,8 @@
       -e POSTGRES_DB=pine -p 55432:5432 postgres:15
     PINE_TEST_POSTGRES_URL=postgres://pine:pine@localhost:55432/pine clojure -M:test -n pine.sql.postgres-equivalence-test
     docker stop pine_eq_pg"
-  (:require [clojure.java.jdbc :as jdbc]
+  (:require [cheshire.core :as json]
+            [clojure.java.jdbc :as jdbc]
             [clojure.string :as s]
             [clojure.test :refer [deftest is testing]]
             [pine.api :as api]
@@ -306,6 +307,75 @@ WHERE d.id = g.id AND kf.id IS NULL AND g.archived_at IS NULL")
                   (is (nil? error) error)
                   (when expression
                     (is (= (set (map :id (jdbc/query db [sql]))) (pine-ids expression)) expression)))))
+            (finally
+              (connections/remove-connection-pool id)
+              (db/clear-connection-if id))))))))
+
+;; A JSON value read two ways, and NULLs sorted first. Templates of tenant
+;; 'a': 1 and 2 have no company, 1 is an array, 2 has nodes, 3 has no nodes
+;; key, 4 a string layoutVersion, 5 a numeric one. 6 belongs to tenant 'b'.
+(def ^:private template-fixture
+  ["CREATE TABLE company_structure_template (id int PRIMARY KEY, name text, company_id int, is_primary boolean,
+      created_at timestamptz, updated_at timestamptz, tenant_id text NOT NULL, template jsonb)"
+   "INSERT INTO company_structure_template VALUES
+      (1, 'one', NULL, false, '2026-01-02', NULL, 'a', '[{\"id\": 1}, {\"id\": 2}, {\"id\": 3}]'),
+      (2, 'two', NULL, true, '2026-01-03', NULL, 'a', '{\"nodes\": [1, 2], \"layoutVersion\": 2}'),
+      (3, 'three', 10, false, '2026-01-01', NULL, 'a', '{\"layoutVersion\": \"v3\"}'),
+      (4, 'four', 10, true, '2026-01-04', NULL, 'a', '{\"nodes\": [], \"layoutVersion\": \"v4\"}'),
+      (5, 'five', 7, false, '2026-01-05', NULL, 'a', '{\"nodes\": [1], \"layoutVersion\": 5}'),
+      (6, 'six', NULL, false, '2026-01-01', NULL, 'b', '[1]')"])
+
+(def ^:private template-query
+  "The query reported: it used to be refused for its ->, NULLS FIRST and
+  jsonb functions."
+  "SELECT t.id, t.name, t.company_id, t.is_primary, t.created_at, t.updated_at,
+       jsonb_array_length(CASE WHEN jsonb_typeof(t.template)='array'
+            THEN t.template ELSE t.template->'nodes' END) AS nodes,
+       t.template->'layoutVersion' AS lv
+FROM company_structure_template t
+WHERE t.tenant_id = 'a'
+ORDER BY t.company_id NULLS FIRST, t.is_primary DESC, t.created_at;")
+
+(deftest test-json-and-nulls-first-on-postgres
+  (if-not server
+    (println "Skipping the Postgres JSON check: set PINE_TEST_POSTGRES_URL to run it.")
+    (with-database template-fixture
+      (fn [db dbname]
+        (let [{:keys [host port user password]} db
+              id (connections/add-connection-pool {:dbtype "postgres" :host host :port port :dbname dbname
+                                                   :user user :password password})]
+          (try
+            (doseq [references [(db/init-references id) nil]]
+              (testing (str (if references "With" "Without") " the schema")
+                (let [{:keys [expression error warnings]} (t/sql->pine template-query references)
+                      result (when expression (api/api-eval [expression] id))
+                      [header & rows] (:result result)
+                      at (fn [k] (.indexOf ^java.util.List (vec header) k))
+                      pine (map (fn [r] [(nth r (at :id)) (nth r (at :nodes)) (nth r (at :lv))]) rows)
+                      ;; `->` gives JSON: the string "v3" comes back quoted. Pine
+                      ;; shows it as text, as the warning says.
+                      from-sql (map (fn [{:keys [id nodes lv]}]
+                                      [id nodes (some-> lv str json/parse-string str)])
+                                    (jdbc/query db [template-query]))]
+                  (is (nil? error) error)
+                  (is (= ["In SQL, `->` gives JSON, so a string keeps its quotes. Pine shows template.layoutVersion as text, without them, as `->>` does."]
+                         warnings))
+                  (is (nil? (:error result)) (str (:error result)))
+                  (testing "Same rows, in the same order, NULL companies first"
+                    (is (= [2 1 5 4 3] (map first from-sql)))
+                    (is (= from-sql pine) expression)))))
+            (testing "ORDER BY a -> key sorts JSON in both: numbers above strings, NULLs where asked"
+              (let [sql "SELECT t.id, t.template->'layoutVersion' AS lv FROM company_structure_template t
+                         WHERE t.tenant_id = 'a' ORDER BY lv DESC NULLS LAST, t.id"
+                    {:keys [expression error]} (t/sql->pine sql (db/init-references id))
+                    result (api/api-eval [expression] id)
+                    [header & rows] (:result result)]
+                (is (nil? error) error)
+                (is (nil? (:error result)) (str (:error result)))
+                (is (= [5 2 4 3 1] (map :id (jdbc/query db [sql]))))
+                (is (= (map :id (jdbc/query db [sql]))
+                       (map #(nth % (.indexOf ^java.util.List (vec header) :id)) rows))
+                    expression)))
             (finally
               (connections/remove-connection-pool id)
               (db/clear-connection-if id))))))))

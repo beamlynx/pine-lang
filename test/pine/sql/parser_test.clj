@@ -218,6 +218,8 @@
       (unsupported "select count(distinct id) from t" "COUNT(DISTINCT ...) isn't in Pine")
       (unsupported "select count(a::text) from t" "Only COUNT(*) and COUNT(column) convert")
       (unsupported "select a + 1 from t" "Arithmetic")
+      (unsupported "select t.data#>>'{a,b}' as x from t" "#> and #>> aren't converted")
+      (unsupported "select a from t group by t.data->>'k'" "A JSON key with -> or ->> converts in a selected value")
       (unsupported "select * from t where a = $1" "$1")
       (unsupported "select * from t where a = ?" "placeholder")
       (unsupported "select * from t; select * from u" "one statement")

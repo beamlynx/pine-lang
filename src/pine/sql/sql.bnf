@@ -96,7 +96,11 @@ between       := operand <ws> negated? <BETWEEN> <ws> operand <ws> <AND> <ws> op
 truthy        := column
 negated       := <NOT> <ws>
 
-operand       := (column | string | number | boolean | null | variable) cast? | cast-fn | now | special-value
+operand       := (column | string | number | boolean | null | variable) cast? | json-path | cast-fn | now | special-value
+(* A key inside a JSON value: t.data->'a'->>'b', t.data->0. Pine writes it
+   as a path, data.a.b and data[0]. *)
+json-path     := column (<ws?> json-op <ws?> (string | number))+
+json-op       := "->>" | "->"
 cast          := <ws?> <"::"> <ws?> type-name
 (* CAST(x AS t) is x::t, whatever x is. *)
 cast-fn       := <CAST> <ws?> <"("> <ws?> value <ws> <AS> <ws> type-name <ws?> <")">
@@ -122,7 +126,7 @@ column        := (identifier <ws?> <"."> <ws?>)? identifier
    these as computed values (docs/computed-values.md). A bare column or
    literal is never a computed value here, so each reads one way.
    --------------------------------------------------------------------- *)
-computed      := concat | call | case | paren-value | now | special-value | cast-operand | select-condition
+computed      := concat | call | case | paren-value | now | special-value | cast-operand | select-condition | json-path
 (* A literal or column with a cast: `a::text AS k`, `CAST(a AS text) AS k`. *)
 cast-operand  := (column | string | number | boolean | null | variable) cast | cast-fn
 (* A condition as a selected value, without parentheses: `x IS NULL AS k`. *)

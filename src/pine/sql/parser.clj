@@ -70,12 +70,27 @@
 
 (declare predicate select-query expr)
 
+(defn- json-path
+  "t.data->'a'->>'b' as {:kind :json :column :steps}, each step
+  {:op \"->\" :key \"a\"} or {:op \"->\" :index \"0\"}. The last step's
+  op says whether the value is JSON (->) or text (->>)."
+  [[_ col & steps :as node]]
+  {:kind :json
+   :column (column col)
+   :steps (mapv (fn [[[_ op] [kind value]]]
+                  (case kind
+                    :string {:op op :key (s/replace (or value "") "''" "'")}
+                    :number {:op op :index value}))
+                (partition 2 steps))
+   :at (at node)})
+
 (defn- operand
   "A literal, column or variable, maybe cast. Also reads a :cast-operand
   node, which has the same shape. CAST(x AS t) is x with :cast t; x may be
   any value, so the result may be a computed value."
   [[_ inner cast :as node]]
   (case (first inner)
+    :json-path (json-path inner)
     :now {:kind :now :at (at node)}
     :special-value {:kind :special :name (s/upper-case (second (second inner))) :at (at node)}
     :cast-fn (let [[_ v t] inner
@@ -132,6 +147,7 @@
   (case tag
     :operand (operand node)
     :cast-operand (operand node)
+    :json-path (json-path node)
     :count-star (let [c (child node :column)
                       not-null (when c {:op :is-null :negated true :left (assoc (literal c) :at (at c)) :at (at c)})
                       f (some-> (child node :filter) second predicate)]
@@ -440,6 +456,12 @@
 
       (and (re-find #"^\s*," after) (re-find #"(?is)\bfrom\b(?:(?!\b(?:where|join|on|group|order|limit)\b).)*$" before))
       ["A comma between tables isn't in Pine. Join them with JOIN ... ON." "sql-unsupported"]
+
+      (re-find #"^\s*#>" after)
+      ["#> and #>> aren't converted. Write each key with -> or ->>: t.data->'a'->>'b'." "sql-unsupported"]
+
+      (re-find #"^\s*->" after)
+      ["A JSON key with -> or ->> converts in a selected value or a function's argument, not here." "sql-unsupported"]
 
       (re-find #"^\s*(?:\+|-|\*|/|%|\|\|)" after)
       ["Arithmetic isn't in Pine." "sql-unsupported"]
