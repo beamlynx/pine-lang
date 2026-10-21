@@ -541,6 +541,41 @@
     :boolean [(if value "TRUE" "FALSE") []]
     [(value-placeholder v) [v]]))
 
+(declare render-if)
+
+(defn- render-json
+  "[sql params] for a value as JSON, for a function that reads JSON
+  (pine.computed's :json-args). A key inside a JSON column is its JSON
+  value, not its text: `\"5\"` stays a string. SQLite's json_extract gives
+  the text of a string, so there the key is read with `->`, which gives
+  JSON. A Postgres `json` column is cast to `jsonb`, and a string literal
+  is JSON text."
+  [node]
+  (let [{:keys [kind alias column path cast value]} node]
+    (cond
+      (and (= :column kind) (nil? cast) (seq path))
+      (if (= *dialect* :sqlite)
+        (let [params (json-path-params path)] [(str "(" (col-ref alias column) " -> ?)") params])
+        (json-extract :json (col-ref alias column) path))
+
+      (and (= :column kind) (nil? cast) (= *dialect* :postgres))
+      [(str (col-ref alias column) "::jsonb") []]
+
+      (and (= :literal kind) (= :string (:type value)))
+      [(case *dialect* :sqlite "json(?)" (auto-cast-placeholder :jsonb)) [value]]
+
+      (= :if kind) (render-if node render-json)
+
+      :else (render-value node))))
+
+(defn- render-call [node]
+  (let [{f :render json-args? :json-args} (get computed/functions (:fn node))
+        [x ps] (if json-args?
+                 (f *dialect* (map render-json (:args node)))
+                 (let [rendered (map render-value (:args node))]
+                   [(f *dialect* (map first rendered)) (mapcat second rendered)]))]
+    [(if-let [cast (:cast node)] (render-cast x cast) x) ps]))
+
 (defn render-value
   "[sql params] for a resolved computed value (see pine.computed)."
   [node]
@@ -549,33 +584,35 @@
                   [x ps] (if (seq path) (json-extract :text (col-ref alias column) path) [(col-ref alias column) []])]
               [(if cast (render-cast x cast) x) ps])
     :literal (render-literal (:value node))
-    :call (let [rendered (map render-value (:args node))
-                f (get-in computed/functions [(:fn node) :render])
-                x (f *dialect* (map first rendered))]
-            [(if-let [cast (:cast node)] (render-cast x cast) x) (mapcat second rendered)])
+    :call (render-call node)
     ;; A condition used as a value is true or false (1 or 0 on MySQL and
     ;; SQLite), or NULL where SQL's comparison is.
     :condition (render-or (:conditions node))
-    ;; `if a then x else if b then y else z` is one CASE with two WHENs.
-    :if (let [branches (loop [n node acc []]
-                         (if (= :if (:kind n))
-                           (recur (:else n) (conj acc n))
-                           [acc n]))
-              [ifs else-node] branches
-              parts (mapcat (fn [{w :when t :then}]
-                              (let [[ws wps] (render-value w)
-                                    [ts tps] (render-value t)]
-                                [[(str " WHEN " ws " THEN " ts) (concat wps tps)]]))
-                            ifs)
-              [es eps] (when else-node (render-value else-node))]
-          [(str "CASE" (apply str (map first parts)) (when es (str " ELSE " es)) " END")
-           (concat (mapcat second parts) eps)])
+    :if (render-if node render-value)
     :aggregate (let [[a aps] (when (:arg node) (render-value (:arg node)))
                      [f fps] (when (:filter node) (render-value (:filter node)))
                      render (get-in computed/functions [(:fn node) :render])]
                  ;; MySQL puts the filter before the argument (CASE WHEN f THEN a).
                  [(render *dialect* a f)
                   (if (and (= *dialect* :mysql) f) (concat fps aps) (concat aps fps))])))
+
+(defn- render-if
+  "[sql params] for an if. `if a then x else if b then y else z` is one CASE
+  with two WHENs. `render` renders the branches: as JSON, they all are."
+  [node render]
+  (let [branches (loop [n node acc []]
+                   (if (= :if (:kind n))
+                     (recur (:else n) (conj acc n))
+                     [acc n]))
+        [ifs else-node] branches
+        parts (mapcat (fn [{w :when t :then}]
+                        (let [[ws wps] (render-value w)
+                              [ts tps] (render t)]
+                          [[(str " WHEN " ws " THEN " ts) (concat wps tps)]]))
+                      ifs)
+        [es eps] (when else-node (render else-node))]
+    [(str "CASE" (apply str (map first parts)) (when es (str " ELSE " es)) " END")
+     (concat (mapcat second parts) eps)]))
 
 (defn- build-where-clause
   "[sql params] for WHERE, or nil."

@@ -97,7 +97,7 @@
            (-> (parser/parse "g | t .x::uuid = .id") :result second :value :join-column-pairs))))
 
   (testing "Refused"
-    (is (s/includes? (parse-error "t | s: lower(name) as n") "`lower()` isn't a Pine function. There are coalesce(), concat(), day(), hour(), minute(), month(), now(), week(), year(), and in group: all, any, avg, count, max, min, sum."))
+    (is (s/includes? (parse-error "t | s: lower(name) as n") "`lower()` isn't a Pine function. There are coalesce(), concat(), day(), hour(), jsonb_array_length(), jsonb_typeof(), minute(), month(), now(), week(), year(), and in group: all, any, avg, count, max, min, sum."))
     (is (s/includes? (parse-error "t | s: coalesce(a) as n") "`coalesce()` takes 2 or more arguments, not 1."))
     (is (s/includes? (parse-error "t | s: now(a) as n") "`now()` takes 0 arguments, not 1."))
     (is (s/includes? (parse-error "t | s: min(a) as n") "`min()` is an aggregate. Use it after `with` in group:"))
@@ -323,3 +323,25 @@
       (is (= ["k"] (filter #{"k"} (hints "company | s: coalesce(id, 0) as k | where: k" :where)))))
     (testing "But not in select:, where it is already selected"
       (is (not (some #{"k"} (hints "company | s: coalesce(id, 0) as k, " :select)))))))
+
+(deftest test-json-functions
+  (testing "A key is read as JSON, a column is cast to jsonb, and an if passes it on to its branches"
+    (is (= "SELECT jsonb_typeof(\"c_0\".\"data\"::jsonb) AS \"t\", jsonb_array_length(jsonb_extract_path(\"c_0\".\"data\"::jsonb, 'tags'::text)) AS \"n\", \"c_0\".\"id\" AS \"__c_0__id\" FROM \"customer\" AS \"c_0\" LIMIT 250;"
+           (sql "customer | s: jsonb_typeof(data) as t, data.tags => jsonb_array_length as n")))
+    (is (s/includes? (sql "customer | s: jsonb_array_length(if id = 1 then data else data.nodes) as n")
+                     "jsonb_array_length(CASE WHEN (\"c_0\".\"id\" = '1') THEN \"c_0\".\"data\"::jsonb ELSE jsonb_extract_path(\"c_0\".\"data\"::jsonb, 'nodes'::text) END)")))
+
+  (testing "A string literal is JSON text"
+    (is (s/includes? (sql "customer | s: jsonb_typeof('[1]') as t") "jsonb_typeof('[1]'::jsonb)")))
+
+  (testing "MySQL and SQLite name the types as Postgres does, and give NULL for a length of a non-array"
+    (let [q (build :test-mysql "product | s: jsonb_typeof(config.a) as t, jsonb_array_length(config.b) as n")]
+      (is (s/includes? (:query q) "CASE JSON_TYPE(JSON_EXTRACT(`p_0`.`config`, ?)) WHEN 'INTEGER' THEN 'number'"))
+      (is (s/includes? (:query q) "CASE WHEN JSON_TYPE(JSON_EXTRACT(`p_0`.`config`, ?)) = 'ARRAY' THEN JSON_LENGTH(JSON_EXTRACT(`p_0`.`config`, ?)) END"))
+      ;; Each argument is written twice, so its parameter is bound twice.
+      (is (= ["$.\"a\"" "$.\"a\"" "$.\"b\"" "$.\"b\""] (map :value (:params q)))))
+    (let [q (build :test-sqlite "customer | s: jsonb_array_length(data.b) as n")]
+      (is (s/includes? (:query q) "CASE WHEN json_type((\"c_0\".\"data\" -> ?)) = 'array' THEN json_array_length((\"c_0\".\"data\" -> ?)) END"))))
+
+  (testing "Arity is checked"
+    (is (s/includes? (error "customer | s: jsonb_typeof(data, data) as t") "takes 1 argument"))))
