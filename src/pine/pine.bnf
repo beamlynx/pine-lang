@@ -66,7 +66,10 @@ partial-update-column := partial-alias | column
 conditions          := condition (<or-op> condition)*
 (* Whitespace on both sides, so `color` and `order_id` never read as containing `or`. *)
 <or-op>             := <ws+> <"or"> <ws+>
-condition           := column <ws*> (condition-default|condition-in) (<ws*> cast)?
+condition           := condition-left <ws*> (condition-default|condition-in) (<ws*> cast)?
+(* A column, or a function of one: `jsonb_typeof(data) = 'array'`, `data => jsonb_typeof = 'array'`.
+   The arrow binds tighter than the comparison. *)
+<condition-left>    := column | call | arrow-value
 
 (* `name = $` while the variable's name is still being typed reads as `name =`. *)
 partial-condition   := partial-alias | column <ws*> operator <ws*> <"$">? | column

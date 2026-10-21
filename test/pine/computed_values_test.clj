@@ -345,3 +345,28 @@
 
   (testing "Arity is checked"
     (is (s/includes? (error "customer | s: jsonb_typeof(data, data) as t") "takes 1 argument"))))
+
+(deftest test-function-on-the-left
+  (testing "Each reads one way"
+    (doseq [text ["jsonb_typeof(data) = 'array'" "data => jsonb_typeof = 'array'"
+                  "coalesce(a, b)::text in ('x', 'y')" "jsonb_typeof(data) = 'x' ::text"]]
+      (is (= 1 (count (insta/parses grammar text :start :condition))) text)))
+
+  (testing "In where:, in a value and in an if"
+    (is (s/includes? (sql "customer | where: jsonb_typeof(data) = 'array' or data => jsonb_typeof = 'object'")
+                     "WHERE (jsonb_typeof(\"c_0\".\"data\"::jsonb) = 'array' OR jsonb_typeof(\"c_0\".\"data\"::jsonb) = 'object')"))
+    (is (s/includes? (sql "customer | s: jsonb_typeof(data) = 'array' as is_array")
+                     "(jsonb_typeof(\"c_0\".\"data\"::jsonb) = 'array') AS \"is_array\""))
+    (is (s/includes? (sql "customer | s: jsonb_array_length(if jsonb_typeof(data) = 'array' then data else data.nodes) as n")
+                     "jsonb_array_length(CASE WHEN (jsonb_typeof(\"c_0\".\"data\"::jsonb) = 'array') THEN \"c_0\".\"data\"::jsonb ELSE jsonb_extract_path(\"c_0\".\"data\"::jsonb, 'nodes'::text) END)")))
+
+  (testing "A cast applies to the function's value"
+    (is (s/includes? (sql "customer | where: jsonb_typeof(data) = 'x' ::text") "WHERE jsonb_typeof(\"c_0\".\"data\"::jsonb)::text = 'x'")))
+
+  (testing "The client is told the condition by the current table and the call as Pine"
+    (let [w (-> "customer | where: data => jsonb_typeof = 'array'" parser/parse :result (ast/generate :test nil nil {} []) :where first)]
+      (is (= {:alias "c_0" :column "jsonb_typeof(c_0.data)" :operator "="} (select-keys w [:alias :column :operator])))))
+
+  (testing "A function of a hidden column can't filter"
+    (is (= "`r_0.title` is hidden by the access policy, so it can't be used in where:, order:, group: or after `per`."
+           (error :test "report | where: coalesce(title, 'x') = 'y'" integers-only)))))

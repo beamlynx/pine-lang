@@ -287,7 +287,7 @@
   {"=" "=" "!=" "!=" ">" ">" "<" "<" ">=" ">=" "<=" "<=" "LIKE" "like" "NOT LIKE" "not like"
    "ILIKE" "ilike" "NOT ILIKE" "not ilike" "IN" "in" "NOT IN" "not in" "IS" "is" "IS NOT" "is not"})
 
-(declare text)
+(declare text call-text)
 
 (defn- value-text [value]
   (cond
@@ -299,7 +299,7 @@
     :else (literal-text value)))
 
 (defn- condition-text [{:keys [alias column path cast operator value] :as condition}]
-  (str (if-let [node (:computed condition)] (text node) (column-text alias column path))
+  (str (if-let [node (:computed condition)] (call-text node) (column-text alias column path))
        " " (get operator-text operator (s/lower-case operator)) " "
        (value-text value)
        (when cast (str " ::" cast))))
@@ -315,6 +315,15 @@
   which is neither a condition nor an if."
   [args]
   (and (= 1 (count args)) (not (#{:condition :if} (:kind (first args))))))
+
+(defn call-text
+  "A value as Pine text, with a function of one value written as a call:
+  `jsonb_typeof(data)`, not `data => jsonb_typeof`. On the left of a
+  comparison, so the text never depends on how tightly the arrow binds."
+  [node]
+  (if (and (= :call (:kind node)) (arrow? (:args node)))
+    (str (:fn node) "(" (text (first (:args node))) ")" (cast-text (:cast node)))
+    (text node)))
 
 (defn text
   "A resolved computed value as Pine text."
