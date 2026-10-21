@@ -90,6 +90,10 @@
   to skip the check."
   nil)
 
+(def ^:private ^:dynamic *warn!*
+  "Adds a warning, from where no warn! is passed: converting a value."
+  (fn [_]))
+
 (def ^:private ^:dynamic *sql-tables*
   "Every table name the statement mentions, lowercased. A name Pine makes
   up for a block must not be one of them: the block would shadow the table."
@@ -203,6 +207,9 @@
                ("CURRENT_DATE" "CURRENT_TIME" "LOCALTIME") (str name " isn't in Pine. now() is the time now, with the date.")
                (str name " isn't in Pine."))))
 
+(def ^:private json-key-here
+  "A JSON key with -> or ->> converts in a selected value or a function's argument, not here.")
+
 (defn- value
   "A literal or variable operand as a Pine value."
   [{:keys [kind cast at] :as operand}]
@@ -217,6 +224,7 @@
     :now {:kind :now}
     :null (refuse at "NULL can only be tested with IS NULL or IS NOT NULL.")
     :call (refuse at (str "Functions like " (:fn operand) "() aren't in Pine here."))
+    :json (refuse at json-key-here)
     :count (refuse at "COUNT(*) here needs GROUP BY, with HAVING.")
     (refuse at "A computed value here isn't in Pine. A condition compares a column with a value.")))
 
@@ -251,45 +259,81 @@
 
 (declare expr-pine expr-columns)
 
+(def ^:private json-functions
+  "SQL functions that read JSON, and Pine has under the same name."
+  #{"jsonb_typeof" "jsonb_array_length"})
+
 (defn- computed-operand?
   "A value Pine can compare a column with: COALESCE(...) or a || b."
   [{:keys [kind] f :fn :as o}]
   (or (= :concat kind) (and (= :call kind) (or (= "coalesce" f) (and (= "concat" f) (= :mysql *dialect*))))))
 
-(defn- compare-atom [tables {:keys [operator left right at]}]
-  (let [[left right operator] (if (and (not (column-operand? left)) (column-operand? right))
+(defn- left-function?
+  "A function Pine can put on the left of a condition: jsonb_typeof(x) = 'array'."
+  [{:keys [kind] f :fn :as o}]
+  (and (= :call kind) (not (:filter o)) (or (json-functions f) (computed-operand? o))))
+
+(defn- function-atom
+  "A comparison of a function with a value, `jsonb_typeof(x) = 'array'`, as
+  an atom with :expr in place of :col."
+  [tables {:keys [operator at]} left right]
+  (when (#{:column :json :call :count :concat :pred :case} (:kind right))
+    (refuse at "A function on the left of a condition is compared with a value in Pine, not with a column or another function."))
+  (when (and (= :null (:kind right)) (#{"=" "!="} operator))
+    (refuse (:at right) (str "`" operator " NULL` is never true in SQL. Write IS NULL or IS NOT NULL.")))
+  (expr-pine {:tables tables :col-ref :name} left)
+  {:expr left
+   :tables tables
+   :refs (set (map #(:t (resolve-column tables %)) (expr-columns left)))
+   :operator operator
+   :value (value right)})
+
+(defn- compare-column-atom [tables {:keys [at]} left right operator]
+  (doseq [o [left right]
+          :when (and (#{:call :count :concat :pred :case :json} (:kind o))
+                     (not (and (identical? o right) (column-operand? left) (computed-operand? o))))]
+    (case (:kind o)
+      :call (refuse (:at o) (str "Functions like " (:fn o) "() aren't in Pine here. A condition compares a column with a value, or now()."))
+      :json (refuse (:at o) json-key-here)
+      (refuse (:at o) "A comparison here needs a column on one side and a value on the other.")))
+  (when-not (column-operand? left)
+    (refuse at "A comparison needs a column on one side."))
+  (when (and (= :null (:kind right)) (#{"=" "!="} operator))
+    (refuse (:at right) (str "`" operator " NULL` is never true in SQL. Write IS NULL or IS NOT NULL.")))
+  (when (and (column-operand? right) (not (#{"=" "!="} operator)))
+    (refuse at (str "Comparing two columns with " operator " isn't in Pine. Two columns compare with = or != only.")))
+  {:col (resolve-column tables (:column left))
+   :operator operator
+   :cast (column-cast left)
+   :value (cond
+            (column-operand? right)
+            (do (when (:cast right)
+                  (refuse (:at right) "A cast on the right-hand column isn't in Pine. Cast the left one."))
+                (keyword-column! #{"true" "false" "null"} (:column right))
+                {:kind :column :col (resolve-column tables (:column right))})
+
+            (computed-operand? right)
+            ;; Rendered once the column references are known (render-value).
+            (do (expr-pine {:tables tables :col-ref :name} right)
+                {:kind :computed :expr right :tables tables :refs (set (map #(:t (resolve-column tables %)) (expr-columns right)))})
+
+            :else (value right))})
+
+(defn- compare-atom
+  "A comparison as an atom: a column with a value or another column, or a
+  function of a column with a value. A value on the left is moved right."
+  [tables {:keys [operator left right] :as p}]
+  (let [[left right operator] (if (or (and (not (column-operand? left)) (column-operand? right))
+                                      (and (not (column-operand? left)) (not (left-function? left)) (left-function? right)))
                                 [right left (mirrored operator)]
                                 [left right operator])]
-    (doseq [o [left right]
-            :when (and (#{:call :count :concat :pred :case} (:kind o))
-                       (not (and (identical? o right) (column-operand? left) (computed-operand? o))))]
-      (if (= :call (:kind o))
-        (refuse (:at o) (str "Functions like " (:fn o) "() aren't in Pine here. A condition compares a column with a value, or now()."))
-        (refuse (:at o) "A comparison here needs a column on one side and a value on the other.")))
-    (when-not (column-operand? left)
-      (refuse at "A comparison needs a column on one side."))
-    (when (and (= :null (:kind right)) (#{"=" "!="} operator))
-      (refuse (:at right) (str "`" operator " NULL` is never true in SQL. Write IS NULL or IS NOT NULL.")))
-    (when (and (column-operand? right) (not (#{"=" "!="} operator)))
-      (refuse at (str "Comparing two columns with " operator " isn't in Pine. Two columns compare with = or != only.")))
-    {:col (resolve-column tables (:column left))
-     :operator operator
-     :cast (column-cast left)
-     :value (cond
-              (column-operand? right)
-              (do (when (:cast right)
-                    (refuse (:at right) "A cast on the right-hand column isn't in Pine. Cast the left one."))
-                  (keyword-column! #{"true" "false" "null"} (:column right))
-                  {:kind :column :col (resolve-column tables (:column right))})
-
-              (computed-operand? right)
-              ;; Rendered once the column references are known (render-value).
-              (do (expr-pine {:tables tables :col-ref :name} right)
-                  {:kind :computed :expr right :tables tables :refs (set (map #(:t (resolve-column tables %)) (expr-columns right)))})
-
-              :else (value right))}))
+    (if (and (left-function? left) (not (column-operand? right)))
+      (function-atom tables p left right)
+      (compare-column-atom tables p left right operator))))
 
 (defn- left-column [tables {:keys [left at]}]
+  (when (= :json (:kind left))
+    (refuse (:at left) json-key-here))
   (when-not (column-operand? left)
     (refuse at "This test needs a column on its left."))
   (resolve-column tables (:column left)))
@@ -443,7 +487,7 @@
 (defn- expr-columns
   "Every column a SQL value or predicate mentions, as column maps."
   [x]
-  (concat (map :column (find-nodes #(= :column (:kind %)) x))
+  (concat (map :column (find-nodes #(#{:column :json} (:kind %)) x))
           (map :column (find-nodes #(= :truthy (:op %)) x))))
 
 (defn- rewrite
@@ -534,14 +578,41 @@
 (defn- concat-args [e]
   (mapcat #(if (= :concat (:kind %)) (concat-args %) [%]) (:args e)))
 
+(defn- json-path-pine
+  "t.data->'a'->>'b' as Pine's data.a.b. The first key is quoted after a
+  bare name that is also a table's alias, which Pine would read as that
+  table: data.'a'.b."
+  [{:keys [tables col-ref]} {:keys [steps at] :as e}]
+  (let [c (resolve-column tables (:column e))
+        base (col-ref c)
+        aliases (set (keep #(or (:alias %) (:table %)) tables))
+        quote-first? (and (not (s/includes? base ".")) (aliases base))]
+    (str base
+         (apply str (map-indexed
+                     (fn [i {:keys [key index]}]
+                       (cond
+                         index (if (re-matches #"[0-9]+" index)
+                                 (str "[" index "]")
+                                 (refuse at "A JSON index converts when it is a whole number, 0 or more."))
+                         (and (re-matches #"[A-Za-z_][A-Za-z0-9_-]*" key) (not (and quote-first? (zero? i)))) (str "." key)
+                         :else (str "." (quote-string key))))
+                     steps)))))
+
 (defn- expr-pine
   "A SQL value as a Pine computed value. `ctx` has :tables and :col-ref,
   and :agg, a function giving an aggregate's Pine text, where aggregates
-  may appear."
+  may appear. :json is true inside a function that reads JSON, where Pine
+  reads a key as JSON, not text."
   [{:keys [tables col-ref agg] :as ctx} {:keys [kind at] :as e}]
   (when (and (:cast e) (#{:pred :case :concat :now} kind))
     (refuse at (str "A cast on " (case kind :pred "a condition" :case "CASE" :concat "a || b" :now "now()") " isn't converted.")))
+  (when (and (:json ctx) (#{:call :concat :pred} kind) (not (json-functions (:fn e))) (seq (find-nodes #(= :json (:kind %)) e)))
+    (refuse at "A JSON key inside this function isn't converted. Pine reads a key as JSON only directly inside jsonb_typeof() or jsonb_array_length(), or in a CASE there."))
   (case kind
+    :json (do (when (and (not (:json ctx)) (= "->" (:op (peek (:steps e)))))
+                (*warn!* (str "In SQL, `->` gives JSON, so a string keeps its quotes. Pine shows "
+                              (json-path-pine ctx e) " as text, without them, as `->>` does.")))
+              (json-path-pine ctx e))
     :column (let [_ (keyword-column! keyword-values (:column e))
                   c (resolve-column tables (:column e))
                   cast (column-cast e)]
@@ -576,6 +647,13 @@
 
               (= "concat" f)
               (refuse at "CONCAT() skips NULL arguments on Postgres, and Pine's concat() doesn't. Write a || b: Pine's concat() matches that.")
+
+              ;; Pine has these under the same names. Inside them, a key is
+              ;; read as JSON, as -> gives it.
+              (json-functions f)
+              (do (when (not= 1 (count args)) (refuse at (str f "() takes one argument.")))
+                  (str f "(" (expr-pine (assoc ctx :json true) (first args)) ")"
+                       (when cast (str "::" (column-cast e)))))
 
               :else
               (refuse at (str "Functions like " f "() aren't in Pine."))))))
@@ -703,7 +781,7 @@
   "The first function in `x` that Pine has no equivalent for, or nil."
   [x]
   (some (fn [{f :fn :as c}]
-          (when-not (or (aggregate? c) (= "coalesce" f) (and (= "concat" f) (= :mysql *dialect*))) f))
+          (when-not (or (aggregate? c) (= "coalesce" f) (json-functions f) (and (= "concat" f) (= :mysql *dialect*))) f))
         (find-nodes #(= :call (:kind %)) x)))
 
 (defn- selected-name
@@ -1071,8 +1149,8 @@
     :now "now()"
     :column (col-ref value)))
 
-(defn- render-atom [col-ref {:keys [col operator value cast]}]
-  (str (col-ref col) " " operator
+(defn- render-atom [col-ref {:keys [col operator value cast] :as a}]
+  (str (if-let [e (:expr a)] (expr-pine {:tables (:tables a) :col-ref col-ref} e) (col-ref col)) " " operator
        (cond
          (#{"is null" "is not null"} operator) ""
          (= :set (:kind value)) (str " " (:name value))
@@ -1089,8 +1167,9 @@
                    (case op
                      :from [t]
                      :text (remove #{current} (:refs o))
-                     :where (mapcat (fn [{:keys [col value]}]
+                     :where (mapcat (fn [{:keys [col value] :as a}]
                                       (concat (cols col)
+                                              (when (:expr a) (remove #{current} (:refs a)))
                                               (when (= :column (:kind value)) (cols (:col value)))
                                               (when (= :computed (:kind value)) (remove #{current} (:refs value)))))
                                     clause)
@@ -2039,8 +2118,10 @@
         {:error error :error-type error-type}
         (let [found (atom (vec warnings))
               _ (check-strings result)
-              blocks (binding [*sql-tables* (statement-tables result)]
-                       (transpile-statement result #(swap! found conj %)))]
+              warn! #(swap! found conj %)
+              blocks (binding [*sql-tables* (statement-tables result)
+                               *warn!* warn!]
+                       (transpile-statement result warn!))]
           (render-blocks blocks @found))))
     (catch clojure.lang.ExceptionInfo e
       (if (::refusal (ex-data e))

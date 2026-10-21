@@ -90,6 +90,40 @@
     (converts-to "select * from t order by a, b desc limit 5" "t | order: a asc, b desc | limit: 5")
     (converts-to "select name as n from t order by n" "t | select: name as n | order: name asc"))
 
+  (testing "A key inside a JSON value is a Pine path. `->` is shown as text, with a warning"
+    (converts-to "select t.data->>'plan' as p, t.data->'a b'->>'c' as ab, t.data->'tags'->>0 as tag from t"
+                 "t | select: data.plan as p, data.'a b'.c as ab, data.tags[0] as tag")
+    (converts-to "select t.data->'plan' as p from t" "t | select: data.plan as p"
+                 ["In SQL, `->` gives JSON, so a string keeps its quotes. Pine shows data.plan as text, without them, as `->>` does."])
+    (converts-to "select c.data->>'k' as k from c join o on o.cid = c.id" "c as c | o .cid = .id | select: c.data.k as k"))
+
+  (testing "A first key after a bare name that is also an alias is quoted, so Pine reads a key"
+    (converts-to "select data.x->>'k' as k from t as data" "t as data | select: x.k as k")
+    (converts-to "select t.data->>'k' as k from t join data on data.tid = t.id"
+                 "t as t | data .tid = .id | select: t.data.k as k")
+    (converts-to "select data.data->>'k' as k from t join data on data.tid = t.id"
+                 "t | data .tid = .id | select: data.'k' as k"))
+
+  (testing "jsonb_typeof() and jsonb_array_length() keep their names, and read a key as JSON: no warning"
+    (converts-to "select jsonb_typeof(t.data->'a') as k, jsonb_array_length(t.data) as n from t"
+                 "t | select: jsonb_typeof(data.a) as k, jsonb_array_length(data) as n")
+    (converts-to "select jsonb_array_length(case when jsonb_typeof(t.d) = 'array' then t.d else t.d->'nodes' end) as n from t"
+                 "t | select: jsonb_array_length(if jsonb_typeof(d) = 'array' then d else d.nodes) as n"))
+
+  (testing "A function on the left of a condition"
+    (converts-to "select * from t where jsonb_typeof(t.d) = 'object' and 'array' = jsonb_typeof(t.d->'tags')"
+                 "t | where: jsonb_typeof(d) = 'object' | where: jsonb_typeof(d.tags) = 'array'")
+    (converts-to "select * from t where not jsonb_typeof(t.d) = 'object'" "t | where: jsonb_typeof(d) != 'object'")
+    (converts-to "select * from t where coalesce(t.a, t.b) = 'x'" "t | where: coalesce(a, b) = 'x'")
+    (converts-to "select * from t where t.x = coalesce(t.a, 'y')" "t | where: x = coalesce(a, 'y')"))
+
+  (testing "A JSON key outside a value, or where Pine would read it as text, is refused"
+    (refuses "select * from t where t.data->>'plan' = 'pro'" "A JSON key with -> or ->> converts in a selected value")
+    (refuses "select * from t where t.data->>'plan' is null" "A JSON key with -> or ->> converts in a selected value")
+    (refuses "select jsonb_array_length(coalesce(t.d->'a', t.d->'b')) as n from t" "A JSON key inside this function isn't converted")
+    (refuses "select t.x->-1 as y from t" "A JSON index converts when it is a whole number")
+    (refuses "select * from t where jsonb_typeof(t.d) = t.kind" "Functions like jsonb_typeof() aren't in Pine here"))
+
   (testing "NULLS FIRST and NULLS LAST"
     (converts-to "select * from t order by a nulls first, b desc nulls last" "t | order: a asc nulls first, b desc nulls last")
     (converts-to "select a, count(*) from t group by a order by a nulls first" "t | group: a with count | order: a asc nulls first")

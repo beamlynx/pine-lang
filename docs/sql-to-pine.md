@@ -114,6 +114,9 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `(x IS NOT NULL) AS k`, `x IS NOT NULL AS k` | `select: x is not null as k`, a true or false value |
 | `(a IN (SELECT b FROM k)) AS m` | a block for the subquery, then `select: a in <block> as m` |
 | `a::text AS k`, `CAST(a AS text) AS k` | `select: a::text as k` |
+| `t.data->>'plan' AS p`, `t.data->'tags'->>0 AS tag` | `select: data.plan as p, data.tags[0] as tag` (see [JSON keys](#json-keys)) |
+| `jsonb_typeof(x)`, `jsonb_array_length(x)` | the same, in Pine |
+| `jsonb_typeof(x) = 'array'`, in `WHERE` or `CASE WHEN` | `jsonb_typeof(x) = 'array'` |
 | `SELECT s.*, COALESCE(...) AS k FROM s` | `s as s \| select: s.*, coalesce(...) as k` |
 | `MIN(x) AS m ... GROUP BY a` | `group: a with x => min as m`; also `MAX`, `SUM`, `AVG` |
 | `MIN(x)` without `AS` | `min(x) as min`, the name Postgres gives it |
@@ -175,7 +178,34 @@ sp_docs as s
 - A column named `true`, `false`, `null`, `if`, `then` or `else` is refused inside a computed value, and
   `true`, `false` and `null` on the right of a condition or in `select:`: Pine reads them as keywords
   there.
+- `jsonb_typeof()` and `jsonb_array_length()` keep their names. Pine has them on every database.
+- A function on the left of a comparison, `jsonb_typeof(x) = 'array'` or `COALESCE(a, b) = 'x'`, stays
+  there. Pine conditions can start with a function. It is compared with a value, not with a column.
 - Any other function is refused by name: `Functions like lower() aren't in Pine.`
+
+### JSON keys
+
+`->` and `->>` become a [JSON path](json-paths.md) in a selected value or a function's argument:
+
+```sql
+SELECT t.template->>'kind' AS kind, t.template->'nodes'->0 AS first FROM company_structure_template t
+```
+
+```
+company_structure_template as t
+ | select: template.kind as kind, template.nodes[0] as first
+```
+
+- A whole-number key, `->0`, is an index, `[0]`. A key that isn't a Pine name is quoted: `data.'a b'`.
+- In `select:`, Pine shows a key as text, as `->>` does. `->` gives JSON in SQL, so a string keeps its
+  quotes there. The conversion warns about that difference.
+- Inside `jsonb_typeof()` and `jsonb_array_length()`, Pine reads the key as JSON, as `->` gives it. A
+  `CASE` there passes this on to its branches, so `CASE WHEN ... THEN t.d ELSE t.d->'nodes' END` is
+  exact. Any other function between them is refused.
+- When a column's bare name is also a table's alias, its first key is quoted: `data.'k'`. Pine would
+  read `data.k` as the column `k` of the table `data`.
+- In `WHERE`, `GROUP BY` and `ORDER BY`, a key is refused. Pine compares `data.plan = 'pro'` as JSON
+  and `->>` compares text, so `'10'` would match differently. `#>` and `#>>` are refused too.
 
 ### Aggregates and HAVING
 
@@ -538,6 +568,7 @@ changing which rows come back:
 - A `ROW_NUMBER()` that no later query uses is left out.
 - A column added for an expression in `ROW_NUMBER()`, when it reaches a result.
 - `BEGIN`, `COMMIT` and `ROLLBACK` left out.
+- `->` in a selected value: Pine shows the value as text.
 - Another statement in the script left out, with its line.
 
 ## What doesn't convert
@@ -561,7 +592,8 @@ Each is refused with its line.
 | `HAVING` without `GROUP BY` | Not converted. |
 | `WITH RECURSIVE`, `MATERIALIZED`, `RETURNING` | Not in Pine. |
 | A subquery other than in `FROM`, `JOIN` or after `IN` | Not in Pine. |
-| A function other than `COALESCE`, `NOW()` and the aggregates above; arithmetic | Not in Pine. |
+| A function other than `COALESCE`, `NOW()`, `jsonb_typeof()`, `jsonb_array_length()` and the aggregates above; arithmetic | Not in Pine. |
+| `->` or `->>` in `WHERE`, `GROUP BY` or `ORDER BY`; `#>`, `#>>`; a negative index | See [JSON keys](#json-keys). |
 | `EXISTS` outside `WHERE`, or not tied to the outer query by one equality | See [EXISTS](#exists). |
 | `CONCAT()` on Postgres; `\|\|` on MySQL | Postgres's `CONCAT()` skips NULLs: write `a \|\| b`. MySQL reads `\|\|` as OR. |
 | `AND`, `BETWEEN` or `IS [NOT] DISTINCT FROM` inside a value | Pine joins a value's conditions with `or`. |
@@ -591,7 +623,8 @@ Each is refused with its line.
 | A column in a join that isn't qualified, when more than one table has it, or the schema isn't known | It could belong to more than one table. |
 | `= NULL` | Never true in SQL. Use `IS NULL`. |
 | A cast other than to `text` or `uuid`, in a condition, a value or a join's `ON` | Pine casts to those two. |
-| A comparison with no column | Pine conditions start with a column. |
+| A comparison with no column | Pine conditions start with a column, or a function of one. |
+| A function compared with a column | Pine compares a function with a value. |
 | `$1`, `?` | Write the value, or a `$name` variable. |
 | `LIMIT` over 10 000 | Pine's maximum. |
 
