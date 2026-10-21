@@ -45,7 +45,7 @@ A condition can start with a function of a column, not only the column:
 ```
 customer | where: jsonb_typeof(data) = 'array'
 customer | where: data => jsonb_typeof = 'array'
-customer | s: if jsonb_typeof(data) = 'array' then data else data.items as list
+customer | s: if jsonb_typeof(data) = 'array' then 'list' else 'other' as kind
 ```
 
 - The arrow binds tighter than the comparison: `data => jsonb_typeof = 'array'` is `jsonb_typeof(data) = 'array'`.
@@ -118,6 +118,9 @@ customer | s: jsonb_array_length(if data.kind = 'list' then data else data.items
 
 - A key inside a JSON column is its JSON value here, not its text. Elsewhere, `data.tags` is shown as text.
 - An `if` passes this on to its branches, so `data` and `data.items` are both JSON.
+- Elsewhere a key is text. So an `if` outside these two that gives a JSON column in one branch and a key in
+  another, `if ... then data else data.items`, fails on Postgres: "CASE types text and jsonb cannot be
+  matched". Put it inside one of them.
 - A string literal is JSON text: `jsonb_typeof('[1, 2]')` is `array`.
 - `jsonb_array_length` of a value that isn't an array is an error on Postgres, as Postgres's own function is.
   MySQL and SQLite give NULL. Check the type first when the value may not be an array.
