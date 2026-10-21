@@ -578,14 +578,34 @@
 (defn- concat-args [e]
   (mapcat #(if (= :concat (:kind %)) (concat-args %) [%]) (:args e)))
 
-(defn- json-path-pine
-  "t.data->'a'->>'b' as Pine's data.a.b. The first key is quoted after a
-  bare name that is also a table's alias, which Pine would read as that
-  table: data.'a'.b."
-  [{:keys [tables col-ref]} {:keys [steps at] :as e}]
-  (let [c (resolve-column tables (:column e))
-        base (col-ref c)
-        aliases (set (keep #(or (:alias %) (:table %)) tables))
+(defn- dollar-path
+  "MySQL's and SQLite's `->` take a path, `$.a.\"b c\"[0]`, as steps. Only
+  keys and indexes: a wildcard or `last` isn't converted."
+  [path at]
+  (let [tokens (re-seq #"\.([A-Za-z_][A-Za-z0-9_]*)|\.\"((?:[^\"\\]|\\.)*)\"|\[([0-9]+)\]" (subs path 1))]
+    (when-not (= (subs path 1) (apply str (map first tokens)))
+      (refuse at (str "The JSON path '" path "' isn't converted. Pine follows keys and indexes, like '$.a.b[0]'.")))
+    (mapv (fn [[_ k q i]] (cond k {:key k} q {:key (s/replace q #"\\(.)" "$1")} :else {:index i})) tokens)))
+
+(defn- json-steps
+  "The keys and indexes of t.data->'a'->0. A key that starts with `$` is a
+  path on MySQL and SQLite, and a key on Postgres."
+  [{:keys [steps at]}]
+  (vec (mapcat (fn [{:keys [key] :as step}]
+                 (if (and key (s/starts-with? key "$"))
+                   (case *dialect*
+                     (:mysql :sqlite) (dollar-path key at)
+                     :postgres [step]
+                     (refuse at (str "'" key "' is a path on MySQL and SQLite, and a key on Postgres. Convert with the connection, so the database is known.")))
+                   [step]))
+               steps)))
+
+(defn- path-pine
+  "A column's Pine name followed by JSON steps: data.a.b, data.tags[0].
+  The first key is quoted after a bare name that is also a table's alias,
+  which Pine would read as that table: data.'a'.b."
+  [tables base steps at]
+  (let [aliases (set (keep #(or (:alias %) (:table %)) tables))
         quote-first? (and (not (s/includes? base ".")) (aliases base))]
     (str base
          (apply str (map-indexed
@@ -597,6 +617,31 @@
                          (and (re-matches #"[A-Za-z_][A-Za-z0-9_-]*" key) (not (and quote-first? (zero? i)))) (str "." key)
                          :else (str "." (quote-string key))))
                      steps)))))
+
+(defn- json-path-pine
+  "t.data->'a'->>'b' as Pine's data.a.b."
+  [{:keys [tables col-ref]} {:keys [at] :as e}]
+  (path-pine tables (col-ref (resolve-column tables (:column e))) (json-steps e) at))
+
+(defn- json-text?
+  "Whether a SQL value is a `->` key, or a CASE or COALESCE giving one:
+  JSON in SQL, which Pine shows as text."
+  [{:keys [kind] :as e}]
+  (case kind
+    :json (= "->" (:op (peek (:steps e))))
+    :case (boolean (some json-text? (concat (map second (:whens e)) [(:else e)])))
+    :call (and (= "coalesce" (:fn e)) (boolean (some json-text? (:args e))))
+    false))
+
+(defn- check-json-branches
+  "A CASE or COALESCE outside a JSON function whose values mix a `->` key
+  with another JSON value. Pine shows the key as text, and the other value
+  as JSON, which Postgres can't put in one column."
+  [{:keys [at] :as e} values]
+  (when (and (some json-text? values)
+             (some #(not (or (json-text? %) (#{:string :number :boolean :null :variable} (:kind %)))) values))
+    (refuse at (str "A " (if (= :case (:kind e)) "CASE" "COALESCE") " that mixes a `->` key with another value isn't converted: "
+                    "Pine shows the key as text. Use `->>`, or put it inside jsonb_typeof() or jsonb_array_length()."))))
 
 (defn- expr-pine
   "A SQL value as a Pine computed value. `ctx` has :tables and :col-ref,
@@ -626,7 +671,8 @@
                   (refuse at "In MySQL, || means OR, unless the server sets PIPES_AS_CONCAT. Write CONCAT(a, b), which converts to Pine's concat()."))
                 (concat-pine ctx (concat-args e)))
     :pred (conditions-pine ctx (:pred e) true)
-    :case (case-pine ctx e)
+    :case (do (when-not (:json ctx) (check-json-branches e (concat (map second (:whens e)) (some-> (:else e) vector))))
+              (case-pine ctx e))
     :count (if agg (agg e) (refuse at "COUNT(*) here needs GROUP BY."))
     :call (let [{f :fn args :args cast :cast} e]
             (when (and (:filter e) (not (aggregate? e)))
@@ -637,6 +683,7 @@
 
               (= "coalesce" f)
               (do (when (< (count args) 2) (refuse at "COALESCE() needs two or more arguments."))
+                  (check-json-branches e args)
                   (str "coalesce(" (s/join ", " (map #(expr-pine ctx %) args)) ")"
                        (when cast (str "::" (column-cast e)))))
 
@@ -790,13 +837,26 @@
   (let [k (strip-at (dissoc e :at))]
     (some #(when (and (= :expr (:kind %)) (:as %) (= k (strip-at (:expr %)))) (:as %)) items)))
 
+(defn- json-order-item
+  "An order: item for ORDER BY a JSON key. `->` gives JSON, which SQL and
+  Pine sort the same way. `->>` gives text, which SQL sorts as text and
+  Pine as JSON, so 10 and '9' would swap."
+  [tables {:keys [at] :as e} item]
+  (when (= "->>" (:op (peek (:steps e))))
+    (refuse at "ORDER BY a ->> key isn't converted: SQL sorts it as text, and Pine sorts a key as JSON, so numbers come out in another order. ORDER BY the -> key sorts the same in both."))
+  {:json-col (resolve-column tables (:column e)) :steps (json-steps e) :at at :direction (sort-word item)})
+
 (defn- order-items
   "order: items for ORDER BY items that name columns. `what` names where
   they are, for a refusal."
   [tables items order what]
   (mapv (fn [{:keys [target at] :as item}]
-          (let [aliased (order-target items target)]
-            (case (:kind target)
+          (let [aliased (order-target items target)
+                json-key (cond
+                           (= :json (get-in target [:expr :kind])) (:expr target)
+                           (= :json (get-in aliased [:expr :kind])) (:expr aliased))]
+            (case (if json-key :json (:kind target))
+              :json (json-order-item tables json-key item)
               :count (refuse at (str "ORDER BY COUNT(*) " what "needs GROUP BY."))
               :position (refuse at (str "ORDER BY a position " what "isn't in Pine. Name the column."))
               :expr (if-let [n (selected-name items (:expr target))]
@@ -931,6 +991,8 @@
   bare. A group: with no aggregate adds a count column, which the select:
   then leaves out."
   [tables current items {:keys [group having order limit at]} warn!]
+  (when-let [k (first (find-nodes #(= :json (:kind %)) [items having order]))]
+    (refuse (:at k) "A JSON key with -> or ->> isn't converted in a query with GROUP BY."))
   (let [col-ref (make-col-ref tables current)
         ctx {:tables tables :col-ref col-ref}
         group-cols (mapv #(resolve-column tables %) group)
@@ -1178,7 +1240,7 @@
                                             :else (cols (:col %)))
                                      items)
                      :group (mapcat cols (:cols o))
-                     :order (mapcat #(some-> (:col %) cols) items)
+                     :order (mapcat #(some-> (or (:col %) (:json-col %)) cols) items)
                      :limit (mapcat cols (:per o))
                      nil))
                  ops))))
@@ -1213,7 +1275,12 @@
                                                    items)))
          :group (str "group: " (s/join ", " (map col-ref cols)) " with count")
          :count "count:"
-         :order (str "order: " (s/join ", " (map #(str (if (:col %) (col-ref (:col %)) (:name %)) " " (:direction %)) items)))
+         :order (str "order: " (s/join ", " (map #(str (cond
+                                                         (:col %) (col-ref (:col %))
+                                                         (:json-col %) (path-pine tables (col-ref (:json-col %)) (:steps %) (:at %))
+                                                         :else (:name %))
+                                                       " " (:direction %))
+                                                 items)))
          :limit (str "limit: " n (when (seq (:per o)) (str " per " (s/join ", " (map #(if (:t %) (col-ref %) (:name %)) (:per o))))))
          :update (str "update! " (s/join ", " (map (fn [{:keys [column value]}]
                                                      (str column " = " (case (:kind value)

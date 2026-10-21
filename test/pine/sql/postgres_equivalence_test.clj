@@ -364,6 +364,18 @@ ORDER BY t.company_id NULLS FIRST, t.is_primary DESC, t.created_at;")
                   (testing "Same rows, in the same order, NULL companies first"
                     (is (= [2 1 5 4 3] (map first from-sql)))
                     (is (= from-sql pine) expression)))))
+            (testing "ORDER BY a -> key sorts JSON in both: numbers above strings, NULLs where asked"
+              (let [sql "SELECT t.id, t.template->'layoutVersion' AS lv FROM company_structure_template t
+                         WHERE t.tenant_id = 'a' ORDER BY lv DESC NULLS LAST, t.id"
+                    {:keys [expression error]} (t/sql->pine sql (db/init-references id))
+                    result (api/api-eval [expression] id)
+                    [header & rows] (:result result)]
+                (is (nil? error) error)
+                (is (nil? (:error result)) (str (:error result)))
+                (is (= [5 2 4 3 1] (map :id (jdbc/query db [sql]))))
+                (is (= (map :id (jdbc/query db [sql]))
+                       (map #(nth % (.indexOf ^java.util.List (vec header) :id)) rows))
+                    expression)))
             (finally
               (connections/remove-connection-pool id)
               (db/clear-connection-if id))))))))

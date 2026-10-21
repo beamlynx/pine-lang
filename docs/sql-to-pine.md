@@ -197,6 +197,9 @@ company_structure_template as t
 ```
 
 - A whole-number key, `->0`, is an index, `[0]`. A key that isn't a Pine name is quoted: `data.'a b'`.
+- On MySQL and SQLite, `->` takes a path: `t.data->>'$.a."b c"[0]'` is `data.a.'b c'[0]`. On Postgres
+  `'$.a'` is a key with that name. Without the connection the database isn't known, so a key starting with
+  `$` is refused. A wildcard or `last` in a path is refused.
 - In `select:`, Pine shows a key as text, as `->>` does. `->` gives JSON in SQL, so a string keeps its
   quotes there. The conversion warns about that difference.
 - Inside `jsonb_typeof()` and `jsonb_array_length()`, Pine reads the key as JSON, as `->` gives it. A
@@ -204,8 +207,13 @@ company_structure_template as t
   exact. Any other function between them is refused.
 - When a column's bare name is also a table's alias, its first key is quoted: `data.'k'`. Pine would
   read `data.k` as the column `k` of the table `data`.
-- In `WHERE`, `GROUP BY` and `ORDER BY`, a key is refused. Pine compares `data.plan = 'pro'` as JSON
-  and `->>` compares text, so `'10'` would match differently. `#>` and `#>>` are refused too.
+- A `CASE` or `COALESCE` outside those functions that mixes a `->` key with a column or a function is
+  refused. Pine shows the key as text and the column as JSON, and Postgres can't put both in one column.
+  Keys and literals alone are fine.
+- `ORDER BY` a `->` key, or the name it is selected as, sorts by the path: SQL and Pine both sort it as
+  JSON. `ORDER BY` a `->>` key is refused: SQL sorts it as text and Pine as JSON, so `'10'` and `9` swap.
+- In `WHERE` and with `GROUP BY`, a key is refused. Pine compares `data.plan = 'pro'` as JSON and `->>`
+  compares text, so `'10'` would match differently. `#>` and `#>>` are refused too.
 
 ### Aggregates and HAVING
 
@@ -593,7 +601,7 @@ Each is refused with its line.
 | `WITH RECURSIVE`, `MATERIALIZED`, `RETURNING` | Not in Pine. |
 | A subquery other than in `FROM`, `JOIN` or after `IN` | Not in Pine. |
 | A function other than `COALESCE`, `NOW()`, `jsonb_typeof()`, `jsonb_array_length()` and the aggregates above; arithmetic | Not in Pine. |
-| `->` or `->>` in `WHERE`, `GROUP BY` or `ORDER BY`; `#>`, `#>>`; a negative index | See [JSON keys](#json-keys). |
+| `->` or `->>` in `WHERE` or with `GROUP BY`; `ORDER BY` a `->>` key; `#>`, `#>>`; a negative index; a `$` path without the connection; a `CASE` or `COALESCE` mixing a `->` key with a column | See [JSON keys](#json-keys). |
 | `EXISTS` outside `WHERE`, or not tied to the outer query by one equality | See [EXISTS](#exists). |
 | `CONCAT()` on Postgres; `\|\|` on MySQL | Postgres's `CONCAT()` skips NULLs: write `a \|\| b`. MySQL reads `\|\|` as OR. |
 | `AND`, `BETWEEN` or `IS [NOT] DISTINCT FROM` inside a value | Pine joins a value's conditions with `or`. |
