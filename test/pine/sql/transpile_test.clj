@@ -95,12 +95,12 @@
                  "t | select: data.plan as p, data.'a b'.c as ab, data.tags[0] as tag")
     (converts-to "select t.data->'plan' as p from t" "t | select: data.plan as p"
                  ["In SQL, `->` gives JSON, so a string keeps its quotes. Pine shows data.plan as text, without them, as `->>` does."])
-    (converts-to "select c.data->>'k' as k from c join o on o.cid = c.id" "c as c | o .cid = .id | select: c.data.k as k"))
+    (converts-to "select c.data->>'k' as k from c join o on o.cid = c.id" "c as c | o .cid = .id | select: c.data.k as k | from: c"))
 
   (testing "A first key after a bare name that is also an alias is quoted, so Pine reads a key"
     (converts-to "select data.x->>'k' as k from t as data" "t as data | select: x.k as k")
     (converts-to "select t.data->>'k' as k from t join data on data.tid = t.id"
-                 "t as t | data .tid = .id | select: t.data.k as k")
+                 "t as t | data .tid = .id | select: t.data.k as k | from: t")
     (converts-to "select data.data->>'k' as k from t join data on data.tid = t.id"
                  "t | data .tid = .id | select: data.'k' as k"))
 
@@ -129,7 +129,7 @@
     (converts-to "select t.data->'plan' as p from t order by p desc nulls last" "t | select: data.plan as p | order: data.plan desc nulls last"
                  ["In SQL, `->` gives JSON, so a string keeps its quotes. Pine shows data.plan as text, without them, as `->>` does."])
     (converts-to "select t.id from t order by t.data->'plan'" "t | select: id | order: data.plan asc")
-    (converts-to "select c.id from c join o on o.cid = c.id order by c.data->'k'" "c as c | o .cid = .id | select: c.id | order: c.data.k asc"))
+    (converts-to "select c.id from c join o on o.cid = c.id order by c.data->'k'" "c as c | o .cid = .id | select: c.id | order: c.data.k asc | from: c"))
 
   (testing "A CASE or COALESCE of -> keys and literals is shown as text, with the warning"
     (converts-to "select coalesce(t.d->'a', t.d->'b') as x from t" "t | select: coalesce(d.a, d.b) as x"
@@ -889,7 +889,7 @@ COMMIT;
     | where: tenantId = '86b8ad91-7463-478a-aa43-43a977105bf4'
     | where: userId != 'd3b93066-ea59-4259-a534-943249fba79c' or userId is null
     | where: type != 'company-document-downloaded' or type is null
-    | select: g.id as document_id |= edited
+    | select: g.id as document_id | from: g |= edited
 
    grouped as g
     | where: archived_at is null
@@ -940,7 +940,8 @@ COMMIT;
                           | where: d.tenant_id = '86b8ad91-7463-478a-aa43-43a977105bf4'
                           | where: d.deleted_at is null
                           | where: type = 'sharepoint' or d.reference_id is not null
-                          | select: d.id, d.company_id, d.reference_id, d.created_at, d.archived_at |= sp_docs
+                          | select: d.id, d.company_id, d.reference_id, d.created_at, d.archived_at
+                          | from: d |= sp_docs
 
                          sp_docs as g | where: archived_at is null | order: created_at desc, id asc | limit: 1 per company_id, reference_id |= ranked
 
@@ -1138,7 +1139,7 @@ t | where: id in k_t_ids"))
 
   (testing "Either side of the equality may be the outer column, and the subquery may join"
     (converts-to-blocks "select * from t where exists (select * from k join m on m.k_id = k.id where t.id = k.t_id and m.z = 2 limit 1)"
-                        "k as k | m .k_id = .id | where: z = 2 | select: k.t_id |= k_t_ids
+                        "k as k | m .k_id = .id | where: z = 2 | select: k.t_id | from: k |= k_t_ids
 
 t | where: id in k_t_ids"))
 
@@ -1203,3 +1204,13 @@ s | group: a with count as subjects, n => max as max_n | order: max_n desc | lim
     (refuses "select a from t order by 3" "ORDER BY 3: the SELECT has only 1 column.")
     (refuses "select coalesce(a, b) as k, count(*) from t group by 1" "GROUP BY 1 numbers a value, not a column.")
     (refuses "select *, a from t group by 2" "GROUP BY 2 counts past a `*`")))
+
+(deftest test-select-of-an-earlier-table
+  (testing "A select list of only an earlier table's columns ends on that table, or Pine would show the last table's columns too"
+    (converts-to "select sc.a, sc.b from s sc join o on o.id = sc.o_id where o.n = 'x'"
+                 "s as sc | o .id = .o_id | where: n = 'x' | select: sc.a, sc.b | from: sc")
+    (converts-to "select sc.* from s sc join o on o.id = sc.o_id"
+                 "s as sc | o .id = .o_id | select: sc.* | from: sc"))
+  (testing "A select list with a column of the last table needs no from:"
+    (converts-to "select sc.a, o.n from s sc join o on o.id = sc.o_id"
+                 "s as sc | o .id = .o_id | select: sc.a, n")))

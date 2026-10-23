@@ -1362,6 +1362,26 @@
                 :else
                 [{:op :delete :cols (vec pk)}]))))))
 
+(defn- end-on-selected-table
+  "Pine shows every column of the table its pipe ends on, unless select:
+  names one of them. A SQL select list of only earlier tables' columns
+  would then come back with all of the last table's too. So such a pipe
+  ends with `from:` the first selected table, which leaves the last
+  table's columns out. At the end, so no step after it reads its bare
+  column names differently."
+  [ops current]
+  (let [sel (first (filter #(= :select (:op %)) ops))
+        selected (when sel
+                   (mapcat (fn [item]
+                             (cond
+                               (contains? item :star) [(:star item)]
+                               (:expr item) (:refs item)
+                               :else [(:t (:col item))]))
+                           (:items sel)))]
+    (if (and (seq selected) (not-any? #{current} selected))
+      (conj ops {:op :from :t (first selected)})
+      ops)))
+
 (defn- transpile-query
   "One query as one Pine block: {:expression :columns}. A named one, a WITH
   query, ends in `|= name`. A warning that changes a named query's columns
@@ -1377,7 +1397,9 @@
         ops (into ops (map (fn [c] {:op :where :clause c}) clauses))
         ops (if-let [action (:action query)]
               (into ops (action-ops tables current action (count clauses)))
-              (into ops (plan-select tables current query warn-q! {:window window :in-set-only in-set-only})))]
+              (end-on-selected-table
+               (into ops (plan-select tables current query warn-q! {:window window :in-set-only in-set-only}))
+               current))]
     (when name
       (when-let [[m] (first (filter #(= :columns (second %)) @local))]
         (refuse at (str "In the WITH query `" name "`: " m " Its columns would then differ from the SQL's."))))

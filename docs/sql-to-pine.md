@@ -523,6 +523,12 @@ table's. Any other column is written `alias.column`.
 `SELECT *` over a join selects every table's columns: `select: c.*, e.*`. Pine with no `select:`
 would return only the last table's.
 
+Pine also returns every column of the table the pipe ends on unless `select:` names one of them.
+So a select list of only earlier tables' columns ends with `from:` the first of them:
+`SELECT c.name FROM company c JOIN employee e ON ...` converts to
+`company as c | employee as e ... | select: c.name | from: c`. Without it, every column of
+`employee` would come back too.
+
 ### Names and case
 
 Keywords may be in any case. A quoted identifier keeps its case: `"Users"` in Postgres or
