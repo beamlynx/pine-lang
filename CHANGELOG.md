@@ -13,6 +13,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - **SQL to Pine: COUNT(column).** In `group:`, `COUNT(x)` converts to `count where x is not null`, so it counts the same rows as SQL. It also works in `HAVING`. On its own, without `GROUP BY`, it converts to `where: x is not null | count:`. `COUNT(DISTINCT ...)` is still refused, now with a message about `DISTINCT` alone.
 
 ### Fixed
+- **Dates and times in results are exact.** On Postgres, a timestamp lost its fraction of a second: `10:20:58.236047` came back as `10:20:58`. So a filter written from a shown value could miss its own row. A `DATE` came back as midnight in UTC, `1990-07-22T00:00:00Z`, and a `TIME` as a timestamp. Now a timestamp keeps its fraction, a date reads `1990-07-22` and a time `10:00:05`. A timestamp on a whole second reads as before. A timestamp still ends in `Z`, also for a column without a time zone. MySQL's values were already exact.
 - **SQL to Pine: a select list of an earlier table's columns no longer brings back the last table's too.** `SELECT sc.a, sc.b FROM s sc JOIN o ON ...` converted to Pine that returned `sc.a`, `sc.b` and every column of `o`, since Pine shows all of the last table's columns unless `select:` names one. The Pine now ends with `from: sc`, and returns only the selected columns. It also changes what a `WITH` query passes on to the next one. Found by running converted agent SQL against Postgres and comparing the results.
 
 ## [0.50.0] - 2026-10-18

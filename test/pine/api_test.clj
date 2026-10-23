@@ -483,3 +483,12 @@
 
     (testing "an error in the query itself is not that"
       (is (nil? (:error-type (#'api/error-body (java.sql.SQLException. "column x does not exist" "42703"))))))))
+
+(deftest test-dates-and-times-in-results
+  (testing "A timestamp keeps its fraction of a second, and a whole second reads as before"
+    (is (= "\"2026-09-12T10:20:58.236047Z\"" (json/generate-string (java.sql.Timestamp/valueOf "2026-09-12 10:20:58.236047"))))
+    (is (= "\"2024-01-20T09:45:00Z\"" (json/generate-string (java.sql.Timestamp/valueOf "2024-01-20 09:45:00")))))
+  (testing "A date is a date, not midnight"
+    (is (= "\"1990-07-22\"" (json/generate-string (java.sql.Date/valueOf "1990-07-22")))))
+  (testing "A time is a time"
+    (is (= "\"10:00:05\"" (json/generate-string (java.sql.Time/valueOf "10:00:05"))))))

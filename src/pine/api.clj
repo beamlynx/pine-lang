@@ -51,6 +51,16 @@
 (add-encoder java.time.LocalDate encode-str)
 (add-encoder java.time.LocalTime encode-str)
 
+;; Postgres's driver returns java.sql.Timestamp, Date and Time, which
+;; Cheshire writes as java.util.Date: `yyyy-MM-dd'T'HH:mm:ss'Z'`. That cut a
+;; timestamp's fraction of a second off, and showed a DATE as midnight:
+;; `1990-07-22T00:00:00Z`. A timestamp is written as its instant instead,
+;; with its fraction, in UTC since that's this JVM's zone (above). A whole
+;; second reads as it did. A date and a time are written as themselves.
+(add-encoder java.sql.Timestamp (fn [^java.sql.Timestamp ts gen] (.writeString gen (str (.toInstant ts)))))
+(add-encoder java.sql.Date (fn [^java.sql.Date d gen] (.writeString gen (str (.toLocalDate d)))))
+(add-encoder java.sql.Time (fn [^java.sql.Time t gen] (.writeString gen (str (.toLocalTime t)))))
+
 (def version v/version)
 
 (defn- log-exception
