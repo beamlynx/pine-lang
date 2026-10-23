@@ -29,7 +29,7 @@ UPDATE-PARTIAL    := <update-action-op> update-assignments <","> <ws*> partial-u
 UPDATE-ACTION     := <update-action-op> update-assignments
 COUNT             := <count-op>
 
-GROUP             := <group-op>         (group-args | legacy-group-args)
+GROUP             := <group-op>         (total-args / group-args / legacy-group-args)
 
 select-op         := (<"select:"> | <"s:">) <ws*>
 where-op          := (<"where:">  | <"w:">) <ws*>
@@ -49,6 +49,9 @@ table-mod         := <":"> ("parent"|"child"|"left"|"right") | as-alias | hint-c
 (* The keys, then `with` and the aggregates: `group: status with count, total => max`.
    Without `with`, each group is counted. *)
 group-args          := columns (<ws+> <"with"> <ws+> aggregate-functions)?
+(* No keys: one group, the whole table. `group: with count as n, total => sum`.
+   Tried first, so `with` is never read as a column of that name. *)
+total-args          := <"with"> <ws+> aggregate-functions
 (* `=>` used to divide the keys from the aggregates. Read only to say so. *)
 legacy-group-args   := columns <ws*> <"=>"> <ws*> aggregate-functions
 aggregate-functions := aggregate-function (<","> <ws*> aggregate-function)*

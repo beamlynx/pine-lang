@@ -88,6 +88,8 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `x::text = '1'`, `CAST(x AS uuid) = '...'` | `x = '1' ::text`, `x = '...' ::uuid` |
 | `'2024-01-01'::timestamp` | `'2024-01-01'`: Pine types a value by its column |
 | `SELECT COUNT(*) FROM ... WHERE ...` | `... \| count:` |
+| `SELECT COUNT(*) AS n FROM t` | `t \| group: with count as n`: `count:` can't be named |
+| `SELECT COUNT(*) AS n, SUM(x) AS s FROM t` | `t \| group: with count as n, x => sum as s`: one group, the whole table |
 | `SELECT a, COUNT(*) FROM t GROUP BY a` | `t \| group: a with count` |
 | `SELECT a, COUNT(*) AS n FROM t GROUP BY a` | `t \| group: a with count as n` |
 | `SELECT a FROM t GROUP BY a` | `t \| group: a \| select: a`: Pine's count is left out |
@@ -574,7 +576,6 @@ changing which rows come back:
 
 - A second SQL column of one name, renamed: `count_2`. In a `WITH` query this and the next are
   refused instead, since a later query may use the columns.
-- `SELECT COUNT(*) AS n` without `GROUP BY`: `count:` names its column `count`.
 - An inner join's `ON` condition moved to `where:`.
 - `ROW_NUMBER()` or `DISTINCT ON` with no `ORDER BY`: which row of each group Pine keeps.
 - Pine's hidden columns left out.
@@ -613,7 +614,7 @@ Each is refused with its line.
 | `AND`, `BETWEEN` or `IS [NOT] DISTINCT FROM` inside a value | Pine joins a value's conditions with `or`. |
 | A computed value without `AS`, other than an aggregate | Pine names every computed value. |
 | A cast after an aggregate to other than `text` or `uuid` | Pine casts to those two. |
-| An aggregate without `GROUP BY`, or inside another aggregate | Not in Pine. |
+| An aggregate inside another aggregate | Not in Pine. |
 | `ORDER BY` an expression that isn't selected, outside `ROW_NUMBER()` | Select it with a name, and sort by the name. |
 | A window function other than `ROW_NUMBER()`, or one not kept with `rn <= N` | Not in Pine. |
 | `rn = 2`, `rn > 1`, or `rn` used any other way | Pine keeps the first N rows of each group. |
@@ -625,9 +626,8 @@ Each is refused with its line.
 | `DELETE` without a connection, or on a table with no primary key | `delete!` names rows by the key. |
 | `IS DISTINCT FROM` another column | Compare with a value. |
 | `COUNT(DISTINCT ...)` | Pine's count counts rows. |
-| `COUNT(x)` next to another column or count without `GROUP BY` | Needs `GROUP BY`. |
 | `COUNT(x) FILTER (WHERE ...)` | It needs `x is not null` and the filter, and a count's filter joins its conditions with `or`. |
-| A column next to `COUNT(*)` without `GROUP BY` | Needs `GROUP BY`. |
+| A column next to an aggregate without `GROUP BY` | Needs `GROUP BY`. |
 | `ORDER BY` or `LIMIT` on a single `COUNT(*)` | Remove them. |
 | A selected column that isn't grouped | Not in SQL either. |
 | `ORDER BY 1` or `GROUP BY 1` after a `*`, `GROUP BY` a position that numbers a value | Name the column. |

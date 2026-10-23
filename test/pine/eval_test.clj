@@ -345,7 +345,11 @@
   (testing "group"
     (is (= {:query "WITH \"x_1\" AS ( SELECT \"e_0\".\"status\" AS \"status\" FROM \"email\" AS \"e_0\" ) SELECT \"x_1\".\"status\", COUNT(1) AS \"count\" FROM \"x_1\" GROUP BY \"x_1\".\"status\" LIMIT 10000",
             :params nil}
-           (generate "email | group: status with count"))))
+           (generate "email | group: status with count")))
+    (testing "with no keys, one group: the whole table, and no GROUP BY"
+      (is (= {:query "WITH \"x_1\" AS ( SELECT 1 FROM \"email\" AS \"e_0\" ) SELECT COUNT(1) AS \"n\" FROM \"x_1\"  LIMIT 10000"
+              :params nil}
+             (generate "email | group: with count as n")))))
 
   (testing "date extraction functions"
     ;; Year extraction

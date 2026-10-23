@@ -322,6 +322,10 @@
     (is (= [{:type :group, :value {:columns [{:column "name"} {:column "status"}], :functions [{:kind :aggregate :fn "count" :arg nil :filter nil}]}}]
            (p "group: name, status with count")))
 
+    ;; No keys: one group, the whole table.
+    (is (= [{:type :group, :value {:columns [], :functions [{:kind :aggregate :fn "count" :arg nil :filter nil :column-alias "n"}]}}]
+           (p "group: with count as n")))
+
     ;; with aliases
     (is (= [{:type :group, :value {:columns [{:alias "x", :column "status"}], :functions [{:kind :aggregate :fn "count" :arg nil :filter nil}]}}]
            (p "group: x.status with count"))))
