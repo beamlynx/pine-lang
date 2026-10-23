@@ -205,7 +205,11 @@
 
   (testing "group and count"
     (is (= [[1 2] [2 1]] (rows "person | select: company_id | group: company_id with count")))
-    (is (= [[3]] (rows "person | count:"))))
+    (is (= [[3]] (rows "person | count:")))
+    ;; No keys: one group, the whole table. SQLite takes no SELECT of
+    ;; nothing, so a bare count must still read something.
+    (is (= [[3]] (rows "person | group: with count as n")))
+    (is (= [[2 4]] (rows "person | where: active = true | group: with count as n, id => sum as ids"))))
 
   (testing "a sealed table's column after a checkpoint is the checkpoint's column"
     (is (= [1 2] (selected "company as c | person .company_id | group: c.id | s: c.id | o: id asc")))

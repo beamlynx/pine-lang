@@ -1007,7 +1007,7 @@ COMMIT;
     (refuses "select coalesce(a, b) from t" "Name this value with AS")
     (refuses "select concat(a, b) as k from t" "CONCAT() skips NULL arguments")
     (refuses "select (a = 1 and b = 2) as k from t" "AND inside a value isn't in Pine.")
-    (refuses "select min(a) as m from t" "An aggregate like min() needs GROUP BY.")
+    (converts-to "select min(a) as m from t" "t | group: with a => min as m")
     (refuses "select * from t order by coalesce(a, b)" "ORDER BY an expression isn't converted yet.")
     (refuses "select coalesce(a::int, b) as k from t" "cast to int")))
 
@@ -1033,7 +1033,8 @@ COMMIT;
   (testing "Without GROUP BY, COUNT(column) on its own is a where: and count:"
     (converts-to "select count(x) from t where y = 1"
                  "t | where: y = 1 | where: x is not null | count:")
-    (refuses "select count(*), count(x) from t" "Without GROUP BY, COUNT(column) converts only on its own"))
+    (converts-to "select count(*), count(x) from t" "t | group: with count, count where x is not null as count_2"
+                 ["`count_2` is the SQL's column `count`: Pine needs each name once."]))
 
   (testing "COUNT(column) with FILTER needs AND, which a count's filter doesn't have"
     (refuses "select a, count(b) filter (where c = 1) as n from t group by a" "COUNT(column) with FILTER isn't in Pine"))
@@ -1214,3 +1215,20 @@ s | group: a with count as subjects, n => max as max_n | order: max_n desc | lim
   (testing "A select list with a column of the last table needs no from:"
     (converts-to "select sc.a, o.n from s sc join o on o.id = sc.o_id"
                  "s as sc | o .id = .o_id | select: sc.a, n")))
+
+(deftest test-aggregates-without-group-by
+  (testing "COUNT(*) with a name of its own is one group, so the name is kept"
+    (converts-to "SELECT COUNT(*) AS active_customers FROM customers WHERE is_active"
+                 "customers | where: is_active = true | group: with count as active_customers"))
+  (testing "A plain COUNT(*) stays count:"
+    (converts-to "select count(*) from t" "t | count:")
+    (converts-to "select count(*) as count from t" "t | count:"))
+  (testing "Several aggregates without GROUP BY are totals over the whole table"
+    (converts-to "SELECT COUNT(*) AS orders, SUM(total) AS revenue FROM orders WHERE status = 'shipped'"
+                 "orders | where: status = 'shipped' | group: with count as orders, total => sum as revenue")
+    (converts-to "select sum(total) from orders" "orders | group: with total => sum as sum"))
+  (testing "COUNT(*) FILTER converts once there is a group to count in"
+    (converts-to "select count(*) filter (where status = 'x') as n from t"
+                 "t | group: with count where status = 'x' as n"))
+  (testing "A column next to an aggregate still needs GROUP BY"
+    (refuses "select count(*) as n, name from t" "A column next to an aggregate needs GROUP BY.")))

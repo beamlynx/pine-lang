@@ -870,7 +870,9 @@
                       (map (fn [[[alias column] inner-name]]
                              [(str (q alias column) " AS " (q inner-name)) []])
                            (aggregate-inputs columns)))
-        select-clause (str "SELECT " (s/join ", " (map first select-parts)))
+        ;; A bare count over no keys reads no column. Only Postgres takes a
+        ;; SELECT of nothing, so it selects 1.
+        select-clause (str "SELECT " (if (seq select-parts) (s/join ", " (map first select-parts)) "1"))
         from (str "FROM " (q schema table) " AS " (q a))
         join (build-join-clause {:tables tables :joins joins :aliases aliases})
         [where-clause where-params] (build-where-clause where)]
@@ -904,7 +906,10 @@
                              ;; Use the same alias that was assigned in the inner query
                               :else [(q cte-alias (or column-alias column)) []]))
                           columns)
-        group-by (str "GROUP BY " (s/join ", " (map #(q cte-alias %) group-cols)))]
+        ;; No keys (`group: with count as n`): one group, the whole table.
+        group-by (if (seq group-cols)
+                   (str "GROUP BY " (s/join ", " (map #(q cte-alias %) group-cols)))
+                   "")]
     {:select (str "SELECT " (s/join ", " (map first select-items)) " FROM " (q cte-alias))
      :params (mapcat second select-items)
      :group-by group-by}))

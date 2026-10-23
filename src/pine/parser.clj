@@ -652,6 +652,10 @@
 
 (defmethod -normalize-op :GROUP [[_ payload]]
   (match payload
+    [:total-args [:aggregate-functions & functions]]
+    {:type :group
+     :value {:columns []
+             :functions (mapv normalize-aggregate functions)}}
     [:group-args [:columns & columns] [:aggregate-functions & functions]]
     {:type :group
      :value {:columns (mapv -normalize-group-column columns)

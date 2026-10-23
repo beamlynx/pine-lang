@@ -1041,11 +1041,12 @@
         agg-name #(get agg-names (akey %))
         group-text (str "group: " (s/join ", " (map col-ref group-cols))
                         (when (seq aggs)
-                          (str " with " (s/join ", " (map #(if (= "count" (agg-name %) (default-agg-name %) (agg-pine ctx %))
+                          ;; No grouped columns: one group, the whole table.
+                          (str (when (seq group-cols) " ") "with " (s/join ", " (map #(if (= "count" (agg-name %) (default-agg-name %) (agg-pine ctx %))
                                                          ;; A plain count is already called count.
-                                                             (agg-pine ctx %)
-                                                             (str (agg-pine ctx %) " as " (agg-name %)))
-                                                          aggs)))))
+                                                                                        (agg-pine ctx %)
+                                                                                        (str (agg-pine ctx %) " as " (agg-name %)))
+                                                                                     aggs)))))
         refs (into (set (map :t group-cols)) (mapcat #(expr-refs tables %) aggs))
         ;; After the group:, a column is the result's column by its name.
         ;; With no aggregate, Pine adds a count.
@@ -1156,6 +1157,20 @@
       (seq group)
       (plan-aggregated tables current items stmt warn!)
 
+      ;; Aggregates without GROUP BY are one group, the whole table:
+      ;; `group: with count as n, total => sum as revenue`. Only a plain
+      ;; COUNT(*), without a name of its own, stays the shorter count:.
+      (and (some #(or (= :count (:kind %)) (and (= :expr (:kind %)) (aggregate? (:expr %)))) items)
+           (not (and (= 1 (count items))
+                     (= :count (:kind (first items)))
+                     (contains? #{nil "count"} (:as (first items)))
+                     ;; COUNT(x) carries its own `x is not null`; only
+                     ;; COUNT(*) FILTER (...) needs a group.
+                     (or (:column (first items)) (not (:filter (first items)))))))
+      (do (when-let [c (first (remove #(or (= :count (:kind %)) (= :expr (:kind %))) items))]
+            (refuse (:at c) "A column next to an aggregate needs GROUP BY."))
+          (plan-aggregated tables current items stmt warn!))
+
       (some #(= :count (:kind %)) items)
       (do (when-let [f (first (filter #(and (:filter %) (not (:column %))) items))]
             (refuse (:at f) "COUNT(*) FILTER needs GROUP BY. Without one, put the condition in WHERE."))
@@ -1166,8 +1181,6 @@
             (refuse (:at (first (remove #(= :count (:kind %)) items))) "A column next to COUNT(*) needs GROUP BY."))
           (when (seq order) (refuse (:at (first order)) "ORDER BY on a single COUNT(*) isn't converted. Remove it."))
           (when limit (refuse (:at limit) "LIMIT on a single COUNT(*) isn't converted. Remove it."))
-          (when (and (:as (first items)) (not= "count" (:as (first items))))
-            (warn! (str "COUNT(*) AS " (:as (first items)) ": Pine names the count column `count`.") :columns))
           ;; COUNT(x) on its own counts the rows where x isn't NULL.
           (conj (mapv (fn [c] {:op :where :clause c}) (some->> (:filter (first items)) vector (plan-where tables)))
                 {:op :count}))

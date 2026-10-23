@@ -199,6 +199,17 @@ as SQL's `HAVING` does:
 An aggregate can't be used inside a function. To combine two, name them in `group:` and combine their names
 in a `select:` after it: `| s: id, coalesce(sp_attachment, any_attachment) as attachment`.
 
+#### No keys: the whole table
+
+Without keys, `group:` makes one group of every row, and the aggregates are totals:
+
+```
+orders | where: status = 'shipped' | group: with count as orders, total => sum as revenue
+```
+
+That is SQL's aggregates without `GROUP BY`. It is the way to name a count: `count:` is a shorter
+way to count, and its column is always called `count`.
+
 ### now() in where: and update!
 
 `now()` can follow a comparison in `where:`, and be the value of an `update!`:
