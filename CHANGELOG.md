@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [0.51.0] - 2026-10-26
 ### Added
 - **`group:` without keys gives one row of totals:** `orders | group: with count as n, total => sum as revenue`. It is how to name a count, since `count:` always calls its column `count`. SQL to Pine uses it, so `COUNT(*) AS n` keeps its name, and aggregates without `GROUP BY` now convert.
 - **SQL to Pine: JSON keys.** `data->>'plan'` converts to `data.plan`, and `data->'tags'->0` to `data.tags[0]`, in selected values and function arguments. On MySQL and SQLite, `$` paths convert too. A key in `WHERE` or `GROUP BY` is still refused, now with a message about JSON keys.
