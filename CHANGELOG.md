@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Fixed
+- **Access policy: joins are checked.** A join on a hidden column is refused, as `where:` is, because rows match only where the values are equal. A real foreign key still joins unless just one of its two columns is hidden, since the other column would show the hidden value.
+- **Access policy: a name in another case can't get past a rule.** On MySQL and SQLite, which ignore case, `CUSTOMER_ID` is now judged as the column `customer_id`. Under a policy, a column that the schema index doesn't have, on a table it does, is refused.
+- **Access policy: SQLite column types are no longer guessed.** A declared type such as `STRING`, `JSONB` or `SSN` keeps its own name, instead of becoming `numeric` and being shown by a rule that allows numbers.
+- **Access policy: only a primary key called `id` is exempt.** An `id` column that isn't the table's primary key is checked like any other column.
 
 ## [0.51.0] - 2026-10-26
 ### Added

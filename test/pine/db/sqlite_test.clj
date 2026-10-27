@@ -27,6 +27,8 @@
    "CREATE TABLE untyped (id, note)"
    "CREATE TABLE doc (id INTEGER PRIMARY KEY, name TEXT, data JSON)"
    "CREATE TABLE membership (group_code TEXT, member_code TEXT, role TEXT, PRIMARY KEY (group_code, member_code))"
+   ;; Declared types SQLite would give NUMERIC affinity.
+   "CREATE TABLE contact (id INTEGER PRIMARY KEY, email STRING, ssn SSN, profile JSONB, score NUMERIC)"
    "INSERT INTO company VALUES (1, 'Acme', '2024-01-31 10:00:00'), (2, 'Globex', '2024-02-15 08:30:00')"
    "INSERT INTO person VALUES (1, 'Ann', 1, 1), (2, 'Bob', 1, 0), (3, 'Cy', 2, 1)"
    ;; Bob's age is a JSON string, not a number; Cy's country a JSON null.
@@ -35,7 +37,8 @@
       (2, 'Bob', '{\"country\":\"NO\",\"age\":\"31\",\"vip\":false,\"address\":{\"city\":\"Bergen\"}}'),
       (3, 'Cy', '{\"country\":null,\"age\":20}'),
       (4, 'Di', NULL)"
-   "INSERT INTO membership VALUES ('g1', 'm1', 'a'), ('g1', 'm2', 'a'), ('g2', 'm1', 'a')"])
+   "INSERT INTO membership VALUES ('g1', 'm1', 'a'), ('g1', 'm2', 'a'), ('g2', 'm1', 'a')"
+   "INSERT INTO contact VALUES (1, 'ann@example.com', '123-45-6789', '{}', 7)"])
 
 (def ^:dynamic *db-file* nil)
 (def ^:dynamic *id* nil)
@@ -158,17 +161,30 @@
       (is (= "datetime" (affinity "DATETIME")))
       (is (= "date" (affinity "Date")))
       (is (= "json" (affinity "JSON"))))
-    (testing "everything else follows SQLite's own affinity rules, in order"
+    (testing "integer, real, decimal, text and blob names get those names"
       (is (= "integer" (affinity "UNSIGNED BIG INT")))
       (is (= "integer" (affinity "INT8")))
+      (is (= "integer" (affinity "INT(11)")))
+      (is (= "integer" (affinity "TINYINT(1)")))
+      (is (= "integer" (affinity "BIGINT UNSIGNED")))
+      (is (= "integer" (affinity "INT UNSIGNED")))
+      (is (= "integer" (affinity "BIGINT(20) UNSIGNED")))
       (is (= "text" (affinity "VARCHAR(255)")))
       (is (= "text" (affinity "NVARCHAR(100)")))
       (is (= "text" (affinity "CLOB")))
       (is (= "blob" (affinity "BLOB")))
       (is (= "real" (affinity "DOUBLE PRECISION")))
       (is (= "real" (affinity "FLOAT")))
-      (is (= "numeric" (affinity "DECIMAL(10, 5)")))
-      (is (= "numeric" (affinity "SOMETHING ELSE"))))
+      (is (= "numeric" (affinity "DECIMAL(10, 5)"))))
+    (testing "any other declared type stays as written, so no rule about numbers shows it"
+      ;; SQLite gives these NUMERIC affinity, STRING included, and POINT
+      ;; INTEGER affinity. An access policy that shows numeric columns
+      ;; showed every one of them.
+      (is (= "string" (affinity "STRING")))
+      (is (= "jsonb" (affinity "JSONB")))
+      (is (= "ssn" (affinity "SSN")))
+      (is (= "point" (affinity "POINT")))
+      (is (= "something else" (affinity "SOMETHING ELSE"))))
     (testing "no declared type is unknown"
       (is (nil? (affinity nil)))
       (is (nil? (affinity "")))
@@ -311,3 +327,36 @@
   (testing "group by a key"
     (is (= #{[nil 2] ["NO" 1] ["SE" 1]}
            (set (rows "doc | select: data.country | group: data.country with count"))))))
+
+(defn- policy-rows
+  "Like rows, under an access policy."
+  [expression rules]
+  (rest (db/run-query *id* (-> expression parser/parse :result
+                               (ast/generate *id* nil nil {} rules)
+                               eval/build-query))))
+
+(deftest test-access-policy
+  (let [show-numbers {:type "column-type" :allow ["integer" "numeric" "real"]}]
+    (testing "a declared type SQLite would call numeric isn't shown by a rule about numbers"
+      (is (= "string" (:type (column "contact" "email"))))
+      (is (= [[1 "xxxxx" "xxxxx" "xxxxx" 7]]
+             (map #(vec (take 5 %)) (policy-rows "contact | s: id, email, ssn, profile, score" [show-numbers])))))
+
+    (testing "a hide rule covers a column however its name is spelled: SQLite ignores case"
+      (let [rules [show-numbers
+                   {:type "column-name" :suffix "name"}
+                   {:type "hide" :match {:type "column" :table "person" :column "name"}}]]
+        (doseq [e ["person | s: NAME" "PERSON | s: name" "Person | s: Name"]]
+          (is (= ["xxxxx" "xxxxx" "xxxxx"] (map first (policy-rows e rules))) e))
+        (is (thrown-with-msg? Exception #"`p_0.NAME` is hidden by the access policy"
+                              (policy-rows "person | where: NAME = 'Ann'" rules)))))
+
+    (testing "a hand-written `column` rule matches whatever case it is written in"
+      (is (= ["xxxxx" "xxxxx" "xxxxx"]
+             (map first (policy-rows "person | s: name" [show-numbers
+                                                         {:type "column-name" :suffix "name"}
+                                                         {:type "hide" :match {:type "column" :table "PERSON" :column "Name"}}])))))
+
+    (testing "a column the index doesn't have is refused, not guessed at"
+      (is (thrown-with-msg? Exception #"`p_0.nickname` isn't a column of `person`"
+                            (policy-rows "person | s: nickname" [show-numbers]))))))
