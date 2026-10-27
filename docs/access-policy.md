@@ -13,7 +13,9 @@ beamlynx lets an AI agent query a database. The owner decides what the agent may
 - `access-policy`: a list of rules. Absent or empty means no policy: every value is returned.
 - `access-policy-mode`: `"enforce"` (the default) or `"annotate"`. Only the exact string `"annotate"` annotates.
 
-**Enforce** hides what the rules hide. It also refuses a query that names a hidden column in `where:`, `order:`, `group:` or after `per`. Filtering on a hidden column would reveal it through row counts.
+**Enforce** hides what the rules hide. It also refuses a query that names a hidden column in `where:`, `order:`, `group:`, after `per`, or in a join. Filtering on a hidden column would reveal it through row counts. A join reveals it the same way, because rows match only where the values are equal.
+
+A real foreign key is the one join with more room. It joins when both of its columns are shown, or both are hidden. When only one is hidden, the other column would show its value, so the join is refused. Every other join, written by hand or guessed from column names, is refused when either column is hidden.
 
 **Annotate** hides nothing and refuses nothing. It only reports how the rules would treat each column (see below). beamlynx uses it in the owner's own tab, to mark the columns an agent can't see.
 
@@ -52,10 +54,17 @@ A hide rule whose `match` Pine doesn't recognise hides every column. For a hide 
 ## What is always shown, and always hidden
 
 - Postgres's catalog views used to discover the schema (`information_schema.columns`, `pg_catalog.pg_class` and others) are always shown, even when a hide rule matches. They hold names, not values.
-- The `id` column Pine adds to each row so it can be edited is shown, unless a hide rule matches it.
+- A primary key column called `id` is shown, and can be used in `where:` and joins, unless a hide rule matches it. Pine adds it to each row so the row can be edited. An `id` column that isn't the primary key is checked like any other.
 - A computed value is hidden when any column it reads is hidden.
 - A column whose type Pine can't tell is hidden.
-- A table missing from the schema index is refused, not returned unhidden.
+- A table missing from the schema index is refused when its columns are selected with `*`, not returned unhidden.
+- A column the schema index doesn't have, of a table it does have, is refused. Re-index the connection after adding a column.
+
+## Names and case
+
+The rules judge each column and table by the name the schema index has for it. MySQL and SQLite ignore case in names, so there `CUSTOMER_ID` is the column `customer_id`, and a rule about `customer_id` covers it. A `column` rule's own names are compared ignoring case there too. Postgres doesn't ignore case, since Pine quotes every name: `CUSTOMER_ID` is a different column, and refused if the table has no such column.
+
+On SQLite, a column's type is the type it was declared with. Integer, real, decimal, text and blob names are reduced to `integer`, `real`, `numeric`, `text` and `blob`. Any other declared type keeps its own name in lowercase, such as `string` or `jsonb`. A `column-type` rule matches that name.
 
 ## The report on each column
 
@@ -77,7 +86,7 @@ A computed value has `hidden` only. A column of a named result or a checkpoint h
 
 ## A refused query
 
-A query that names a hidden column in `where:`, `order:`, `group:` or after `per` is refused with `error-type: "policy"`. The error also says which column, in `hidden-column`:
+A query that names a hidden column in `where:`, `order:`, `group:`, after `per`, or in a join is refused with `error-type: "policy"`. The error also says which column, in `hidden-column`:
 
 ```json
 "hidden-column": {
@@ -89,5 +98,7 @@ A query that names a hidden column in `where:`, `order:`, `group:` or after `per
 ```
 
 It has `by`, the rule that hid it, when a hide rule did. Without `by`, no Allow rule matched, so an owner can allow the column with a `column` rule. With a hide rule in `by`, a `column` rule wouldn't help: the hide rule always wins.
+
+A query that names a column the schema index doesn't have is refused with `error-type: "policy"` too, but has no `hidden-column`: there is no column to allow.
 
 When Pine can't tell which schema an unqualified table is in, a `column` rule with a `schema` matches it as a hide rule and doesn't match it as a show rule. The doubt keeps the column hidden.

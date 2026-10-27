@@ -25,7 +25,9 @@
   (:require
    [clojure.string :as s]
    [pine.computed :as computed]
-   [pine.data-types :as dt]))
+   [pine.data-types :as dt]
+   [pine.db.connections :as connections]
+   [pine.db.references :as refs]))
 
 (def redacted-value "xxxxx")
 (def redacted-sql-literal (str "'" redacted-value "'"))
@@ -83,6 +85,72 @@
           (= 1 (count schemas))           (first schemas)
           (some #{"public"} schemas)      "public"
           :else                           nil))))
+
+(defn- case-insensitive?
+  "Whether the connection's database matches names without regard to case.
+  MySQL and SQLite do: `CUSTOMER_ID` reads the column `customer_id`. MySQL's
+  table names follow the server's setting, so case is ignored for them too:
+  for a hide rule, that is the safe reading. Postgres doesn't: Pine quotes
+  every name, and a quoted name matches only its own spelling."
+  [state]
+  (contains? #{:mysql :sqlite} (connections/get-dialect (:connection-id state))))
+
+(defn- same-name?
+  [ci? a b]
+  (and (string? a) (string? b)
+       (if ci? (= (s/lower-case a) (s/lower-case b)) (= a b))))
+
+(defn- canonical-name
+  "The schema index's own spelling of `name` among `names`: the exact one,
+  or, where case is ignored, the only one that differs from it by case
+  alone. nil when there is none, or more than one."
+  [ci? names name]
+  (when (string? name)
+    (if (some #{name} names)
+      name
+      (when ci?
+        (let [matches (filter #(same-name? true % name) names)]
+          (when (= 1 (count matches)) (first matches)))))))
+
+(defn- indexed-names
+  "The names of the tables in an index bucket that have columns."
+  [tables]
+  (keep (fn [[table data]] (when (seq (:columns data)) table)) tables))
+
+(defn- canonical-table
+  "{:table :schema} spelled the way the schema index spells it, or nil when
+  the index doesn't have that table."
+  [references ci? {:keys [table schema]}]
+  (if schema
+    (when-let [s (canonical-name ci? (keys (:schema references)) schema)]
+      (when-let [t (canonical-name ci? (indexed-names (get-in references [:schema s :table])) table)]
+        {:table t :schema s}))
+    (when-let [t (canonical-name ci? (indexed-names (:table references)) table)]
+      {:table t :schema nil})))
+
+(defn- table-columns
+  [references {:keys [table schema]}]
+  (if schema
+    (get-in references [:schema schema :table table :columns])
+    (get-in references [:table table :columns])))
+
+(defn- resolve-column
+  "How the schema index knows a column of a real table:
+  {:table-info {:table :schema} :column name}, both spelled the way the
+  index spells them. :column is nil when the index has the table but not
+  the column. nil when the column isn't of a real table the index has: a
+  named result's, or a table missing from the index.
+
+  Every policy decision is made on these names. MySQL and SQLite read
+  `CUSTOMER_ID` as `customer_id`, so a rule about `customer_id` has to
+  cover it."
+  [state alias column source]
+  (let [table-info (column-table-info state alias source)]
+    (when (and (:table table-info) (not (:ast table-info)) (not (s/blank? column)))
+      (let [ci? (case-insensitive? state)]
+        (when-let [t (canonical-table (:references state) ci? table-info)]
+          {:table-info t
+           :column     (canonical-name ci? (map :column (table-columns (:references state) t)) column)})))))
 
 (def ^:private catalog-schemas
   "Postgres's own schema-introspection views, not application data. The MCP
@@ -159,13 +227,16 @@
     ;; right-click menu writes. A rule without :schema matches the table in
     ;; any schema. When the table's schema can't be told, a hide rule
     ;; matches and a show rule doesn't, so the doubt keeps it hidden.
+    ;; Names are compared the way the database compares them: ignoring case
+    ;; on MySQL and SQLite, where a rule may be written by hand.
     "column"
     (let [{:keys [table] :as table-info} (column-table-info state alias source)
-          schema (when table (resolved-schema (:references state) table-info))]
+          schema (when table (resolved-schema (:references state) table-info))
+          same?  (partial same-name? (case-insensitive? state))]
       (boolean
-       (and table (= table (:table matcher)) (= column (:column matcher))
+       (and table (same? table (:table matcher)) (same? column (:column matcher))
             (or (nil? (:schema matcher))
-                (= schema (:schema matcher))
+                (same? schema (:schema matcher))
                 (and hiding? (nil? schema))))))
 
     false))
@@ -196,6 +267,10 @@
   can't resolve a type or table for stays hidden. A raw aggregate like
   string_agg(email, ',') would otherwise be a one-line bypass.
 
+  The rules see the column and its table as the schema index spells them
+  (see resolve-column). A column the index doesn't have, of a table it
+  does, is hidden.
+
   Postgres's own catalog views (see catalog-schemas) are always shown, hide
   rules included: they hold names, not values. The hidden `id` column pine
   adds for editing is shown too, unless a hide rule covers it. Other hidden key columns are not exempt: a primary key can be any
@@ -205,15 +280,25 @@
   A computed value (or an aggregate) is shown only when every column it
   reads is. Otherwise a condition on a hidden column would leak through its
   true/false result. One that reads no column, like now(), is shown."
-  [state rules {:keys [alias source auto-id column] :as col}]
+  [state rules {:keys [alias source] :as col}]
   (if-let [node (:computed col)]
     {:hidden (boolean (some #(:hidden (decide state rules (select-keys % [:alias :column :source])))
                             (computed/columns node)))}
-    (let [hide (when-not (catalog-column? state alias source)
-                 (some #(when (and (hide-rule? %) (hide-matches? state col %)) %) rules))]
+    (let [catalog?  (catalog-column? state alias source)
+          resolved  (when-not catalog? (resolve-column state alias (:column col) source))
+          ;; Decide on the index's spelling of the column and its table.
+          col       (if (:column resolved)
+                      (assoc col :column (:column resolved) :source (:table-info resolved))
+                      col)
+          {:keys [auto-id column]} col
+          hide      (when-not catalog?
+                      (some #(when (and (hide-rule? %) (hide-matches? state col %)) %) rules))]
       (cond
         hide                                 {:hidden true :by hide}
-        (catalog-column? state alias source) {:hidden false}
+        catalog?                             {:hidden false}
+        ;; A table the index has, without this column: nothing to decide
+        ;; on, so it stays hidden. check-references refuses it outright.
+        (and resolved (nil? (:column resolved))) {:hidden true}
         (and auto-id (= "id" column))        {:hidden false}
         :else
         (if-let [show (some #(when (and (not (hide-rule? %)) (matcher-matches? state col % false)) %) rules)]
@@ -247,9 +332,12 @@
         (assoc col :policy (decide state rules col))
 
         (and (:table table-info) (not (:ast (get aliases alias))) (not (s/blank? (:column col))))
-        (assoc col :policy (assoc (decide state rules col)
-                                  :table {:schema (resolved-schema (:references state) table-info)
-                                          :table  (:table table-info)}))
+        ;; The table as the index spells it, which is what a `column` rule
+        ;; written from this report should name.
+        (let [table-info (or (:table-info (resolve-column state alias (:column col) source)) table-info)]
+          (assoc col :policy (assoc (decide state rules col)
+                                    :table {:schema (resolved-schema (:references state) table-info)
+                                            :table  (:table table-info)})))
 
         :else col))))
 
@@ -348,33 +436,125 @@
               (into (map (juxt :alias :column) (computed/columns (:node value))))))
           (if-let [conditions (:or entry)] conditions [entry])))
 
-(defn check-references
-  "Throws when where:, order:, group: or `limit: N per` names a column the
-  policy hides.
-  Redaction only touches the SELECT list, so filtering, sorting or grouping
-  on a hidden column still read its values: `where: title like 'a%'`
-  repeated letter by letter recovers a hidden title from row counts alone.
+(defn- select-columns
+  "[alias column source] for every real column a SELECT list reads: a
+  selected column, or each column a computed value reads. Not the key
+  columns Pine adds, which come from the index."
+  [columns]
+  (mapcat (fn [{:keys [alias column source computed auto-id]}]
+            (cond
+              computed (map (juxt :alias :column :source) (computed/columns computed))
+              (and (not auto-id) (not (s/blank? column))) [[alias column source]]))
+          columns))
 
-  Exempt: the `id` column, unless a hide rule covers it (rows are already
-  shown with their id), columns of a named result or checkpoint (its query was built under the same policy,
-  so a hidden column there already holds the redacted literal), and
-  catalog relations."
-  [{:keys [where order group limit-per current aliases] :as state} rules]
+(defn- join-pairs
+  "[[alias column] [alias column]] for every pair of columns a join
+  compares. A pair's :from column is the :from alias's, whichever table is
+  the parent."
+  [{:keys [from to columns]}]
+  (map (fn [pair] [[from (:from pair)] [to (:to pair)]]) columns))
+
+(defn- table-name [{:keys [table schema]}]
+  (if schema (str schema "." table) table))
+
+(defn- check-known!
+  "Throws when `alias.column` names a column the schema index doesn't have,
+  on a table it does. There is nothing to decide on: a different spelling
+  could be how MySQL or SQLite reach a column a rule hides."
+  [state alias column source]
+  (when-let [{resolved :column :keys [table-info]} (resolve-column state alias column source)]
+    (when-not resolved
+      (throw (ex-info (str "`" alias "." column "` isn't a column of `" (table-name table-info)
+                           "` in the schema index, so the access policy can't check it. "
+                           "Check the spelling, or re-index the connection if the column is new.")
+                      {:error-type "policy" :alias alias :column column})))))
+
+(defn- row-key?
+  "Whether `column` is part of the primary key of the real table behind
+  `alias`. Its values are already in every result, as the key columns Pine
+  adds."
+  [state alias column]
+  (when-let [{c :column {:keys [table schema]} :table-info} (resolve-column state alias column nil)]
+    (boolean (and c (some #{c} (refs/primary-key (:references state) schema table))))))
+
+(defn- reference
+  "A column named outside the SELECT list, as decide reads it. The `id`
+  key column is let through the way the key columns Pine adds are, unless
+  a hide rule covers it. Only a real primary key: an `id` that isn't one
+  holds whatever its table puts there."
+  [state alias column]
+  {:alias alias :column column :auto-id (row-key? state alias column)})
+
+(defn- refuse-hidden!
+  [state rules alias column message]
+  ;; :hidden says which real column was refused, and the rule that hid it,
+  ;; so a client can ask the owner to allow it (see api.clj's error-body).
+  ;; Same shape as annotate-column's :policy.
+  (throw (ex-info (str "`" alias "." column "` is hidden by the access policy, so it can't be " message)
+                  {:error-type "policy" :alias alias :column column
+                   :hidden (:policy (annotate-column state rules (reference state alias column)))})))
+
+(defn- check-join!
+  "Throws when a join compares a hidden column. Rows match only where the
+  two sides are equal, so a join reads the hidden value the way a where:
+  does: joined to a named result of guesses, or to a shown column, it
+  gives the value away.
+
+  A real foreign key is let through when both sides are hidden: the rows it
+  links are linked by the schema, and neither value shows. When only one
+  side is hidden, the other side shows its value, so it is refused. A side
+  that is a named result's column counts as shown. Any other join, a manual
+  one or a guess from column names, compares whatever it is given, so a
+  hidden column on either side refuses it."
+  [{:keys [aliases] :as state} rules {:keys [resolution] :as join}]
+  (doseq [[[a1 c1 :as side1] [a2 c2 :as side2]] (join-pairs join)]
+    (let [real?   (fn [[alias column]] (and (not (s/blank? column))
+                                            (get aliases alias)
+                                            (not (get-in aliases [alias :ast]))))
+          hidden? (fn [[alias column :as side]]
+                    (and (real? side) (sensitive-column? state rules (reference state alias column))))
+          h1 (hidden? side1)
+          h2 (hidden? side2)]
+      (when (or h1 h2)
+        (if (= "fk" resolution)
+          (when-not (and h1 h2)
+            (let [[[a c] [oa oc]] (if h1 [side1 side2] [side2 side1])]
+              (refuse-hidden! state rules a c (str "used to join tables: `" oa "." oc "` would show its value."))))
+          (if h1
+            (refuse-hidden! state rules a1 c1 "used to join tables.")
+            (refuse-hidden! state rules a2 c2 "used to join tables.")))))))
+
+(defn check-references
+  "Throws when a query reads a hidden column anywhere but the SELECT list:
+  in where:, order:, group:, after `per`, or in a join (see check-join!).
+  Redaction only touches the SELECT list, so filtering, sorting, grouping
+  or joining on a hidden column still read its values: `where: title like
+  'a%'` repeated letter by letter recovers a hidden title from row counts
+  alone.
+
+  Also throws, first, when any column of a table the schema index has
+  isn't one of that table's columns (see check-known!).
+
+  Exempt: the primary key column `id`, unless a hide rule covers it (rows
+  are already shown with their key), columns of a named result or
+  checkpoint (its query was built under the same policy, so a hidden
+  column there already holds the redacted literal), and catalog
+  relations."
+  [{:keys [where order group limit-per joins columns current aliases] :as state} rules]
   (when (seq rules)
-    (doseq [[alias column] (concat (mapcat #(where-columns current %) where)
-                                   (mapcat entry-columns order)
-                                   (mapcat entry-columns group)
-                                   (mapcat entry-columns (:columns limit-per)))
-            :let [col {:alias alias :column column :auto-id (= "id" column)}]
-            :when (and (not (s/blank? column))
-                       (not (get-in aliases [alias :ast]))
-                       ;; :auto-id lets `id` through the way the hidden key
-                       ;; column is, which a hide rule still overrides.
-                       (sensitive-column? state rules col))]
-      ;; :hidden says which real column was refused, and the rule that hid
-      ;; it, so a client can ask the owner to allow it (see api.clj's
-      ;; error-body). Same shape as annotate-column's :policy.
-      (throw (ex-info (str "`" alias "." column "` is hidden by the access policy, so it can't be used in "
-                           "where:, order:, group: or after `per`.")
-                      {:error-type "policy" :alias alias :column column
-                       :hidden (:policy (annotate-column state rules col))})))))
+    (let [named   (concat (mapcat #(where-columns current %) where)
+                          (mapcat entry-columns order)
+                          (mapcat entry-columns group)
+                          (mapcat entry-columns (:columns limit-per)))
+          joined  (mapcat #(apply concat (join-pairs %)) joins)]
+      (doseq [[alias column source] (concat (select-columns columns) named
+                                            (map (fn [[a c]] [a c nil]) joined))
+              :when (and (not (s/blank? column)) (not (get-in aliases [alias :ast])))]
+        (check-known! state alias column source))
+      (doseq [[alias column] named
+              :when (and (not (s/blank? column))
+                         (not (get-in aliases [alias :ast]))
+                         (sensitive-column? state rules (reference state alias column)))]
+        (refuse-hidden! state rules alias column "used in where:, order:, group: or after `per`."))
+      (doseq [join joins]
+        (check-join! state rules join)))))

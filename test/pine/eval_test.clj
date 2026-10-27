@@ -4,7 +4,8 @@
             [pine.db.main :as db]
             [pine.parser :as parser]
             [pine.eval :as eval]
-            [pine.data-types :as dt]))
+            [pine.data-types :as dt]
+            [pine.sql.transpile :as transpile]))
 
 (defn- generate
   "Helper function to generate the sql"
@@ -1191,6 +1192,97 @@
                    (:query (generate "report | s: title" [{:type "column" :schema "other" :table "report" :column "title"}]))))
       (is (re-find #"'xxxxx' AS \"title\""
                    (:query (generate "report | s: title" [{:type "column" :table "customer" :column "title"}])))))))
+
+(deftest test-access-policy-joins
+  (let [hide    (fn [match] {:type "hide" :match match})
+        refused #"`r_0.title` is hidden by the access policy, so it can't be used to join tables"]
+
+    (testing "a join on a hidden column is refused: a cast error, or a join to guesses, would give it away"
+      (doseq [e ["report | customer .uuid_col = .title ::uuid"
+                 "report | customer .id ::text = .title"
+                 "report :left | customer .uuid_col = .title | s: c_1.id"]]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo refused (generate e [column-type-rule])) e)))
+
+    (testing "joined to a named result of literal guesses, the table's own side is checked"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`r_1.title` is hidden by the access policy, so it can't be used to join tables"
+                            (generate-expressions ["report | s: coalesce('alice@example.com', 'x') as g | limit: 1 |= guesses"
+                                                   "guesses | report .title = .g | s: r_1.id"]
+                                                  [column-type-rule]))))
+
+    (testing "every way the query can be built checks its joins"
+      (doseq [e ["report | customer .uuid_col = .title | count:"
+                 "report | customer .uuid_col = .title | group: c_1.id with count"
+                 "report | customer .uuid_col = .title | limit: 1 per c_1.id"]]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo refused (generate e [column-type-rule])) e))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo refused
+                            (generate-expressions ["report | customer .uuid_col = .title |= x" "x"] [column-type-rule]))))
+
+    (testing "SQL's JOIN ... ON converts to the same join, and is refused the same way"
+      (let [{:keys [expression]} (transpile/sql->pine "SELECT c.id FROM report r JOIN customer c ON c.uuid_col = r.title::uuid")]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`r.title` is hidden by the access policy, so it can't be used to join tables"
+                              (generate expression [column-type-rule])))))
+
+    (testing "a join guessed from column names is checked like a manual one"
+      ;; order.customer_id is varchar: hidden by type alone, and customer.id
+      ;; would show its value.
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`o_0.customer_id` is hidden by the access policy, so it can't be used to join tables"
+                            (generate "order | customer" [column-type-rule])))
+      (is (:query (generate "order | customer" [column-type-rule {:type "foreign-key"}]))))
+
+    (testing "a real foreign key joins when both sides are shown, or both hidden"
+      (is (:query (generate "company | employee" [column-type-rule])))
+      (is (:query (generate "x.company | employee | document" [column-type-rule])))
+      (is (:query (generate "company | employee" [column-type-rule
+                                                  (hide {:type "column" :table "employee" :column "company_id"})
+                                                  (hide {:type "column" :table "company" :column "id"})]))))
+
+    (testing "a real foreign key with one side hidden is refused: the other side shows its value"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`e_1.company_id` is hidden by the access policy, so it can't be used to join tables: `c_0.id` would show its value"
+                            (generate "company | employee" [column-type-rule (hide {:type "column" :table "employee" :column "company_id"})])))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`c_0.id` is hidden by the access policy, so it can't be used to join tables: `e_1.company_id` would show its value"
+                            (generate "company | employee" [column-type-rule (hide {:type "column" :table "company" :column "id"})]))))))
+
+(deftest test-access-policy-names-and-case
+  (let [rules [column-type-rule
+               {:type "column-name" :suffix "_id"}
+               {:type "hide" :match {:type "column" :table "order" :column "customer_id"}}]]
+
+    (testing "MySQL and SQLite ignore case, so a rule covers every spelling of the name"
+      (doseq [[dialect gen] [["mysql" generate-mysql] ["sqlite" generate-sqlite]]
+              e ["order | s: CUSTOMER_ID" "order | s: Customer_Id" "ORDER | s: customer_id"]]
+        (is (re-find #"'xxxxx' AS ." (:query (gen e rules))) (str dialect ": " e)))
+      (doseq [[dialect gen] [["mysql" generate-mysql] ["sqlite" generate-sqlite]]]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`o_0.CUSTOMER_ID` is hidden by the access policy"
+                              (gen "order | where: CUSTOMER_ID = 'x' | s: id" rules))
+            dialect)))
+
+    (testing "Postgres matches a quoted name exactly: another spelling isn't the column, and is refused"
+      (doseq [e ["order | s: CUSTOMER_ID" "order | where: CUSTOMER_ID = 'x' | s: id" "order | o: Customer_Id"]]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`o_0.(CUSTOMER_ID|Customer_Id)` isn't a column of `order` in the schema index"
+                              (generate e rules))
+            e))
+      (is (re-find #"'xxxxx' AS \"customer_id\"" (:query (generate "order | s: customer_id" rules)))))
+
+    (testing "a column the index doesn't have is refused under a policy, wherever it is named"
+      (doseq [e ["report | s: nickname" "report | where: nickname = 'x'" "report | customer .uuid_col = .nickname"]]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`r_0.nickname` isn't a column of `report`" (generate e [column-type-rule])) e))
+      (is (= "policy" (try (generate "report | s: nickname" [column-type-rule]) nil
+                           (catch clojure.lang.ExceptionInfo e (:error-type (ex-data e)))))))
+
+    (testing "without a policy, nothing changes"
+      (is (re-find #"\"o_0\".\"CUSTOMER_ID\"" (:query (generate "order | s: CUSTOMER_ID")))))))
+
+(deftest test-access-policy-row-keys
+  (let [rules [{:type "column-type" :allow ["uuid"]}]]
+    (testing "a primary key called `id` can be filtered on, as it is shown in every result"
+      (is (:query (generate "report | where: id = 1" rules)))
+      (is (:query (generate-expressions ["report | where: id = 1 |= x" "x"] rules))))
+
+    (testing "an `id` that isn't a primary key is checked like any other column"
+      ;; p.log_entry has an integer id and no primary key.
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`le_0.id` is hidden by the access policy"
+                            (generate "log_entry | where: id = 1" rules)))
+      (is (:query (generate "log_entry | where: id = 1" [column-type-rule]))))))
 
 (deftest test-build-query-mysql
   ;; Every Postgres assertion above must stay byte-identical through this
