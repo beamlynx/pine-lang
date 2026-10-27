@@ -10,28 +10,41 @@
   the reference model needs no special case."
   "main")
 
+(def ^:private integer-types #{"int" "integer" "tinyint" "smallint" "mediumint" "bigint" "big int" "int2" "int4" "int8"})
+(def ^:private real-types #{"real" "double" "double precision" "float" "float4" "float8"})
+(def ^:private numeric-types #{"numeric" "decimal"})
+(def ^:private known-types #{"boolean" "bool" "date" "datetime" "timestamp" "json" "uuid" "time"})
+
 (defn- affinity-type
   "SQLite doesn't enforce column types: the declared type is free text
-  (`VARCHAR(255)`, `UNSIGNED BIG INT`, or nothing at all) that only picks an
-  affinity. Reduce it to the plain lowercase names the rest of pine already
-  matches on (data_types.clj, access policies), the way SQLite itself would:
-  the names pine knows pass straight through, everything else follows
-  SQLite's affinity rules in order - INT, then CHAR/CLOB/TEXT, then BLOB,
-  then REAL/FLOA/DOUB, otherwise NUMERIC. No declared type is nil: unknown,
-  not a type called \"\", so pine adds no conversion or cast on its account."
+  (`VARCHAR(255)`, `UNSIGNED BIG INT`, or nothing at all). Reduce it to the
+  plain lowercase names the rest of pine already matches on (data_types.clj,
+  access policies).
+
+  Only a name that says what it is gets one of those names: the integer,
+  real and decimal names, anything with CHAR, CLOB or TEXT in it as text,
+  BLOB as blob, and the names pine knows, which pass through. Any other
+  declared type stays as written, lowercased: `STRING`, `JSONB`, `SSN`.
+  SQLite's own rules would call those numeric, `STRING` included, and an
+  access policy that shows numeric columns would show them. No declared
+  type is nil: unknown, not a type called \"\", so pine adds no conversion
+  or cast on its account."
   [declared]
   (let [t (-> (or declared "")
               s/lower-case
               (s/replace #"\(.*$" "")
+              (s/replace #"\b(unsigned|signed)\b" "")
+              (s/replace #"\s+" " ")
               s/trim)]
     (cond
-      (s/blank? t) nil
-      (contains? #{"boolean" "bool" "date" "datetime" "timestamp" "json" "uuid" "time"} t) t
-      (s/includes? t "int") "integer"
+      (s/blank? t)                                    nil
+      (contains? known-types t)                       t
+      (contains? integer-types t)                     "integer"
+      (contains? real-types t)                        "real"
+      (contains? numeric-types t)                     "numeric"
       (some #(s/includes? t %) ["char" "clob" "text"]) "text"
-      (s/includes? t "blob") "blob"
-      (some #(s/includes? t %) ["real" "floa" "doub"]) "real"
-      :else "numeric")))
+      (s/includes? t "blob")                          "blob"
+      :else                                           t)))
 
 (defn- get-foreign-keys
   "Get the foreign keys from the database.

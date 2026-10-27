@@ -228,6 +228,26 @@
       (is (not (contains? (:hidden-column response) :by)))
       (is (= "title" (get-in response [:hidden-column :column]))))))
 
+(deftest test-join-refusal-names-the-hidden-column
+  (let [rules [{:type "column-type" :allow ["integer" "uuid"]}]]
+    (testing "a join refused by the policy says which real column, like a where: refusal"
+      (let [response (api/api-eval ["report | customer .uuid_col = .title ::uuid"] :test rules false)]
+        (is (= "policy" (:error-type response)))
+        (is (= {:alias "r_0" :column "title" :hidden true :table {:schema "public" :table "report"}}
+               (:hidden-column response)))))
+    (testing "a column the index doesn't have is refused without a hidden column: there is nothing to allow"
+      (let [response (api/api-eval ["report | s: nickname"] :test rules false)]
+        (is (= "policy" (:error-type response)))
+        (is (not (contains? response :hidden-column)))))))
+
+(deftest test-annotate-names-the-table-as-the-index-spells-it
+  (testing "MySQL reads ORDER as order, and the report says order, which a `column` rule should name"
+    (let [rules    [{:type "column-type" :allow ["integer"]}]
+          response (api/api-build ["ORDER | s: customer_id"] nil :test-mysql rules true)
+          policy   (:policy (some #(when (= "customer_id" (:column %)) %) (get-in response [:ast :columns])))]
+      (is (= {:schema "public" :table "order"} (:table policy)))
+      (is (true? (:hidden policy))))))
+
 (defn- request
   ([method uri] (request method uri {}))
   ([method uri headers]
