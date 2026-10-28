@@ -136,8 +136,12 @@ hint-column     := <"."> symbol
 hint-columns       := hint-column-list | explicit-columns
 <hint-column-list> := hint-column (<","> <ws*> hint-column)*
 explicit-columns   := explicit-pair (<","> <ws*> explicit-pair)*
-(* A cast on either side: `.resourceableId = .id ::text`. *)
-explicit-pair      := hint-column (<ws*> cast)? <ws*> <"="> <ws*> hint-column (<ws*> cast)?
+(* A cast on either side: `.resourceableId = .id ::text`. Either side may
+   be a path into a JSON array, `.id = .officers[*].id`: the row joins each
+   element that holds its value. See docs/joins.md. *)
+explicit-pair      := join-side (<ws*> cast)? <ws*> <"="> <ws*> join-side (<ws*> cast)?
+join-side          := <"."> symbol (json-step | json-any)*
+json-any           := <"[*]">
 
 columns            := column (<","> <ws*> column)*
 column             := qualified-symbol

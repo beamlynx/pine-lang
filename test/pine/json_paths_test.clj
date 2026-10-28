@@ -276,3 +276,78 @@
                                             ["customer | s: data.plan |= p"])
             q (-> "p | s: data.plan" parse (ast/generate :test nil nil named-results []) eval/build-query :query)]
         (is (not (re-find #"__type" q)))))))
+
+(deftest test-join-on-array-elements
+  (testing "A side of a join pair can be a path into a JSON array"
+    (is (= [{:type :table :value {:table "employee"
+                                  :join-column-pairs [{:left "data" :right "id" :left-path ["staff" :* "id"]}]}}]
+           (rest (parse "customer | employee .id = .data.staff[*].id")))))
+
+  (testing "`[*]` is only read in a join for now"
+    (is (:error (parser/parse "customer | s: data[*].id"))))
+
+  (testing "Postgres tests containment, with each key a parameter"
+    (is (= {:query (str "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"e_1\".\"id\" AS \"__e_1__id\", \"e_1\".* "
+                        "FROM \"customer\" AS \"c_0\" JOIN \"employee\" AS \"e_1\" "
+                        "ON \"c_0\".\"data\"::jsonb @> jsonb_build_array(jsonb_build_object(?::text, \"e_1\".\"id\")) LIMIT 250")
+            :params ["id"]}
+           (sql "customer | employee .id = .data[*].id")))
+    (is (= {:query (str "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"e_1\".\"id\" AS \"__e_1__id\", \"e_1\".* "
+                        "FROM \"customer\" AS \"c_0\" JOIN \"employee\" AS \"e_1\" "
+                        "ON \"c_0\".\"data\"::jsonb @> jsonb_build_array(\"e_1\".\"id\") LIMIT 250")
+            :params []}
+           (sql "customer | employee .id = .data[*]"))))
+
+  (testing "Keys before `[*]` lead to the array"
+    (is (re-find #"ON jsonb_extract_path\(\"c_0\".\"data\"::jsonb, \?::text\) @> jsonb_build_array\(jsonb_build_object\(\?::text, \"e_1\".\"id\"\)\)"
+                 (:query (sql "customer | employee .id = .data.staff[*].id")))))
+
+  (testing "The path may be the new table's side"
+    (is (re-find #"ON jsonb_extract_path\(\"c_1\".\"data\"::jsonb, \?::text\) @> jsonb_build_array\(jsonb_build_object\(\?::text, \"e_0\".\"id\"\)\)"
+                 (:query (sql "employee | customer .data.staff[*].id = .id")))))
+
+  (testing "A cast on the other side applies to the value looked for"
+    (is (re-find #"jsonb_build_object\(\?::text, \"e_1\".\"id\"::text\)"
+                 (:query (sql "customer | employee .id ::text = .data[*].id")))))
+
+  (testing "The join's parameters come between the SELECT's and the WHERE's"
+    (is (= ["plan" "plan" "staff" "id" 3]
+           (:params (sql "customer | employee .id = .data.staff[*].id | where: id = 3 | s: c_0.data.plan")))))
+
+  (testing "MySQL"
+    (is (= {:query (str "SELECT `p_0`.`id` AS `__p_0__id`, `e_1`.`id` AS `__e_1__id`, `e_1`.* "
+                        "FROM `product` AS `p_0` JOIN `employee` AS `e_1` "
+                        "ON JSON_CONTAINS(JSON_EXTRACT(`p_0`.`config`, ?), JSON_ARRAY(`e_1`.`id`)) LIMIT 250")
+            :params ["$.\"staff\"[*].\"id\""]}
+           (sql :test-mysql "product | employee .id = .config.staff[*].id"))))
+
+  (testing "SQLite"
+    (is (= {:query (str "SELECT \"p_0\".\"id\" AS \"__p_0__id\", \"e_1\".\"id\" AS \"__e_1__id\", \"e_1\".* "
+                        "FROM \"product\" AS \"p_0\" JOIN \"employee\" AS \"e_1\" "
+                        "ON EXISTS (SELECT 1 FROM json_each(\"p_0\".\"config\", ?) AS \"pine_each\" "
+                        "WHERE CASE WHEN \"pine_each\".\"type\" IN ('object', 'array') "
+                        "THEN json_extract(\"pine_each\".\"value\", ?) END = \"e_1\".\"id\") LIMIT 250")
+            :params ["$.\"staff\"" "$.\"id\""]}
+           (sql :test-sqlite "product | employee .id = .config.staff[*].id")))
+    (is (re-find #"WHERE \"pine_each\".\"value\" = \"e_1\".\"id\"\)"
+                 (:query (sql :test-sqlite "product | employee .id = .config[*]")))))
+
+  (testing "Errors"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"`employee` has no JSON column `data`; `customer` does. The first column of a join is the new table's: write `.id = .data.staff\[\*\].id`"
+                          (state "customer | employee .data.staff[*].id = .id")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`data.staff` needs `\[\*\]`"
+                          (state "customer | employee .id = .data.staff")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"more than one `\[\*\]`"
+                          (state "customer | employee .id = .data[*].x[*]")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"an index after `\[\*\]`"
+                          (state "customer | employee .id = .data[*][0]")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"A cast can't follow a JSON path"
+                          (state "customer | employee .id = .data[*].id ::text")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`uuid_col` is not a JSON column"
+                          (state "customer | employee .id = .uuid_col[*]")))))
+
+(deftest test-join-on-array-elements-access-policy
+  (testing "A masked JSON column can be joined on: the policy masks what comes back, and it stays masked"
+    (is (re-find #"'xxxxx' AS \"data\""
+                 (:query (eval/build-query (state :test "customer | employee .id = .data[*].id | s: c_0.data, e_1.id" [jsonb-hidden])))))))

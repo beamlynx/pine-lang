@@ -24,7 +24,9 @@ A column followed by keys and array indexes:
 
 A key may contain `-`, as any Pine name can: `data.first-name`.
 
-A path can go in `select:`, `where:`, `order:` and `group:`.
+A path can go in `select:`, `where:`, `order:` and `group:`. In a join, `[*]` reads every element of an
+array: `documents_package as dp | officer .id = .officers[*].id`. See
+[joins](joins.md#joining-on-values-in-a-json-array). `[*]` isn't read anywhere else yet.
 
 ## Examples
 

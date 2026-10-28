@@ -3,6 +3,9 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Added
+- **Join on ids inside a JSON array:** `documents_package as dp | officer .id = .officers[*].id` joins each package to the officers its `officers` array lists. `[*]` means any element of the array, and keys before it lead to the array. This works on Postgres, MySQL and SQLite.
+
 ### Changed
 - **The masking policy masks what comes back, not what you ask.** Agents can filter, sort and join on a masked column again, for example to find the rows that hold an email they already know. A masked column still comes back as `xxxxx`. It still can't be a `group:` key or be cast with `::uuid`, because each would return its value. The error now says "is a masked column".
 

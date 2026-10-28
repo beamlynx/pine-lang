@@ -17,6 +17,7 @@ table_a | table_b .hint_col
 table_a | table_b .hint_col, .hint_col
 table_a | table_b .left_col = .right_col
 table_a | table_b .left_col = .right_col, .left_col = .right_col
+table_a | table_b .left_col = .json_col.key[*].key
 table_a | table_b :parent
 table_a | table_b :left
 ```
@@ -27,6 +28,8 @@ table_a | table_b :left
   [Naming a relation](#naming-a-relation).
 - **`.col1 = .col2`** — override both sides explicitly; bypasses the reference map entirely. Several
   pairs, comma-separated, for a join on more than one column.
+- **`.col = .json_col[*].key`** — join on the values inside a JSON array. See
+  [Joining on values in a JSON array](#joining-on-values-in-a-json-array).
 - **`:parent`** — force the join to treat `table_b` as the parent (i.e. the table `table_a` refers to,
   not the table that refers to `table_a`).
 - **`:child`** — inverse of `:parent`; explicit but rarely needed since it is the default.
@@ -86,6 +89,47 @@ employee | document .company_id = .id
 ```
 
 Bypasses the reference map. `company_id` is on `document` (right table); `id` is on `employee` (left table).
+
+### Joining on values in a JSON array
+
+```
+documents_package as dp | officer .id = .officers[*].id
+```
+
+Joins each package to every officer whose `id` is in the package's `officers` array. `[*]` means "any
+element". Keys after it are read inside each element; keys before it lead to the array:
+`.id = .data.staff[*].id`.
+
+The sides follow the same rule as any explicit pair: the first column is the new table's (`officer.id`),
+the second the previous table's (`dp.officers`). The path may be on either side:
+
+```
+officer | documents_package .officers[*].id = .id
+```
+
+```sql
+-- Postgres
+JOIN "officer" AS "o_1" ON "dp"."officers"::jsonb @> jsonb_build_array(jsonb_build_object(?::text, "o_1"."id"))
+-- MySQL
+JOIN `officer` AS `o_1` ON JSON_CONTAINS(JSON_EXTRACT(`dp`.`officers`, ?), JSON_ARRAY(`o_1`.`id`))
+-- SQLite
+JOIN "officer" AS "o_1" ON EXISTS (SELECT 1 FROM json_each("dp"."officers", ?) AS "pine_each"
+  WHERE CASE WHEN "pine_each"."type" IN ('object', 'array') THEN json_extract("pine_each"."value", ?) END = "o_1"."id")
+```
+
+- **A row joins once per match, not once per element.** An officer listed twice in one package appears
+  once. An element that isn't an object, or lacks the key, is skipped.
+- **Values compare as JSON.** The other column's value becomes the JSON value it is: a uuid or text becomes
+  a string, an integer a number. So the number `5` doesn't match the string `"5"`. A cast on the other side
+  changes what is looked for: `.id ::text = .data[*].id`.
+- **On Postgres, with nothing before `[*]`, the test is containment (`@>`),** which a GIN index on the JSON
+  column can answer.
+- **Not supported:** a path without `[*]`, more than one `[*]`, an index after `[*]`, a path on both sides,
+  and a cast on the path side. Each is refused with a message.
+- **Written the wrong way round,** `dp | officer .officers[*].id = .id` names an `officers` column of
+  `officer`. When the previous table has that JSON column, the error shows the pair turned round.
+- **Masking policy.** A join on a masked JSON column runs. The column itself still comes back masked. See
+  [what the policy protects](access-policy.md#what-it-protects-output-not-inference).
 
 ## How it works
 

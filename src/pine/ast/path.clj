@@ -38,6 +38,7 @@
 
 (defn- step-text [step]
   (cond
+    (= :* step) "[*]"
     (integer? step) (str "[" step "]")
     (re-matches #"[A-Za-z_][A-Za-z0-9_-]*" step) (str "." step)
     :else (str ".'" (s/replace step "'" "''") "'")))
@@ -56,6 +57,46 @@
       (when (and db-type (not (json-type? db-type)))
         (throw (ex-info (str "`" column "` is not a JSON column, so `" (path-text column path) "` has no keys.")
                         {}))))))
+
+(defn- join-side-error
+  "Why one side of a join pair can't read the JSON path it names, or nil.
+  A pair reads `.<new table's column> = .<previous table's column>`, so a
+  path typed on the wrong side names a column of the wrong table. When the
+  other table has that JSON column, the message shows the pair turned round."
+  [state {:keys [from to from-path to-path]} [alias column path cast] other-alias]
+  (let [n (count (filter #{:*} path))
+        db-type (column-type state alias column)
+        other-type (column-type state other-alias column)
+        text (path-text column path)]
+    (cond
+      cast (str "A cast can't follow a JSON path in a join: `" text " ::" cast "`.")
+      (zero? n) (str "`" text "` needs `[*]` to join on: `.id = ." column "[*]` joins each element of the array.")
+      (< 1 n) (str "`" text "` has more than one `[*]`. A join reads one array.")
+      (some integer? (rest (drop-while #(not= :* %) path)))
+      (str "`" text "` has an index after `[*]`. Keys only can follow it.")
+
+      (and (not (json-type? db-type)) (json-type? other-type))
+      (str "`" (table-label state alias) "` has no JSON column `" column "`; `" (table-label state other-alias)
+           "` does. The first column of a join is the new table's: write `."
+           (path-text from from-path) " = ." (path-text to to-path) "`.")
+
+      (and db-type (not (json-type? db-type)))
+      (str "`" column "` is not a JSON column, so `" text "` has no elements."))))
+
+(defn check-join-paths
+  "Refuses a join pair whose JSON path can't be read: see join-side-error.
+  Only the join the table just added is checked, after table/handle."
+  [state]
+  (let [{:keys [from to columns]} (last (:joins state))]
+    (when (= to (:current state))
+      (doseq [{:keys [from-path to-path] :as pair} columns]
+        (when (and from-path to-path)
+          (throw (ex-info "Only one side of a join can be a path into JSON." {})))
+        (when-let [message (cond
+                             from-path (join-side-error state pair [from (:from pair) from-path (:from-cast pair)] to)
+                             to-path (join-side-error state pair [to (:to pair) to-path (:to-cast pair)] from))]
+          (throw (ex-info message {}))))))
+  state)
 
 (defn- named-result-column
   "A named result names a selected path after the path: after
