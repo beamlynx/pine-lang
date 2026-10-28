@@ -174,13 +174,12 @@
   (testing "A key inside a hidden column is hidden"
     (is (re-find #"'xxxxx' AS \"data.plan\""
                  (:query (sql :test "customer | s: data.plan" [jsonb-hidden])))))
-  (testing "and can't be filtered, sorted or grouped on"
+  (testing "and can be filtered and sorted on, but not grouped on"
     (doseq [e ["customer | where: data.plan = 'x'"
-               "customer | o: data.plan | s: id"
-               "customer | group: data.plan with count"]]
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`c_0.data` is hidden by the access policy"
-                            (sql :test e [jsonb-hidden]))
-          e))))
+               "customer | o: data.plan | s: id"]]
+      (is (:query (sql :test e [jsonb-hidden])) e))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`c_0.data` is a masked column"
+                          (sql :test "customer | group: data.plan with count" [jsonb-hidden])))))
 
 (deftest test-hints
   (testing "After an alias and a dot: its columns, as before"

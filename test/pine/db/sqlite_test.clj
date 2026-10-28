@@ -348,8 +348,8 @@
                    {:type "hide" :match {:type "column" :table "person" :column "name"}}]]
         (doseq [e ["person | s: NAME" "PERSON | s: name" "Person | s: Name"]]
           (is (= ["xxxxx" "xxxxx" "xxxxx"] (map first (policy-rows e rules))) e))
-        (is (thrown-with-msg? Exception #"`p_0.NAME` is hidden by the access policy"
-                              (policy-rows "person | where: NAME = 'Ann'" rules)))))
+        (is (thrown-with-msg? Exception #"`p_0.NAME` is a masked column"
+                              (policy-rows "person | group: NAME with count" rules)))))
 
     (testing "a hand-written `column` rule matches whatever case it is written in"
       (is (= ["xxxxx" "xxxxx" "xxxxx"]

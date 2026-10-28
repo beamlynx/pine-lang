@@ -1,10 +1,26 @@
-# Access policy
+# Masking policy
 
-An access policy decides which column values a query may return. A column the policy hides comes back as the text `xxxxx`. The real value is replaced in the SQL itself, so it never leaves the database.
+A masking policy decides which column values a query may return. A column the policy masks comes back as the text `xxxxx`. The real value is replaced in the SQL itself, so it never leaves the database.
+
+beamlynx calls it a masking policy. The API and the code still call it an access policy (`access-policy`), and so does older text. Both names mean the same thing.
 
 ## Why
 
 beamlynx lets an AI agent query a database. The owner decides what the agent may see. Pine holds no policy of its own: the caller sends the rules with each request, and Pine applies them. beamlynx-desktop stores each connection's policy.
+
+## What it protects: output, not inference
+
+The policy is **output masking**. It stops the contents of a masked column from reaching whoever sent the query. It does not stop that query from *using* the column.
+
+- **Allowed:** a masked column in `where:`, `order:`, `limit: N per` and joins. The value it is compared with comes from the query, not from the database. An agent that already knows an email may ask which rows hold it, even though `email` is masked.
+- **Masked:** a masked column in `select:`, and any computed value that reads one.
+- **Refused:** the two other places a masked value would come back.
+  - A `group:` key, because the key is a column of the result.
+  - A `::uuid` cast of a masked column, because Postgres's error for a value that isn't a uuid prints that value.
+
+This is a deliberate choice, and not an oversight to fix. The other approach is **inference control**, which is what Postgres's row-level security and its leakproof functions aim for. It closes every way a value could be worked out: through filters, row counts or joins. A masking policy doesn't. An agent could rebuild a masked email by asking `where: email like 'a%'`, then `'ab%'`, and so on. Each of those queries opens in the owner's tab. SQL Server's *Dynamic Data Masking* draws the line in the same place.
+
+When a change to the policy is considered, ask whether a masked value can come back in the result or in an error. Filtering, sorting and joining on a masked column are fine.
 
 ## Sending a policy
 
@@ -13,9 +29,7 @@ beamlynx lets an AI agent query a database. The owner decides what the agent may
 - `access-policy`: a list of rules. Absent or empty means no policy: every value is returned.
 - `access-policy-mode`: `"enforce"` (the default) or `"annotate"`. Only the exact string `"annotate"` annotates.
 
-**Enforce** hides what the rules hide. It also refuses a query that names a hidden column in `where:`, `order:`, `group:`, after `per`, or in a join. Filtering on a hidden column would reveal it through row counts. A join reveals it the same way, because rows match only where the values are equal.
-
-A real foreign key is the one join with more room. It joins when both of its columns are shown, or both are hidden. When only one is hidden, the other column would show its value, so the join is refused. Every other join, written by hand or guessed from column names, is refused when either column is hidden.
+**Enforce** masks what the rules hide. It also refuses a `group:` key on a masked column, and a `::uuid` cast of one (see [What it protects](#what-it-protects-output-not-inference)). Filtering, sorting and joining on a masked column run.
 
 **Annotate** hides nothing and refuses nothing. It only reports how the rules would treat each column (see below). beamlynx uses it in the owner's own tab, to mark the columns an agent can't see.
 
@@ -54,7 +68,7 @@ A hide rule whose `match` Pine doesn't recognise hides every column. For a hide 
 ## What is always shown, and always hidden
 
 - Postgres's catalog views used to discover the schema (`information_schema.columns`, `pg_catalog.pg_class` and others) are always shown, even when a hide rule matches. They hold names, not values.
-- A primary key column called `id` is shown, and can be used in `where:` and joins, unless a hide rule matches it. Pine adds it to each row so the row can be edited. An `id` column that isn't the primary key is checked like any other.
+- A primary key column called `id` is shown, and can be a `group:` key, unless a hide rule matches it. Pine adds it to each row so the row can be edited. An `id` column that isn't the primary key is checked like any other.
 - A computed value is hidden when any column it reads is hidden.
 - A column whose type Pine can't tell is hidden.
 - A table missing from the schema index is refused when its columns are selected with `*`, not returned unhidden.
@@ -86,7 +100,7 @@ A computed value has `hidden` only. A column of a named result or a checkpoint h
 
 ## A refused query
 
-A query that names a hidden column in `where:`, `order:`, `group:`, after `per`, or in a join is refused with `error-type: "policy"`. The error also says which column, in `hidden-column`:
+A query that uses a masked column as a `group:` key, or casts one with `::uuid`, is refused with `error-type: "policy"`. The error also says which column, in `hidden-column`:
 
 ```json
 "hidden-column": {
