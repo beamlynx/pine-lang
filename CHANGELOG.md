@@ -245,7 +245,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [0.38.0] - 2026-08-11
 ### Added
-- **Each join reports how it was found:** `"fk"` (a foreign key), `"heuristic"` (a guess from column names), `"synthetic"` or `"manual"` (written by hand). A client can tell whether a drawn join is backed by a real foreign key.
+- **Each join reports how it was found:** `"fk"` (a foreign key), `"heuristic"` (a guess from column names), `"synthetic"` (a table joined on `id` to something built from that same table, such as a variable) or `"manual"` (written by hand). A client can tell whether a drawn join is backed by a real foreign key.
 
 ## [0.37.3] - 2026-08-09
 ### Fixed
