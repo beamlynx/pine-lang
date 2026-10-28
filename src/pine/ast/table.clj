@@ -314,11 +314,16 @@
       (seq join-column-pairs)
       (let [x (-> state :aliases (get from-alias))
             join-result {:from (x :alias) :to (current :alias) :parent "from"
-                         ;; A cast on one side of a pair stays with that side.
-                         :columns (mapv (fn [{:keys [left right left-cast right-cast]}]
+                         ;; A cast or a JSON path on one side of a pair
+                         ;; stays with that side. :from and :to stay the
+                         ;; real columns, so the access policy checks the
+                         ;; JSON column a path reads.
+                         :columns (mapv (fn [{:keys [left right left-cast right-cast left-path right-path]}]
                                           (cond-> {:from left :to right}
                                             left-cast (assoc :from-cast left-cast)
-                                            right-cast (assoc :to-cast right-cast)))
+                                            right-cast (assoc :to-cast right-cast)
+                                            left-path (assoc :from-path left-path)
+                                            right-path (assoc :to-path right-path)))
                                         join-column-pairs)
                          :resolution "manual" :cast nil}]
         (update state :joins conj (assoc join-result :type join)))

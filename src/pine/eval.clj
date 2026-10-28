@@ -145,7 +145,10 @@
   never SQL text."
   [path]
   (if (#{:mysql :sqlite} *dialect*)
-    [(dt/string (apply str "$" (map #(if (integer? %) (str "[" % "]") (str "." (json/generate-string %))) path)))]
+    [(dt/string (apply str "$" (map #(cond (= :* %) "[*]"
+                                           (integer? %) (str "[" % "]")
+                                           :else (str "." (json/generate-string %)))
+                                    path)))]
     (map #(dt/string (str %)) path)))
 
 (defn- json-extract
@@ -252,23 +255,66 @@
   (let [ref (q alias column)]
     (if cast (render-cast ref cast) ref)))
 
+(defn- json-element-join
+  "[sql params]: true when the JSON array at `path` in `col-ref` holds an
+  element whose value at the keys after `[*]` equals `value-ref`, the other
+  table's column. `.id = .officers[*].id`.
+
+  Each database tests it without unpacking the array into rows, so a row
+  joins once however many elements match. Postgres tests containment, `@>`,
+  which a GIN index on the column can answer when nothing comes before
+  `[*]`. Values compare as JSON: the column's value becomes the JSON value
+  it is, so the number 5 doesn't match the string \"5\"."
+  [col-ref path value-ref]
+  (let [[before [_ & after]] (split-with #(not= :* %) path)]
+    (case *dialect*
+      :mysql
+      [(str "JSON_CONTAINS(JSON_EXTRACT(" col-ref ", ?), JSON_ARRAY(" value-ref "))")
+       (json-path-params path)]
+
+      :sqlite
+      (let [element (q "pine_each")
+            holder-params (json-path-params before)]
+        (if (seq after)
+          [(str "EXISTS (SELECT 1 FROM json_each(" col-ref ", ?) AS " element " WHERE CASE WHEN "
+                element ".\"type\" IN ('object', 'array') THEN json_extract(" element ".\"value\", ?) END = "
+                value-ref ")")
+           (concat holder-params (json-path-params after))]
+          [(str "EXISTS (SELECT 1 FROM json_each(" col-ref ", ?) AS " element " WHERE "
+                element ".\"value\" = " value-ref ")")
+           holder-params]))
+
+      (let [[holder holder-params] (if (seq before)
+                                     (json-extract :json col-ref before)
+                                     [(str col-ref "::jsonb") []])
+            element (reduce (fn [inner _] (str "jsonb_build_object(?::text, " inner ")"))
+                            value-ref
+                            after)]
+        [(str holder " @> jsonb_build_array(" element ")")
+         (concat holder-params (json-path-params after))]))))
+
 (defn- build-on-clause
-  "The ON condition of one join: every column pair the relation carries,
-  ANDed together. A key made of several columns is simply a longer list
-  here - this does not care how many there are.
+  "The ON condition of one join, as [sql params]: every column pair the
+  relation carries, ANDed together. A key made of several columns is simply
+  a longer list here - this does not care how many there are.
 
   An unresolved join (nothing connects the two tables, so :columns is
   empty) never gets here: build-join-clause rejects it first."
   [{:keys [from to columns cast]}]
   (when (seq columns)
-    (str " ON " (s/join " AND "
-                        (map (fn [{from-column :from to-column :to :keys [from-cast to-cast]}]
-                               ;; A cast written on one side of an explicit
-                               ;; pair, `.resourceableId = .id ::text`, is
-                               ;; that side's alone.
-                               (str (join-column-ref (or from-cast cast) from from-column)
-                                    " = " (join-column-ref (or to-cast cast) to to-column)))
-                             columns)))))
+    (let [conditions (map (fn [{from-column :from to-column :to :keys [from-cast to-cast from-path to-path]}]
+                            ;; A cast written on one side of an explicit
+                            ;; pair, `.resourceableId = .id ::text`, is
+                            ;; that side's alone.
+                            (let [from-ref (join-column-ref (or from-cast cast) from from-column)
+                                  to-ref (join-column-ref (or to-cast cast) to to-column)]
+                              (cond
+                                from-path (json-element-join (q from from-column) from-path to-ref)
+                                to-path (json-element-join (q to to-column) to-path from-ref)
+                                :else [(str from-ref " = " to-ref) []])))
+                          columns)]
+      [(str " ON " (s/join " AND " (map first conditions)))
+       (mapcat second conditions)])))
 
 (defn- table-label
   "schema.table (or just table) for the table behind alias `a`, for messages."
@@ -288,17 +334,18 @@
                          (table-label aliases to) " .some_id`.")
                     {:error-type "unresolved-join" :from from :to to}))))
 
-(defn- build-join-clause [{:keys [tables joins aliases] :as state}]
+(defn- build-join-clause
+  "The JOINs, as [sql params]. A join on a JSON path has parameters."
+  [{:keys [tables joins aliases] :as state}]
   (check-joins-resolved state)
   (when (not-empty (rest tables))
     (let [join-statements (map (fn [{:keys [to type] :as join}]
                                  (let [{to-table :table to-schema :schema} (get aliases to)
-                                       join-keyword (if type (str type " JOIN") "JOIN")]
-                                   (str join-keyword " " (q to-schema to-table) " AS " (q to)
-                                        (build-on-clause join))))
-                               ;; (reverse joins)
+                                       join-keyword (if type (str type " JOIN") "JOIN")
+                                       [on params] (build-on-clause join)]
+                                   [(str join-keyword " " (q to-schema to-table) " AS " (q to) on) params]))
                                joins)]
-      (s/join " " join-statements))))
+      [(s/join " " (map first join-statements)) (mapcat second join-statements)])))
 
 (defn- column-sql
   "[sql params] for one column of a SELECT list, before its `AS` name."
@@ -708,7 +755,6 @@
         from         (let [{a :alias} (first tables)
                            {table :table schema :schema} (get aliases a)]
                        (str (q schema table) " AS " (q a)))
-        join         (build-join-clause state)
         items        (spell-out-stars (select-items state) limit-per aliases)
         names        (inner-names items)
         inner-items  (map (fn [{:keys [expr plain? name]} inner-name]
@@ -721,6 +767,7 @@
         key-names    (map group-key-column (range 1 (inc (count key-parts))))
         key-items    (map (fn [[expr _] key-name] (str expr " AS " (q key-name))) key-parts key-names)
         [group-row group-row-params] (row-number (:columns limit-per) (:order limit-per) group-row-column)
+        [join join-params] (build-join-clause state)
         [where-clause where-params] (build-where-clause where)
         inner (s/join " " (filter some? [(str "SELECT " (s/join ", " (concat inner-items key-items [group-row])) " FROM")
                                          from join where-clause]))
@@ -731,7 +778,7 @@
                                          (str "ORDER BY " order-by)
                                          (when limit (str "LIMIT " limit))]))
         ;; In the order their `?` appear in the query.
-        params (concat (mapcat :params items) (mapcat second key-parts) group-row-params where-params)]
+        params (concat (mapcat :params items) (mapcat second key-parts) group-row-params join-params where-params)]
     {:query query :params (seq params)}))
 
 (defn- build-plain-select [state]
@@ -739,15 +786,15 @@
         from         (let [{a :alias} (first tables)
                            {table :table schema :schema} (get aliases a)]
                        (str (q schema table) " AS " (q a)))
-        join         (build-join-clause state)
         select       (build-columns-clause state)
+        [join join-params] (build-join-clause state)
         [where-clause where-params] (build-where-clause where)
         [group group-params] (build-group-clause state (select-items state))
         [order order-params] (build-order-clause state)
         limit (when limit (str "LIMIT " limit))
         query (s/join " " (filter some? [(:sql select) from join where-clause group order limit]))
         ;; In the order their `?` appear in the query.
-        params (concat (:params select) where-params group-params order-params)]
+        params (concat (:params select) join-params where-params group-params order-params)]
 
     {:query query :params (seq params)}))
 
@@ -874,10 +921,10 @@
         ;; SELECT of nothing, so it selects 1.
         select-clause (str "SELECT " (if (seq select-parts) (s/join ", " (map first select-parts)) "1"))
         from (str "FROM " (q schema table) " AS " (q a))
-        join (build-join-clause {:tables tables :joins joins :aliases aliases})
+        [join join-params] (build-join-clause {:tables tables :joins joins :aliases aliases})
         [where-clause where-params] (build-where-clause where)]
     {:query (s/join " " (filter some? [select-clause from join where-clause]))
-     :params (concat (mapcat second select-parts) where-params)}))
+     :params (concat (mapcat second select-parts) join-params where-params)}))
 
 (defn- build-outer-select-for-group
   "Build the outer SELECT for a GROUP query. References CTE columns and includes aggregates."

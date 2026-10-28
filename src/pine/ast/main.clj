@@ -23,6 +23,7 @@
    [pine.ast.hints :as hints]
    [pine.ast.limit :as limit]
    [pine.ast.order :as order]
+   [pine.ast.path :as path]
    [pine.ast.select :as select]
    [pine.ast.table :as table]
    [pine.ast.update-action :as update-action]
@@ -334,7 +335,7 @@
   (case type
     :select (select/handle state value)
     :select-partial (select/handle state value)
-    :table (table/handle state value)
+    :table (path/check-join-paths (table/handle state value))
     :limit (limit/handle state value per)
     :limit-partial (limit/handle state value per)
     :where (where/handle state value)

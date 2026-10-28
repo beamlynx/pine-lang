@@ -26,22 +26,33 @@
 ;; FROM
 ;; ----
 
+(declare json-step)
+
+(defn- join-side
+  "[column path] for one side of an explicit pair. The path is nil without
+  steps; `[*]` is the step :*."
+  [[_ [_ column] & steps]]
+  [column (when (seq steps) (mapv json-step steps))])
+
 (defn- explicit-pair
   "One `.right = .left` pair, {:left :right}, with :right-cast or :left-cast
-  for a cast after either column: `.resourceableId = .id ::text`."
+  for a cast after either column: `.resourceableId = .id ::text`, and
+  :right-path or :left-path for a path into a JSON value: `.officers[*].id`."
   [[tag & children :as pair]]
   (when-not (= :explicit-pair tag)
     (throw (ex-info "Unknown explicit join columns" {:_ pair})))
-  (let [[[right-col right-cast] [left-col left-cast]]
-        (reduce (fn [acc [t x]]
+  (let [[[right-col right-path right-cast] [left-col left-path left-cast]]
+        (reduce (fn [acc [t x :as node]]
                   (case t
-                    :hint-column (conj acc [(second x) nil])
-                    :cast (update acc (dec (count acc)) assoc 1 x)))
+                    :join-side (conj acc (conj (join-side node) nil))
+                    :cast (update acc (dec (count acc)) assoc 2 x)))
                 []
                 children)]
     (cond-> {:left left-col :right right-col}
       right-cast (assoc :right-cast right-cast)
-      left-cast (assoc :left-cast left-cast))))
+      left-cast (assoc :left-cast left-cast)
+      right-path (assoc :right-path right-path)
+      left-path (assoc :left-path left-path))))
 
 (defn- make-table [table-info modifiers]
   (reduce (fn [acc modifier]
@@ -106,9 +117,11 @@
 (declare parse-characters)
 
 (defn- json-step
-  "One step of a JSON path: a key (a string) or an array index (a number)."
+  "One step of a JSON path: a key (a string), an array index (a number), or
+  :* for every element of an array, `[*]`."
   [[tag x]]
   (case tag
+    :json-any :*
     (:json-key :json-quoted-key) (match x
                                    [:symbol k] k
                                    [:string & characters] (:value (parse-characters characters)))
