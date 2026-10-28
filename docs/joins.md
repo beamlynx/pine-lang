@@ -128,8 +128,8 @@ JOIN "officer" AS "o_1" ON EXISTS (SELECT 1 FROM json_each("dp"."officers", ?) A
   and a cast on the path side. Each is refused with a message.
 - **Written the wrong way round,** `dp | officer .officers[*].id = .id` names an `officers` column of
   `officer`. When the previous table has that JSON column, the error shows the pair turned round.
-- **Access policy.** The join reads the JSON column, so a hidden JSON column refuses it, as any join on a
-  hidden column is refused.
+- **Masking policy.** A join on a masked JSON column runs. The column itself still comes back masked. See
+  [what the policy protects](access-policy.md#what-it-protects-output-not-inference).
 
 ## How it works
 

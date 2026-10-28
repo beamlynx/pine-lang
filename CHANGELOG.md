@@ -6,6 +6,9 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Added
 - **Join on ids inside a JSON array:** `documents_package as dp | officer .id = .officers[*].id` joins each package to the officers its `officers` array lists. `[*]` means any element of the array, and keys before it lead to the array. This works on Postgres, MySQL and SQLite.
 
+### Changed
+- **The masking policy masks what comes back, not what you ask.** Agents can filter, sort and join on a masked column again, for example to find the rows that hold an email they already know. A masked column still comes back as `xxxxx`. It still can't be a `group:` key or be cast with `::uuid`, because each would return its value. The error now says "is a masked column".
+
 ## [0.51.1] - 2026-10-28
 ### Fixed
 - **Access policy: a join on a hidden column is refused.** A join only matches rows whose values are equal, so it could reveal a hidden value, just as `where:` could. A real foreign key still joins, unless only one of its two columns is hidden.

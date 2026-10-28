@@ -287,11 +287,11 @@
     (is (s/includes? (sql :test "report | group: id with title => min as m, count where title = 'a' as n, id => max" integers-only)
                      "'xxxxx' AS \"m\", 'xxxxx' AS \"n\", MAX(\"x_1\".\"__pine_a1__\") AS \"max_id\"")))
 
-  (testing "Its name can't be used in where:, order:, group: or after per"
-    (doseq [step ["where: k = 'a'" "o: k desc" "l: 1 per k" "group: k"]]
-      (is (= "`r_0.title` is hidden by the access policy, so it can't be used in where:, order:, group: or after `per`."
-             (error :test (str "report | s: coalesce(title, 'x') as k | " step) integers-only))
-          step))))
+  (testing "Its name can be used in where:, order: and after per, but not as a group: key, which is output"
+    (doseq [step ["where: k = 'a'" "o: k desc" "l: 1 per k"]]
+      (is (sql :test (str "report | s: coalesce(title, 'x') as k | " step) integers-only) step))
+    (is (= "`r_0.title` is a masked column, so it can't be a `group:` key: the key is a column of the result."
+           (error :test "report | s: coalesce(title, 'x') as k | group: k" integers-only)))))
 
 ;; -----
 ;; /build
@@ -367,6 +367,6 @@
     (let [w (-> "customer | where: data => jsonb_typeof = 'array'" parser/parse :result (ast/generate :test nil nil {} []) :where first)]
       (is (= {:alias "c_0" :column "jsonb_typeof(c_0.data)" :operator "="} (select-keys w [:alias :column :operator])))))
 
-  (testing "A function of a hidden column can't filter"
-    (is (= "`r_0.title` is hidden by the access policy, so it can't be used in where:, order:, group: or after `per`."
-           (error :test "report | where: coalesce(title, 'x') = 'y'" integers-only)))))
+  (testing "A function of a masked column can filter: the value it is compared with comes from the query"
+    (is (s/includes? (sql :test "report | where: coalesce(title, 'x') = 'y'" integers-only)
+                     "WHERE COALESCE(\"r_0\".\"title\", 'x') = 'y'"))))
