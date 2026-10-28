@@ -218,19 +218,19 @@
   (testing "a query refused by the policy says which real column, and which rule hid it"
     (let [rules    [{:type "column-type" :allow ["integer"]}
                     {:type "hide" :match {:type "column-name" :contains "tit"}}]
-          response (api/api-eval ["report | where: title = 'x'"] :test rules false)]
+          response (api/api-eval ["report | group: title with count"] :test rules false)]
       (is (= "policy" (:error-type response)))
       (is (= {:alias "r_0" :column "title" :hidden true :by (second rules)
               :table {:schema "public" :table "report"}}
              (:hidden-column response)))))
   (testing "hidden for lack of an Allow rule: no :by"
-    (let [response (api/api-eval ["report | where: title = 'x'"] :test [{:type "column-type" :allow ["integer"]}] false)]
+    (let [response (api/api-eval ["report | group: title with count"] :test [{:type "column-type" :allow ["integer"]}] false)]
       (is (not (contains? (:hidden-column response) :by)))
       (is (= "title" (get-in response [:hidden-column :column]))))))
 
 (deftest test-join-refusal-names-the-hidden-column
   (let [rules [{:type "column-type" :allow ["integer" "uuid"]}]]
-    (testing "a join refused by the policy says which real column, like a where: refusal"
+    (testing "a `::uuid` cast refused by the policy says which real column, like a group: refusal"
       (let [response (api/api-eval ["report | customer .uuid_col = .title ::uuid"] :test rules false)]
         (is (= "policy" (:error-type response)))
         (is (= {:alias "r_0" :column "title" :hidden true :table {:schema "public" :table "report"}}

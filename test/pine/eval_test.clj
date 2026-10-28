@@ -1101,21 +1101,22 @@
       (is (clojure.string/includes? query "\"r\" AS ( SELECT \"r_0\".\"id\", 'xxxxx' AS \"title\" FROM \"report\" AS \"r_0\" )"))
       (is (clojure.string/includes? query "SELECT \"r\".* FROM \"r\" AS \"r\""))))
 
-  (testing "a hidden column can't be filtered, sorted or grouped on: that reads its values through row counts"
-    ;; GROUP BY used to run and collapse every group to the placeholder. A
-    ;; group sealed into a checkpoint grouped by the real column, which
-    ;; reveals how many rows share each hidden value, so it is refused too.
-    (doseq [e ["report | group: title with count"
-               "report | where: title like 'a%' | s: id"
+  (testing "a masked column can be filtered and sorted on: the policy masks what comes back, not what is asked"
+    (doseq [e ["report | where: title like 'a%' | s: id"
                "report | where: title = 'x' | count:"
                "report | o: title | s: id"
                "report | where: id = 1 or title = 'x'"]]
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`r_0.title` is hidden by the access policy"
-                            (generate e [column-type-rule]))
-          e))
-    ;; Inside a named result's body as well.
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"hidden by the access policy"
-                          (generate-expressions ["report | where: title = 'x' |= x" "x"] [column-type-rule]))))
+      (is (:query (generate e [column-type-rule])) e))
+    (is (:query (generate-expressions ["report | where: title = 'x' |= x" "x"] [column-type-rule]))))
+
+  (testing "a masked column can't be a group: key: the key is a column of the result"
+    ;; GROUP BY used to run and collapse every group to the placeholder. A
+    ;; group sealed into a checkpoint grouped by the real column and showed
+    ;; it, so a key is refused rather than masked.
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`r_0.title` is a masked column, so it can't be a `group:` key"
+                          (generate "report | group: title with count" [column-type-rule])))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"is a masked column"
+                          (generate-expressions ["report | group: title with count |= x" "x"] [column-type-rule]))))
 
   (testing "the id column and allowed columns can still be filtered on"
     (is (re-find #"WHERE \"r_0\".\"id\" = \?" (:query (generate "report | where: id = 1" [column-type-rule]))))
@@ -1155,13 +1156,13 @@
       (is (re-find #"'xxxxx' AS \"uuid_col\""
                    (:query (generate "customer | limit: 1" [column-type-rule (hide {:type "column-name" :equals "Uuid_Col"})])))))
 
-    (testing "a hidden column can't be filtered, sorted or grouped on"
+    (testing "a column a hide rule masks can be filtered and sorted on, but not grouped on"
       (doseq [e ["customer | where: uuid_col is null | s: id"
-                 "customer | o: uuid_col | s: id"
-                 "customer | group: uuid_col with count"]]
-        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`c_0.uuid_col` is hidden by the access policy"
-                              (generate e [column-type-rule (hide {:type "column-name" :suffix "_col"})]))
-            e)))
+                 "customer | o: uuid_col | s: id"]]
+        (is (:query (generate e [column-type-rule (hide {:type "column-name" :suffix "_col"})])) e))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`c_0.uuid_col` is a masked column"
+                            (generate "customer | group: uuid_col with count"
+                                      [column-type-rule (hide {:type "column-name" :suffix "_col"})]))))
 
     (testing "a computed value reading a hidden column is hidden"
       (is (re-find #"'xxxxx' AS \"u\""
@@ -1169,8 +1170,8 @@
                                      [column-type-rule (hide {:type "column-name" :contains "uuid"})])))))
 
     (testing "a hide rule covers the `id` column too, which is otherwise always shown"
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`r_0.id` is hidden"
-                            (generate "report | where: id = 1" [column-type-rule (hide {:type "column-name" :equals "id"})]))))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`r_0.id` is a masked column"
+                            (generate "report | group: id with count" [column-type-rule (hide {:type "column-name" :equals "id"})]))))
 
     (testing "a hide rule with a matcher this version doesn't know hides every column, the key column included"
       (is (= "SELECT 'xxxxx' AS \"id\", 'xxxxx' AS \"title\" FROM \"report\" AS \"r_0\" LIMIT 1"
@@ -1194,53 +1195,41 @@
                    (:query (generate "report | s: title" [{:type "column" :table "customer" :column "title"}])))))))
 
 (deftest test-access-policy-joins
-  (let [hide    (fn [match] {:type "hide" :match match})
-        refused #"`r_0.title` is hidden by the access policy, so it can't be used to join tables"]
+  (let [hide (fn [match] {:type "hide" :match match})]
 
-    (testing "a join on a hidden column is refused: a cast error, or a join to guesses, would give it away"
-      (doseq [e ["report | customer .uuid_col = .title ::uuid"
-                 "report | customer .id ::text = .title"
-                 "report :left | customer .uuid_col = .title | s: c_1.id"]]
-        (is (thrown-with-msg? clojure.lang.ExceptionInfo refused (generate e [column-type-rule])) e)))
-
-    (testing "joined to a named result of literal guesses, the table's own side is checked"
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`r_1.title` is hidden by the access policy, so it can't be used to join tables"
-                            (generate-expressions ["report | s: coalesce('alice@example.com', 'x') as g | limit: 1 |= guesses"
-                                                   "guesses | report .title = .g | s: r_1.id"]
-                                                  [column-type-rule]))))
-
-    (testing "every way the query can be built checks its joins"
-      (doseq [e ["report | customer .uuid_col = .title | count:"
+    (testing "a join on a masked column runs: the policy masks what comes back, and a join returns no value"
+      (doseq [e ["report | customer .id ::text = .title"
+                 "report :left | customer .uuid_col = .title | s: c_1.id"
+                 "report | customer .uuid_col = .title | count:"
                  "report | customer .uuid_col = .title | group: c_1.id with count"
-                 "report | customer .uuid_col = .title | limit: 1 per c_1.id"]]
-        (is (thrown-with-msg? clojure.lang.ExceptionInfo refused (generate e [column-type-rule])) e))
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo refused
-                            (generate-expressions ["report | customer .uuid_col = .title |= x" "x"] [column-type-rule]))))
+                 "report | customer .uuid_col = .title | limit: 1 per c_1.id"
+                 "order | customer"
+                 "company | employee"]]
+        (is (:query (generate e [column-type-rule])) e))
+      (is (:query (generate-expressions ["report | s: coalesce('alice@example.com', 'x') as g | limit: 1 |= guesses"
+                                         "guesses | report .title = .g | s: r_1.id"]
+                                        [column-type-rule])))
+      (is (:query (generate "company | employee" [column-type-rule (hide {:type "column" :table "employee" :column "company_id"})]))))
 
-    (testing "SQL's JOIN ... ON converts to the same join, and is refused the same way"
+    (testing "a masked column joined to a shown one stays masked in the result"
+      (is (re-find #"'xxxxx' AS \"title\""
+                   (:query (generate "report | customer .uuid_col = .title | s: r_0.title, c_1.id" [column-type-rule])))))
+
+    (testing "a `::uuid` cast of a masked column is refused: Postgres's error would print the value"
+      (doseq [e ["report | customer .uuid_col = .title ::uuid"
+                 "report | where: title = 'x' ::uuid"
+                 "report | where: coalesce(title::uuid, title::uuid) is null"]]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                              #"`r_0.title` is a masked column, so it can't be cast with `::uuid`"
+                              (generate e [column-type-rule]))
+            e))
       (let [{:keys [expression]} (transpile/sql->pine "SELECT c.id FROM report r JOIN customer c ON c.uuid_col = r.title::uuid")]
-        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`r.title` is hidden by the access policy, so it can't be used to join tables"
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`r.title` is a masked column, so it can't be cast with `::uuid`"
                               (generate expression [column-type-rule])))))
 
-    (testing "a join guessed from column names is checked like a manual one"
-      ;; order.customer_id is varchar: hidden by type alone, and customer.id
-      ;; would show its value.
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`o_0.customer_id` is hidden by the access policy, so it can't be used to join tables"
-                            (generate "order | customer" [column-type-rule])))
-      (is (:query (generate "order | customer" [column-type-rule {:type "foreign-key"}]))))
-
-    (testing "a real foreign key joins when both sides are shown, or both hidden"
-      (is (:query (generate "company | employee" [column-type-rule])))
-      (is (:query (generate "x.company | employee | document" [column-type-rule])))
-      (is (:query (generate "company | employee" [column-type-rule
-                                                  (hide {:type "column" :table "employee" :column "company_id"})
-                                                  (hide {:type "column" :table "company" :column "id"})]))))
-
-    (testing "a real foreign key with one side hidden is refused: the other side shows its value"
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`e_1.company_id` is hidden by the access policy, so it can't be used to join tables: `c_0.id` would show its value"
-                            (generate "company | employee" [column-type-rule (hide {:type "column" :table "employee" :column "company_id"})])))
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`c_0.id` is hidden by the access policy, so it can't be used to join tables: `e_1.company_id` would show its value"
-                            (generate "company | employee" [column-type-rule (hide {:type "column" :table "company" :column "id"})]))))))
+    (testing "a `::uuid` cast of a shown column, and a `::text` cast of a masked one, run"
+      (is (:query (generate "report | customer .uuid_col ::uuid = .id" [column-type-rule])))
+      (is (:query (generate "report | where: title = 'x' ::text" [column-type-rule]))))))
 
 (deftest test-access-policy-names-and-case
   (let [rules [column-type-rule
@@ -1252,8 +1241,8 @@
               e ["order | s: CUSTOMER_ID" "order | s: Customer_Id" "ORDER | s: customer_id"]]
         (is (re-find #"'xxxxx' AS ." (:query (gen e rules))) (str dialect ": " e)))
       (doseq [[dialect gen] [["mysql" generate-mysql] ["sqlite" generate-sqlite]]]
-        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`o_0.CUSTOMER_ID` is hidden by the access policy"
-                              (gen "order | where: CUSTOMER_ID = 'x' | s: id" rules))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`o_0.CUSTOMER_ID` is a masked column"
+                              (gen "order | group: CUSTOMER_ID with count" rules))
             dialect)))
 
     (testing "Postgres matches a quoted name exactly: another spelling isn't the column, and is refused"
@@ -1280,9 +1269,9 @@
 
     (testing "an `id` that isn't a primary key is checked like any other column"
       ;; p.log_entry has an integer id and no primary key.
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`le_0.id` is hidden by the access policy"
-                            (generate "log_entry | where: id = 1" rules)))
-      (is (:query (generate "log_entry | where: id = 1" [column-type-rule]))))))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`le_0.id` is a masked column"
+                            (generate "log_entry | group: id with count" rules)))
+      (is (:query (generate "log_entry | group: id with count" [column-type-rule]))))))
 
 (deftest test-build-query-mysql
   ;; Every Postgres assertion above must stay byte-identical through this

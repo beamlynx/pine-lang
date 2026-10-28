@@ -388,9 +388,8 @@
 (deftest test-limit-per-access-policy
   (let [rules [{:type "column-type" :allow ["integer"]}]
         sql (fn [e] (-> e parser/parse :result (ast/generate :test nil nil {} rules) eval/build-query))]
-    (testing "a column the policy hides can't follow `per`: the groups would give its values away"
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`r_0.title` is hidden by the access policy, so it can't be used in where:, order:, group: or after `per`"
-                            (sql "report | l: 1 per title"))))
+    (testing "a masked column can follow `per`: it decides which rows come back, not what they hold"
+      (is (s/includes? (:query (sql "report | l: 1 per title")) "PARTITION BY \"r_0\".\"title\"")))
     (testing "the columns of `*` are redacted inside, and named outside"
       (let [{:keys [query]} (sql "report | l: 1 per id")]
         (is (s/includes? query "'xxxxx' AS \"title\""))

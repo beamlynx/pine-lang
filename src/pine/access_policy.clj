@@ -490,47 +490,42 @@
   ;; :hidden says which real column was refused, and the rule that hid it,
   ;; so a client can ask the owner to allow it (see api.clj's error-body).
   ;; Same shape as annotate-column's :policy.
-  (throw (ex-info (str "`" alias "." column "` is hidden by the access policy, so it can't be " message)
+  (throw (ex-info (str "`" alias "." column "` is a masked column, so it can't be " message)
                   {:error-type "policy" :alias alias :column column
                    :hidden (:policy (annotate-column state rules (reference state alias column)))})))
 
-(defn- check-join!
-  "Throws when a join compares a hidden column. Rows match only where the
-  two sides are equal, so a join reads the hidden value the way a where:
-  does: joined to a named result of guesses, or to a shown column, it
-  gives the value away.
-
-  A real foreign key is let through when both sides are hidden: the rows it
-  links are linked by the schema, and neither value shows. When only one
-  side is hidden, the other side shows its value, so it is refused. A side
-  that is a named result's column counts as shown. Any other join, a manual
-  one or a guess from column names, compares whatever it is given, so a
-  hidden column on either side refuses it."
-  [{:keys [aliases] :as state} rules {:keys [resolution] :as join}]
-  (doseq [[[a1 c1 :as side1] [a2 c2 :as side2]] (join-pairs join)]
-    (let [real?   (fn [[alias column]] (and (not (s/blank? column))
-                                            (get aliases alias)
-                                            (not (get-in aliases [alias :ast]))))
-          hidden? (fn [[alias column :as side]]
-                    (and (real? side) (sensitive-column? state rules (reference state alias column))))
-          h1 (hidden? side1)
-          h2 (hidden? side2)]
-      (when (or h1 h2)
-        (if (= "fk" resolution)
-          (when-not (and h1 h2)
-            (let [[[a c] [oa oc]] (if h1 [side1 side2] [side2 side1])]
-              (refuse-hidden! state rules a c (str "used to join tables: `" oa "." oc "` would show its value."))))
-          (if h1
-            (refuse-hidden! state rules a1 c1 "used to join tables.")
-            (refuse-hidden! state rules a2 c2 "used to join tables.")))))))
+(defn- uuid-cast-columns
+  "[alias column] for every column a query casts to uuid, outside the
+  SELECT list: in a where: condition, a join pair, or inside a computed
+  value. Postgres's error for a value that isn't a uuid prints the value:
+  `invalid input syntax for type uuid: \"...\"`."
+  [{:keys [where joins group order limit-per]} current]
+  (let [conditions (mapcat #(if-let [cs (:or %)] cs [%]) where)
+        computed-nodes (->> (concat conditions group order (:columns limit-per))
+                            (tree-seq coll? seq)
+                            (filter #(and (map? %) (:kind %) (= "uuid" (:cast %)))))]
+    (concat
+     (mapcat #(when (= "uuid" (:cast %)) (where-columns current %)) conditions)
+     (map (juxt :alias :column) (mapcat computed/columns computed-nodes))
+     (mapcat (fn [{:keys [from to columns]}]
+               (mapcat (fn [pair]
+                         (cond-> []
+                           (= "uuid" (:from-cast pair)) (conj [from (:from pair)])
+                           (= "uuid" (:to-cast pair)) (conj [to (:to pair)])))
+                       columns))
+             joins))))
 
 (defn check-references
-  "Throws when a query reads a hidden column anywhere but the SELECT list:
-  in where:, order:, group:, after `per`, or in a join (see check-join!).
-  Redaction only touches the SELECT list, so filtering, sorting, grouping
-  or joining on a hidden column still read its values: `where: title like
-  'a%'` repeated letter by letter recovers a hidden title from row counts
-  alone.
+  "Throws when a query would return a hidden column's value anywhere but
+  the SELECT list, where it is masked. The policy masks output only: a
+  query may filter, sort or join on a hidden column, because the value it
+  compares with comes from the query itself. See docs/access-policy.md.
+
+  Two places still return the value, so they are refused:
+
+  - a `group:` key, which is a column of the result;
+  - a `::uuid` cast of a hidden column, because Postgres's error prints the
+    value that isn't a uuid.
 
   Also throws, first, when any column of a table the schema index has
   isn't one of that table's columns (see check-known!).
@@ -538,7 +533,7 @@
   Exempt: the primary key column `id`, unless a hide rule covers it (rows
   are already shown with their key), columns of a named result or
   checkpoint (its query was built under the same policy, so a hidden
-  column there already holds the redacted literal), and catalog
+  column there already holds the masked literal), and catalog
   relations."
   [{:keys [where order group limit-per joins columns current aliases] :as state} rules]
   (when (seq rules)
@@ -546,15 +541,20 @@
                           (mapcat entry-columns order)
                           (mapcat entry-columns group)
                           (mapcat entry-columns (:columns limit-per)))
-          joined  (mapcat #(apply concat (join-pairs %)) joins)]
+          joined  (mapcat #(apply concat (join-pairs %)) joins)
+          hidden? (fn [[alias column]]
+                    (and (not (s/blank? column))
+                         (get aliases alias)
+                         (not (get-in aliases [alias :ast]))
+                         (sensitive-column? state rules (reference state alias column))))]
       (doseq [[alias column source] (concat (select-columns columns) named
                                             (map (fn [[a c]] [a c nil]) joined))
               :when (and (not (s/blank? column)) (not (get-in aliases [alias :ast])))]
         (check-known! state alias column source))
-      (doseq [[alias column] named
-              :when (and (not (s/blank? column))
-                         (not (get-in aliases [alias :ast]))
-                         (sensitive-column? state rules (reference state alias column)))]
-        (refuse-hidden! state rules alias column "used in where:, order:, group: or after `per`."))
-      (doseq [join joins]
-        (check-join! state rules join)))))
+      (doseq [[alias column :as side] (mapcat entry-columns group)
+              :when (hidden? side)]
+        (refuse-hidden! state rules alias column "a `group:` key: the key is a column of the result."))
+      (doseq [[alias column :as side] (uuid-cast-columns state current)
+              :when (hidden? side)]
+        (refuse-hidden! state rules alias column
+                        "cast with `::uuid`: the database's error would print a value that isn't a uuid.")))))

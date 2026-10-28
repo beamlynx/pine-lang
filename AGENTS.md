@@ -23,6 +23,14 @@ Pine is a domain-specific language (DSL) for querying databases. It provides a c
 
 ---
 
+## The masking policy masks output only
+
+The access policy (beamlynx calls it a masking policy) stops the contents of a masked column from coming back to whoever sent the query. A query may still filter, sort, partition and join on a masked column, because the value it compares with comes from the query. This is a deliberate choice, not a gap to close. Don't add refusals for these, even after a security review.
+
+Guard only the places where a masked value would come back: the SELECT list, a `group:` key, and database error text. A `::uuid` cast, for example, makes Postgres print the value in its error. See `docs/access-policy.md`, "What it protects".
+
+---
+
 ## Feature Development Workflow
 
 When adding new features, follow this order:
