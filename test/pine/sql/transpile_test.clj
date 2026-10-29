@@ -140,7 +140,11 @@
   (testing "A ->> key in WHERE compares its text, where Pine's comparison means the same"
     (converts-to "select * from t where t.data->>'plan' = 'pro'" "t | where: data.plan = 'pro'")
     (converts-to "select * from t where 'pro' = t.data->>'plan'" "t | where: data.plan = 'pro'")
-    (converts-to "select * from t where not (t.data->>'plan' = 'pro')" "t | where: data.plan != 'pro'")
+    ;; ->> gives NULL for a JSON null, which SQL's != drops and Pine's would keep.
+    (converts-to "select * from t where not (t.data->>'plan' = 'pro')" "t | where: data.plan != 'pro' | where: data.plan is not null")
+    (is (= "t\n | where: data.plan != 'pro'" (:expression (t/sql->pine "select * from t where t.data->>'$.plan' != 'pro'" nil {:dialect :mysql}))))
+    (is (re-find #"IS NULL on a ->> key isn't converted on MySQL"
+                 (:error (t/sql->pine "select * from t where t.data->>'$.plan' is null" nil {:dialect :mysql}))))
     (converts-to "select * from t where t.data->>'plan' is null" "t | where: data.plan is null")
     (converts-to "select * from t where t.data->>'plan' like 'p%'" "t | where: data.plan like 'p%'")
     (converts-to "select * from t where t.data->>'plan' not in ('a', 'b')" "t | where: data.plan not in ('a', 'b')"))
@@ -1282,6 +1286,8 @@ s | group: a with count as subjects, n => max as max_n | order: max_n desc | lim
                  "a as a | a.data[*] as e | from: a | b .id = .b_id | where: e.k = 'v' | select: a.id, name"))
 
   (testing "An element of jsonb_array_elements_text compares as text"
+    (converts-to "select a.id from a, jsonb_array_elements_text(a.tags) e where e != 'red'"
+                 "a as a | a.tags[*] as e | where: e != 'red' | where: e is not null | select: a.id | from: a")
     (converts-to "select a.id from a, jsonb_array_elements_text(a.tags) e where e = 'red'"
                  "a as a | a.tags[*] as e | where: e = 'red' | select: a.id | from: a")
     (refuses "select a.id from a, jsonb_array_elements_text(a.tags) e where e = '5'" "'5' is also how a JSON number reads as text")

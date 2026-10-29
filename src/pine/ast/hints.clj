@@ -783,9 +783,16 @@
      ;; :paths is handled separately: unlike every other op-type, which bucket
      ;; it lands in (:table vs :paths) depends on the search's runtime result,
      ;; not on op-type alone (see generate-path-hints).
-     (if (= op-type :paths)
+     (cond
+       (= op-type :paths)
        (let [{:keys [key hints]} (generate-path-hints state-for-hints)]
          (assoc-in state [:hints key] (or hints [])))
+
+       ;; `a.data[*] as e`: keys aren't in the schema, so nothing to hint.
+       (= op-type :elements)
+       state
+
+       :else
        (let [hints (case (if json-path? :json-path op-type)
                      :json-path []
                      :table (generate-table-hints state-for-hints)

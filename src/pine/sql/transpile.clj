@@ -351,7 +351,7 @@
   [tables {:keys [at] :as p} col right operator]
   (when-not (#{"=" "!="} operator)
     (refuse at (str "Comparing the text of a JSON key with " operator " isn't converted: SQL compares text, and Pine compares JSON values.")))
-  {:col col :operator operator :value (json-text-value p right)})
+  {:col col :operator operator :value (json-text-value p right) :json-text true})
 
 (defn- compare-column-atom [tables {:keys [at]} left right operator]
   (doseq [o [left right]
@@ -424,7 +424,9 @@
              :cast (column-cast (:left p))
              :operator (str (when (not= (:negated p) (boolean negate)) "not ") (:operator p))
              :value v})
-    :is-null {:col (left-column tables p)
+    :is-null {:col (do (when (and (= :mysql *dialect*) (json-text-col tables (:left p)))
+                         (refuse (:at p) "IS NULL on a ->> key isn't converted on MySQL: its ->> gives the text 'null' for a JSON null, and Pine's is null counts a JSON null as null."))
+                       (left-column tables p))
               :cast (column-cast (:left p))
               :operator (if (not= (:negated p) (boolean negate)) "is not null" "is null")}
     :in-set (cond-> {:col (left-column tables p)
@@ -487,7 +489,14 @@
     :not (nnf tables arg (not negate))
     :between (nnf tables (between->predicate p) negate)
     :is-distinct (nnf tables (distinct->predicate p) negate)
-    {:atom (atom-of tables p negate)}))
+    (let [a (atom-of tables p negate)]
+      (if (and (:json-text a) (= "!=" (:operator a)) (not= :mysql *dialect*))
+        ;; On Postgres and SQLite, ->> gives NULL for a JSON null, so SQL's
+        ;; `!=` drops the row. Pine's `!=` compares JSON values, and JSON
+        ;; null != "v" keeps it. MySQL's ->> gives the text 'null', which
+        ;; SQL's `!=` keeps too.
+        {:and [{:atom a} {:atom {:col (:col a) :operator "is not null"}}]}
+        {:atom a}))))
 
 (defn- cnf
   "A vector of clauses, each a vector of atoms to join with `or`. AND

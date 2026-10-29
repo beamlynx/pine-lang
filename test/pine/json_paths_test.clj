@@ -409,6 +409,7 @@
                           (state "customer as c | data[*] as c")))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"A join can't start from the elements `e`"
                           (state "customer | data[*] as e | employee .id = .x")))
+    (is (state "customer | data[*] as e | ") "A table still being typed isn't refused")
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"delete! can't change the elements of a JSON array"
                           (sql "customer | data[*] as e | where: e.x = 1 | delete! .id")))))
 

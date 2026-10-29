@@ -472,3 +472,54 @@ ORDER BY c.name, ed.field;")
             (finally
               (connections/remove-connection-pool id)
               (db/clear-connection-if id))))))))
+
+;; A ->> key in WHERE, with a string, a JSON null, a missing key, a number
+;; and a non-JSON-looking string. And the elements of a text array, one of
+;; them a JSON null.
+(def ^:private json-where-fixture
+  ["CREATE TABLE tj (id int PRIMARY KEY, data jsonb, tags jsonb)"
+   "INSERT INTO tj VALUES
+      (1, '{\"plan\": \"pro\"}', '[\"a\", \"b\"]'),
+      (2, '{\"plan\": null}', '[null, \"b\"]'),
+      (3, '{}', '[]'),
+      (4, '{\"plan\": \"free\"}', '[\"c\"]'),
+      (5, '{\"plan\": 10}', NULL)"])
+
+(def ^:private json-where-queries
+  ["SELECT t.id FROM tj t WHERE t.data->>'plan' = 'pro'"
+   "SELECT t.id FROM tj t WHERE t.data->>'plan' != 'pro'"
+   "SELECT t.id FROM tj t WHERE NOT (t.data->>'plan' = 'pro')"
+   "SELECT t.id FROM tj t WHERE t.data->>'plan' != 'pro' OR t.id = 2"
+   "SELECT t.id FROM tj t WHERE t.data->>'plan' IN ('pro', 'free')"
+   "SELECT t.id FROM tj t WHERE t.data->>'plan' NOT IN ('pro')"
+   "SELECT t.id FROM tj t WHERE t.data->>'plan' LIKE 'f%'"
+   "SELECT t.id FROM tj t WHERE t.data->>'plan' IS NULL"
+   "SELECT t.id FROM tj t WHERE t.data->>'plan' IS NOT NULL"
+   "SELECT t.id, e FROM tj t CROSS JOIN LATERAL jsonb_array_elements_text(t.tags) e WHERE e != 'b'"
+   "SELECT t.id, e FROM tj t, jsonb_array_elements_text(t.tags) e WHERE e IS NULL"])
+
+(deftest test-json-text-in-where-on-postgres
+  (if-not server
+    (println "Skipping the Postgres JSON WHERE check: set PINE_TEST_POSTGRES_URL to run it.")
+    (with-database json-where-fixture
+      (fn [db dbname]
+        (let [{:keys [host port user password]} db
+              id (connections/add-connection-pool {:dbtype "postgres" :host host :port port :dbname dbname
+                                                   :user user :password password})]
+          (try
+            (doseq [sql json-where-queries
+                    references [(db/init-references id) nil]]
+              (testing (str (if references "With" "Without") " the schema: " sql)
+                (let [{:keys [expression error]} (t/sql->pine sql references)
+                      result (when expression (api/api-eval [expression] id))
+                      [header & rows] (:result result)
+                      at (fn [k] (.indexOf ^java.util.List (vec header) k))
+                      cols (cond-> [:id] (s/includes? sql " e ") (conj :e))]
+                  (is (nil? error) error)
+                  (is (nil? (:error result)) (str (:error result)))
+                  (is (= (frequencies (map (apply juxt cols) (jdbc/query db [sql])))
+                         (frequencies (map (fn [r] (mapv #(nth r (at %)) cols)) rows)))
+                      expression))))
+            (finally
+              (connections/remove-connection-pool id)
+              (db/clear-connection-if id))))))))

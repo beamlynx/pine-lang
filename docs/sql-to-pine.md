@@ -222,6 +222,10 @@ company_structure_template as t
   - `=` and `!=` compare text in SQL and JSON values in Pine. For a string they agree, so `data->>'plan' = 'pro'`
     converts. A string that is also how a number, `true`, `false`, `null`, an object or an array reads as text is
     refused: `data->>'n' = '10'` matches the number 10 in SQL, and not in Pine.
+  - On Postgres and SQLite, `->>` gives NULL for a JSON `null`, so SQL's `!=` drops that row. Pine's `!=` keeps it, so
+    `!=` also gets `where: data.plan is not null`. On MySQL, `->>` gives the text `'null'`, and `!=` stays as it is.
+  - On MySQL, `IS NULL` on a key is refused: `->>` gives the text `'null'` for a JSON `null`, and Pine's `is null`
+    counts a JSON `null` as NULL.
   - `<`, `>`, a number on the right, a cast, and a `->` key are refused.
 - With `GROUP BY`, a key is refused. `#>` and `#>>` are refused too.
 

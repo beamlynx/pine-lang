@@ -116,6 +116,7 @@
         (keep (fn [{:keys [type value]}]
                 (some-> (case type
                           :table  (:alias value)
+                          :elements (:as value)
                           :assign value
                           nil)
                         str/lower-case)))
@@ -336,7 +337,8 @@
   (case type
     :select (select/handle state value)
     :select-partial (select/handle state value)
-    :table (path/check-join-paths (table/handle (elements/check-join-from state) value))
+    ;; A table still being typed, `| `, isn't a join yet.
+    :table (path/check-join-paths (table/handle (cond-> state (seq (:table value)) elements/check-join-from) value))
     :elements (elements/handle state value)
     :limit (limit/handle state value per)
     :limit-partial (limit/handle state value per)
