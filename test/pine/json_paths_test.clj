@@ -351,3 +351,72 @@
   (testing "A masked JSON column can be joined on: the policy masks what comes back, and it stays masked"
     (is (re-find #"'xxxxx' AS \"data\""
                  (:query (eval/build-query (state :test "customer | employee .id = .data[*].id | s: c_0.data, e_1.id" [jsonb-hidden])))))))
+
+(deftest test-array-elements
+  (testing "`a.data[*] as e` parses as a step, written like a column"
+    (is (= {:type :elements :value {:alias "c" :column "data" :path ["staff"] :as "s"}}
+           (last (parse "customer as c | c.data.staff[*] as s"))))
+    (is (= {:type :elements :value {:column "data" :path []}}
+           (last (parse "customer | data[*]")))))
+
+  (testing "One row for each element, joined to its row"
+    (is (= {:query (str "SELECT \"c\".\"id\", jsonb_extract_path_text(\"s\".\"value\"::jsonb, ?::text) AS \"name\", "
+                        "\"c\".\"id\" AS \"__c__id\" FROM \"customer\" AS \"c\" CROSS JOIN LATERAL jsonb_array_elements("
+                        "CASE WHEN jsonb_typeof(jsonb_extract_path(\"c\".\"data\"::jsonb, ?::text)) = 'array' "
+                        "THEN jsonb_extract_path(\"c\".\"data\"::jsonb, ?::text) END) AS \"s\"(\"value\") "
+                        "WHERE jsonb_extract_path(\"s\".\"value\"::jsonb, ?::text) = ?::jsonb LIMIT 250")
+            :params ["name" "staff" "staff" "role" "\"admin\""]}
+           (sql "customer as c | c.data.staff[*] as s | where: s.role = 'admin' | s: c.id, s.name"))))
+
+  (testing "Without select:, the element. `e` is the element, `e.k` a key, and a bare name a key"
+    (is (re-find #"^SELECT \"c_0\".\"id\" AS \"__c_0__id\", \(\"e\".\"value\"::jsonb #>> '\{\}'\) AS \"e\" FROM"
+                 (:query (sql "customer | data[*] as e"))))
+    (is (= ["k" "k"] (take 2 (:params (sql "customer | data[*] as e | s: e.k, k as k2")))))
+    (is (re-find #"\(\"e\".\"value\"::jsonb #>> '\{\}'\) AS \"e\""
+                 (:query (sql "customer | data[*] as e | s: e.*")))))
+
+  (testing "An element compares as JSON, like a key"
+    (is (re-find #"WHERE \"e\".\"value\"::jsonb = \?::jsonb"
+                 (:query (sql "customer | data[*] as e | where: e = 'x'")))))
+
+  (testing "Elements of elements, and a default name"
+    (is (re-find #"AS \"i\"\(\"value\"\) CROSS JOIN LATERAL jsonb_array_elements\(CASE WHEN jsonb_typeof\(jsonb_extract_path\(\"i\".\"value\"::jsonb"
+                 (:query (sql "customer as c | data.items[*] as i | i.parts[*] as p | s: p.name"))))
+    (is (re-find #"AS \"s_1\"\(\"value\"\)" (:query (sql "customer | data.staff[*]")))))
+
+  (testing "A join after the elements comes after them, from the table named by from:"
+    (is (re-find #"AS \"e\"\(\"value\"\) JOIN \"employee\""
+                 (:query (sql "customer as c | data[*] as e | from: c | employee .id = .id")))))
+
+  (testing "MySQL reads the array with JSON_TABLE"
+    (is (= {:query (str "SELECT JSON_UNQUOTE(`t`.`value`) AS `t`, `p_0`.`id` AS `__p_0__id` FROM `product` AS `p_0` "
+                        "CROSS JOIN JSON_TABLE(CASE WHEN JSON_TYPE(JSON_EXTRACT(`p_0`.`config`, ?)) = 'ARRAY' "
+                        "THEN JSON_EXTRACT(`p_0`.`config`, ?) END, '$[*]' COLUMNS (`value` JSON PATH '$')) AS `t` LIMIT 250")
+            :params ["$.\"tags\"" "$.\"tags\""]}
+           (sql :test-mysql "product | config.tags[*] as t | s: t"))))
+
+  (testing "SQLite reads it with json_each, and writes each element as JSON text"
+    (let [{:keys [query]} (sql :test-sqlite "customer | data.staff[*] as s | s: s.name")]
+      (is (re-find #"CROSS JOIN json_each\(CASE WHEN json_type\(\"c_0\".\"data\", \?\) = 'array' THEN json_extract\(\"c_0\".\"data\", \?\) END\) AS \"s\"" query))
+      (is (re-find #"json_extract\(\(CASE \"s\".\"type\" WHEN 'object' THEN \"s\".\"value\" .* ELSE json_quote\(\"s\".\"value\"\) END\), \?\) AS \"name\"" query))))
+
+  (testing "Errors"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"a table comes first"
+                          (state "data[*] as e")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`uuid_col` is not a JSON column, so `uuid_col\[\*\]` has no elements"
+                          (state "customer | uuid_col[*] as e")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`c` is already an alias"
+                          (state "customer as c | data[*] as c")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"A join can't start from the elements `e`"
+                          (state "customer | data[*] as e | employee .id = .x")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"delete! can't change the elements of a JSON array"
+                          (sql "customer | data[*] as e | where: e.x = 1 | delete! .id")))))
+
+(deftest test-array-elements-access-policy
+  (testing "An element, and every key of one, is masked when its column is"
+    (let [{:keys [query]} (sql :test "customer | data[*] as e | s: id, e.k" [jsonb-hidden])]
+      (is (re-find #"'xxxxx' AS \"k\"" query))))
+  (testing "and can be filtered on, but not grouped on"
+    (is (:query (sql :test "customer | data[*] as e | where: e.k = 'x' | s: id" [jsonb-hidden])))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`c_0.data` is a masked column"
+                          (sql :test "customer | data[*] as e | group: e.k with count" [jsonb-hidden])))))

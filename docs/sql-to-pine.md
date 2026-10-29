@@ -117,6 +117,9 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `(a IN (SELECT b FROM k)) AS m` | a block for the subquery, then `select: a in <block> as m` |
 | `a::text AS k`, `CAST(a AS text) AS k` | `select: a::text as k` |
 | `t.data->>'plan' AS p`, `t.data->'tags'->>0 AS tag` | `select: data.plan as p, data.tags[0] as tag` (see [JSON keys](#json-keys)) |
+| `WHERE t.data->>'plan' = 'pro'`, `IN (...)`, `LIKE`, `IS NULL` | `where: data.plan = 'pro'` (see [JSON keys](#json-keys)) |
+| `CROSS JOIN LATERAL jsonb_array_elements(a.data) e` | `\| a.data[*] as e` (see [JSON arrays as rows](#json-arrays-as-rows)) |
+| `e->>'k'`, `e` of those elements | `e.k`, `e` |
 | `jsonb_typeof(x)`, `jsonb_array_length(x)` | the same, in Pine |
 | `jsonb_typeof(x) = 'array'`, in `WHERE` or `CASE WHEN` | `jsonb_typeof(x) = 'array'` |
 | `SELECT s.*, COALESCE(...) AS k FROM s` | `s as s \| select: s.*, coalesce(...) as k` |
@@ -214,8 +217,44 @@ company_structure_template as t
   Keys and literals alone are fine.
 - `ORDER BY` a `->` key, or the name it is selected as, sorts by the path: SQL and Pine both sort it as
   JSON. `ORDER BY` a `->>` key is refused: SQL sorts it as text and Pine as JSON, so `'10'` and `9` swap.
-- In `WHERE` and with `GROUP BY`, a key is refused. Pine compares `data.plan = 'pro'` as JSON and `->>`
-  compares text, so `'10'` would match differently. `#>` and `#>>` are refused too.
+- In `WHERE`, a `->>` key converts where Pine's test means the same as SQL's:
+  - `LIKE`, `IN` with strings, and `IS NULL` compare text in both.
+  - `=` and `!=` compare text in SQL and JSON values in Pine. For a string they agree, so `data->>'plan' = 'pro'`
+    converts. A string that is also how a number, `true`, `false`, `null`, an object or an array reads as text is
+    refused: `data->>'n' = '10'` matches the number 10 in SQL, and not in Pine.
+  - `<`, `>`, a number on the right, a cast, and a `->` key are refused.
+- With `GROUP BY`, a key is refused. `#>` and `#>>` are refused too.
+
+### JSON arrays as rows
+
+`jsonb_array_elements` in `FROM` gives one row for each element of an array. Pine says it with
+[`[*]` as a step](json-paths.md#arrays-as-rows):
+
+```sql
+SELECT a.id, e->>'field' AS field
+FROM activity a CROSS JOIN LATERAL jsonb_array_elements(a.data->'changes') e
+WHERE e->>'field' IN ('legalTypes', 'giin')
+```
+
+```
+activity as a
+ | a.data.changes[*] as e
+ | where: e.field in ('legalTypes', 'giin')
+ | select: a.id, e.field as field
+```
+
+- `CROSS JOIN LATERAL`, a comma, and `JOIN LATERAL ... ON true` all convert. `LATERAL` may be left out.
+  `json_array_elements` and the `_text` forms convert too.
+- `e` is the element, `e.value` and `e(x)`'s `x` name it too, and `e->>'k'` is a key of it. A selected element is
+  named as SQL names it: `e.value` becomes `e as value`.
+- `jsonb_array_elements` gives JSON, so a string element keeps its quotes in SQL. Pine shows it as text, as
+  `jsonb_array_elements_text` does, and warns.
+- An element of the `_text` forms compares as a `->>` key does. An element of the JSON forms is refused in `WHERE`.
+- `PARTITION BY e->>'k'` partitions by the key's text, as Pine does. `PARTITION BY e->'k'` is refused.
+- Refused: `LEFT JOIN LATERAL`, which keeps rows whose array is empty, and `->>` inside the function, which gives text.
+  Any other function in `FROM`, like `generate_series`, is refused as a cross join.
+
+The SQL fails on a row whose value isn't an array. Pine skips that row.
 
 ### Aggregates and HAVING
 

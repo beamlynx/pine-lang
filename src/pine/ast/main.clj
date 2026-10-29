@@ -18,6 +18,7 @@
    [pine.ast.assign :as assign]
    [pine.ast.count :as pine-count]
    [pine.ast.delete-action :as delete-action]
+   [pine.ast.elements :as elements]
    [pine.ast.from :as from]
    [pine.ast.group :as group]
    [pine.ast.hints :as hints]
@@ -335,7 +336,8 @@
   (case type
     :select (select/handle state value)
     :select-partial (select/handle state value)
-    :table (path/check-join-paths (table/handle state value))
+    :table (path/check-join-paths (table/handle (elements/check-join-from state) value))
+    :elements (elements/handle state value)
     :limit (limit/handle state value per)
     :limit-partial (limit/handle state value per)
     :where (where/handle state value)

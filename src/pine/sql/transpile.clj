@@ -30,7 +30,8 @@
   With the connection's schema, a bare name takes the database's spelling:
   `c.tenantId` is written `.tenantId` when the table has a `tenantId`
   column, though Postgres would fold it to `tenantid`. See `spelling`."
-  (:require [clojure.string :as s]
+  (:require [cheshire.core :as json]
+            [clojure.string :as s]
             [clojure.walk :as walk]
             [pine.ast.main :as ast]
             [pine.db.references :as refs]
@@ -113,6 +114,10 @@
   without a schema. A WITH query's result has the columns it selects."
   [{:keys [schema table quoted schema-quoted at] :as t}]
   (cond
+    ;; The elements of a JSON array have one column.
+    (:elements t)
+    {:db-columns [(get-in t [:elements :column])]}
+
     (cte-name? t)
     {:cte true :db-columns (get-in *ctes* [table :columns])}
 
@@ -149,8 +154,15 @@
   [tables {:keys [qualifier name quoted at]}]
   (pine-name! name at)
   (let [owners (when (every? #(seq (:db-columns %)) tables)
-                 (keep-indexed (fn [i tbl] (when (has-column? tbl name quoted) i)) tables))]
+                 (keep-indexed (fn [i tbl] (when (has-column? tbl name quoted) i)) tables))
+        ;; `e` of jsonb_array_elements(...) e is the element itself, unless
+        ;; a table has a column of that name, which SQL reads first.
+        element (when (and (nil? qualifier) (empty? owners))
+                  (first (keep-indexed (fn [i tbl] (when (and (:elements tbl) (= name (table-key tbl))) i)) tables)))]
     (cond
+      element
+      {:t element :name (get-in (nth tables element) [:elements :column]) :whole true}
+
       qualifier
       (if-let [t (first (keep-indexed (fn [i tbl] (when (= qualifier (table-key tbl)) i)) tables))]
         {:t t :name (column-name (nth tables t) name quoted at)}
@@ -210,6 +222,14 @@
 (def ^:private json-key-here
   "A JSON key with -> or ->> converts in a selected value or a function's argument, not here.")
 
+(defn- element-text-warning
+  "jsonb_array_elements gives each element as JSON, so a string keeps its
+  quotes. Pine shows an element as text, as jsonb_array_elements_text does."
+  [{f :fn} alias]
+  (when-not (s/ends-with? f "_text")
+    (*warn!* (str "In SQL, " f "() gives JSON, so a string keeps its quotes. Pine shows " alias
+                  " as text, without them, as " f "_text() does."))))
+
 (defn- value
   "A literal or variable operand as a Pine value."
   [{:keys [kind cast at] :as operand}]
@@ -257,7 +277,7 @@
   (when (names (s/lower-case name))
     (refuse at (str "A column called `" name "` can't be written here in Pine: it reads as the keyword " (s/lower-case name) "."))))
 
-(declare expr-pine expr-columns)
+(declare expr-pine expr-columns json-steps)
 
 (def ^:private json-functions
   "SQL functions that read JSON, and Pine has under the same name."
@@ -287,6 +307,51 @@
    :refs (set (map #(:t (resolve-column tables %)) (expr-columns left)))
    :operator operator
    :value (value right)})
+
+(defn- json-text-col
+  "The column {:t :name} of a value SQL compares as text inside JSON, with
+  :steps for a key: `t.data->>'k'`, or an element of
+  jsonb_array_elements_text(...). Pine compares a key's text where SQL
+  does: in `like`, `in` and `is null`. nil for any other value; a `->` key,
+  or an element as JSON, is refused here."
+  [tables {:keys [kind at] :as o}]
+  (case kind
+    :json (do (when (= "->" (:op (peek (:steps o))))
+                (refuse at "A -> key here is JSON, which SQL compares as JSON text. Compare its text, with ->>."))
+              (when (:cast o)
+                (refuse at "A cast on a JSON key isn't converted here."))
+              (assoc (resolve-column tables (:column o)) :steps (json-steps o) :at at))
+    :column (let [c (resolve-column tables (:column o))]
+              (when-let [{f :fn} (:elements (nth tables (:t c)))]
+                (when-not (s/ends-with? f "_text")
+                  (refuse at (str "An element of " f "() here is JSON, which SQL compares as JSON text. Use " f "_text(), or compare a key with ->>.")))
+                (when (:cast o)
+                  (refuse at "A cast on an element isn't converted here."))
+                c))
+    nil))
+
+(defn- json-text-value
+  "A string that compares the same with a JSON value's text, as SQL does,
+  and with the JSON string it is, as Pine does: one that doesn't read as
+  JSON other than a string. '10' is the text of the number 10 too, and
+  'true' of true, so they are refused."
+  [{:keys [at]} right]
+  (let [v (value right)]
+    (when-not (= :string (:kind v))
+      (refuse at "The text of a JSON key is compared with a string in Pine."))
+    (let [parsed (try (json/parse-string (:value v)) (catch Exception _ ::text))]
+      (when-not (or (= ::text parsed) (string? parsed))
+        (refuse at (str "'" (:value v) "' is also how a JSON " (cond (number? parsed) "number" (boolean? parsed) "true or false" (nil? parsed) "null" :else "object or array")
+                        " reads as text, which SQL's text comparison matches and Pine's JSON comparison doesn't."))))
+    v))
+
+(defn- json-text-atom
+  "`t.data->>'k' = 'v'`: Pine's `data.k = 'v'` compares JSON values, which
+  is the same for the strings json-text-value lets through. `!=` too."
+  [tables {:keys [at] :as p} col right operator]
+  (when-not (#{"=" "!="} operator)
+    (refuse at (str "Comparing the text of a JSON key with " operator " isn't converted: SQL compares text, and Pine compares JSON values.")))
+  {:col col :operator operator :value (json-text-value p right)})
 
 (defn- compare-column-atom [tables {:keys [at]} left right operator]
   (doseq [o [left right]
@@ -323,20 +388,24 @@
   "A comparison as an atom: a column with a value or another column, or a
   function of a column with a value. A value on the left is moved right."
   [tables {:keys [operator left right] :as p}]
-  (let [[left right operator] (if (or (and (not (column-operand? left)) (column-operand? right))
+  (let [[left right operator] (if (or (and (not (column-operand? left)) (or (column-operand? right) (= :json (:kind right))))
                                       (and (not (column-operand? left)) (not (left-function? left)) (left-function? right)))
                                 [right left (mirrored operator)]
                                 [left right operator])]
-    (if (and (left-function? left) (not (column-operand? right)))
+    (cond
+      (and (left-function? left) (not (column-operand? right)))
       (function-atom tables p left right)
+
+      (json-text-col tables left)
+      (json-text-atom tables p (json-text-col tables left) right operator)
+
+      :else
       (compare-column-atom tables p left right operator))))
 
 (defn- left-column [tables {:keys [left at]}]
-  (when (= :json (:kind left))
-    (refuse (:at left) json-key-here))
-  (when-not (column-operand? left)
+  (when-not (or (column-operand? left) (= :json (:kind left)))
     (refuse at "This test needs a column on its left."))
-  (resolve-column tables (:column left)))
+  (or (json-text-col tables left) (resolve-column tables (:column left))))
 
 (defn- atom-of
   "The Pine condition for one comparison, `negate`d if asked."
@@ -369,6 +438,8 @@
               vs (mapv value (:values p))]
           (when-not (every? #(#{:string :number} (:kind %)) vs)
             (refuse (:at p) "An IN list in Pine holds strings and numbers only."))
+          (when (and (json-text-col tables (:left p)) (not-every? #(= :string (:kind %)) vs))
+            (refuse (:at p) "The text of a JSON key is compared with strings."))
           {:col (left-column tables p)
            :cast (column-cast (:left p))
            :operator (if (not= (:negated p) (boolean negate)) "not in" "in")
@@ -517,12 +588,22 @@
 (defn- unique-name [taken base]
   (if (taken base) (first (remove taken (map #(str base "_" %) (iterate inc 2)))) base))
 
+(declare path-pine)
+
 (defn- make-col-ref
   "How a column is written: bare when it belongs to the table the pipe ends
-  on, alias.column otherwise."
+  on, alias.column otherwise. The elements of a JSON array are written by
+  their alias, `e`, which is the element in Pine. A column with :steps is a
+  key inside it, `e.status` or `data.status` (see json-text-col)."
   [tables current]
-  (let [alias-of (fn [t] (let [{:keys [alias table]} (nth tables t)] (or alias table)))]
-    (fn [{:keys [t name]}] (if (= t current) name (str (alias-of t) "." name)))))
+  (let [alias-of (fn [t] (let [{:keys [alias table]} (nth tables t)] (or alias table)))
+        plain (fn [{:keys [t name]}]
+                (cond
+                  (:elements (nth tables t)) (alias-of t)
+                  (= t current) name
+                  :else (str (alias-of t) "." name)))]
+    (fn [{:keys [steps at] :as c}]
+      (if steps (path-pine tables (plain c) steps at) (plain c)))))
 
 (declare render-atom quote-string concat-pine)
 
@@ -605,7 +686,7 @@
   The first key is quoted after a bare name that is also a table's alias,
   which Pine would read as that table: data.'a'.b."
   [tables base steps at]
-  (let [aliases (set (keep #(or (:alias %) (:table %)) tables))
+  (let [aliases (set (keep #(or (:alias %) (:table %)) (remove :elements tables)))
         quote-first? (and (not (s/includes? base ".")) (aliases base))]
     (str base
          (apply str (map-indexed
@@ -660,6 +741,8 @@
               (json-path-pine ctx e))
     :column (let [_ (keyword-column! keyword-values (:column e))
                   c (resolve-column tables (:column e))
+                  _ (when-let [elements (and (not (:json ctx)) (:elements (nth tables (:t c))))]
+                      (element-text-warning elements (table-key (nth tables (:t c)))))
                   cast (column-cast e)]
               (str (col-ref c) (when cast (str "::" cast))))
     (:string :number :boolean :variable :null) (literal-pine e)
@@ -761,11 +844,32 @@
                     (:cast new) (assoc :new-cast (:cast new))
                     (:cast old) (assoc :anchor-cast (:cast old)))]))))
 
+(defn- plan-elements
+  "{:anchor :source} for jsonb_array_elements(a.data) e, the i-th table:
+  Pine's `a.data[*] as e`. :source is the array's column, with :steps when
+  it is a key inside one."
+  [tables i {:keys [type at]}]
+  (let [{f :fn :keys [source]} (:elements (nth tables i))
+        in-scope (subvec tables 0 i)]
+    (when (#{:left :right} type)
+      (refuse at (str "A " (s/upper-case (name type)) " JOIN LATERAL keeps the rows whose array is empty, and Pine's `[*]` drops them, as CROSS JOIN LATERAL does.")))
+    (let [col (resolve-column in-scope (:column source))]
+      (when (and (= :json (:kind source)) (= "->>" (:op (peek (:steps source)))))
+        (refuse (:at source) (str f "() reads JSON, and ->> gives text. Use ->.")))
+      {:anchor (:t col)
+       :source (cond-> col (= :json (:kind source)) (assoc :steps (json-steps source) :at (:at source)))
+       :pairs []
+       :moved []})))
+
 (defn- plan-join
   "{:anchor :pairs :moved [predicates]} for the i-th table's join."
-  [tables i {:keys [type on using at]}]
+  [tables i {:keys [type on using at] :as join}]
   (let [in-scope (subvec tables 0 (inc i))]
-    (if using
+    (cond
+      (:elements (nth tables i))
+      (plan-elements tables i join)
+
+      using
       (do (when (> i 1)
             (refuse at "USING after more than one table can't say which table it joins to. Write it with ON."))
           {:anchor 0
@@ -774,6 +878,7 @@
                            :anchor (column-name (first tables) name quoted at)})
                         using)
            :moved []})
+      :else
       (let [parts (map (fn [c] [c (join-pair in-scope i c)]) (conjuncts on))
             pairs (keep second parts)
             others (map first (remove second parts))
@@ -794,7 +899,7 @@
   [{:keys [from joins]}]
   (let [tables (mapv #(merge % (db-table %)) (cons from (map :table joins)))]
     (doseq [{:keys [table schema alias at]} tables]
-      (pine-name! table at)
+      (some-> table (pine-name! at))
       (some-> schema (pine-name! at))
       (some-> alias (pine-name! at)))
     (when-let [dupe (some (fn [[k n]] (when (> n 1) k)) (frequencies (map table-key tables)))]
@@ -886,15 +991,21 @@
   (cond-> []
     (seq order) (conj {:op :order
                        :items (vec (map-indexed (fn [i {:keys [target] :as item}]
-                                                  (if (= :expr (:kind target))
+                                                  (if (and (= :expr (:kind target)) (not= :json (get-in target [:expr :kind])))
                                                     {:name (named (:expr target) "order" (inc i)) :direction (sort-word item)}
                                                     (first (order-items tables [] [item] "inside ROW_NUMBER() "))))
                                                 order))})
     true (conj {:op :limit :n n
                 :per (vec (map-indexed (fn [i p]
-                                         (if (:expr p)
-                                           {:name (named (:expr p) "partition" (inc i))}
-                                           (resolve-column tables p)))
+                                         (cond
+                                           ;; A key: Pine groups by its text, as ->> gives it.
+                                           (= :json (get-in p [:expr :kind]))
+                                           (if (= "->" (:op (peek (get-in p [:expr :steps]))))
+                                             (refuse (:at p) "PARTITION BY a -> key isn't converted: Pine groups a key by its text. PARTITION BY the ->> key groups the same in both.")
+                                             (json-text-col tables (:expr p)))
+                                           (:expr p) {:name (named (:expr p) "partition" (inc i))}
+                                           :else (or (json-text-col tables {:kind :column :column p :at (:at p)})
+                                                     (resolve-column tables p))))
                                        partition))})))
 
 (defn- distinct-on-ops
@@ -930,11 +1041,19 @@
                                   :star (stars)
                                   :alias-star [{:star (:t (resolve-column tables {:qualifier qualifier :name "x" :at at}))}]
                                   :row-number []
-                                  :column (let [col (resolve-column tables column)]
+                                  :column (let [col (resolve-column tables column)
+                                                elements (:elements (nth tables (:t col)))]
                                             ;; select: true would read as the value.
                                             (keyword-column! #{"true" "false" "null"} column)
-                                            [(cond-> {:col col}
-                                               (and as (not= as (:name col))) (assoc :as (pine-name! as at)))])
+                                            (if elements
+                                              ;; Pine names an element after its alias, and SQL
+                                              ;; after its column unless it is written `e`.
+                                              (let [alias (table-key (nth tables (:t col)))
+                                                    n (or as (if (:whole col) alias (:name col)))]
+                                                (element-text-warning elements alias)
+                                                [(cond-> {:col col} (not= n alias) (assoc :as (pine-name! n at)))])
+                                              [(cond-> {:col col}
+                                                 (and as (not= as (:name col))) (assoc :as (pine-name! as at)))]))
                                   ;; A computed value. Pine needs its name.
                                   :expr (do (when-not as
                                               (refuse at "Name this value with AS, like `... AS name`: Pine's select: names every computed value."))
@@ -1235,11 +1354,13 @@
        (when cast (str " ::" cast))))
 
 (defn- references
-  "Every table index the operations refer to by alias."
-  [ops current]
+  "Every table index the operations refer to by alias. `a.data[*]` refers
+  to `a`."
+  [tables ops current]
   (let [cols (fn [c] (when (and (:t c) (not= current (:t c))) [(:t c)]))]
     (set (mapcat (fn [{:keys [op t clause items cols-of] :as o}]
                    (case op
+                     :table (when-let [source (:source (nth tables t))] [(:t source)])
                      :from [t]
                      :text (remove #{current} (:refs o))
                      :where (mapcat (fn [{:keys [col value] :as a}]
@@ -1259,7 +1380,7 @@
                  ops))))
 
 (defn- render [tables ops current]
-  (let [referenced (references ops current)
+  (let [referenced (references tables ops current)
         alias-of (fn [t] (let [{:keys [alias table]} (nth tables t)] (or alias table)))
         col-ref (make-col-ref tables current)
         ctx {:tables tables :col-ref col-ref}]
@@ -1268,21 +1389,28 @@
      (for [{:keys [op t n clause items cols] :as o} ops
            :when (not= :columns op)]
        (case op
-         :table (let [{:keys [schema table db-schema db-table alias type pairs]} (nth tables t)
+         :table (let [{:keys [schema table db-schema db-table alias type pairs source]} (nth tables t)
                       schema (or db-schema schema)]
-                  (str (when schema (str schema "."))
-                       (or db-table table)
-                       (when (or alias (referenced t)) (str " as " (alias-of t)))
-                       (when type (str " :" (name type)))
-                       (when (seq pairs)
-                         (str " " (s/join ", " (map #(str "." (:new %) (when (:new-cast %) (str " ::" (:new-cast %)))
-                                                          " = ." (:anchor %) (when (:anchor-cast %) (str " ::" (:anchor-cast %))))
-                                                    pairs))))))
+                  (if source
+                    ;; Its source, written with its table's alias: Pine reads a
+                    ;; bare name as the column of the table before.
+                    (let [base (if (:elements (nth tables (:t source))) (alias-of (:t source)) (str (alias-of (:t source)) "." (:name source)))]
+                      (str (path-pine tables base (:steps source) (:at source)) "[*] as " alias))
+                    (str (when schema (str schema "."))
+                         (or db-table table)
+                         (when (or alias (referenced t)) (str " as " (alias-of t)))
+                         (when type (str " :" (name type)))
+                         (when (seq pairs)
+                           (str " " (s/join ", " (map #(str "." (:new %) (when (:new-cast %) (str " ::" (:new-cast %)))
+                                                            " = ." (:anchor %) (when (:anchor-cast %) (str " ::" (:anchor-cast %))))
+                                                      pairs)))))))
          :text (:text o)
          :from (str "from: " (alias-of t))
          :where (str "where: " (s/join " or " (map #(render-atom col-ref %) clause)))
          :select (str "select: " (s/join ", " (map #(cond
-                                                      (contains? % :star) (str (alias-of (:star %)) ".*")
+                                                      (contains? % :star) (if-let [e (:elements (nth tables (:star %)))]
+                                                                            (str (alias-of (:star %)) " as " (:column e))
+                                                                            (str (alias-of (:star %)) ".*"))
                                                       (:expr %) (str (expr-pine ctx (:expr %)) " as " (:as %))
                                                       :else (str (col-ref (:col %)) (when (:as %) (str " as " (:as %)))))
                                                    items)))
@@ -1312,9 +1440,10 @@
   "The table and from: steps, and the table the pipe ends on."
   [tables]
   (reduce (fn [{:keys [ops current]} i]
-            (let [anchor (:anchor (nth tables i))]
+            (let [{:keys [anchor elements]} (nth tables i)]
               {:ops (cond-> ops
-                      (and (pos? i) (not= anchor current)) (conj {:op :from :t anchor})
+                      ;; `a.data[*]` names its table itself.
+                      (and (pos? i) (not= anchor current) (not elements)) (conj {:op :from :t anchor})
                       true (conj {:op :table :t i}))
                :current i}))
           {:ops [] :current 0}
@@ -1699,6 +1828,7 @@
                       (expr-columns kind)))
                   (:select q))
           (mapcat #(some-> (:on %) predicate-columns) (:joins q))
+          (mapcat #(some-> % :table :elements :source expr-columns) (:joins q))
           (:group q)
           (some-> (:having q) expr-columns)
           (mapcat #(expr-columns (:target %)) (:order q))

@@ -58,6 +58,15 @@
         (throw (ex-info (str "`" column "` is not a JSON column, so `" (path-text column path) "` has no keys.")
                         {}))))))
 
+(defn check-array-column
+  "Refuses `col[*]` when the schema says `col` isn't JSON: it has no
+  elements. An element's own value, `e[*]`, is JSON."
+  [state {:keys [alias column path]}]
+  (let [db-type (column-type state alias column)]
+    (when (and db-type (not (json-type? db-type)))
+      (throw (ex-info (str "`" column "` is not a JSON column, so `" (path-text column path) "[*]` has no elements.")
+                      {})))))
+
 (defn- join-side-error
   "Why one side of a join pair can't read the JSON path it names, or nil.
   A pair reads `.<new table's column> = .<previous table's column>`, so a
@@ -97,6 +106,39 @@
                              to-path (join-side-error state pair [to (:to pair) to-path (:to-cast pair)] from))]
           (throw (ex-info message {}))))))
   state)
+
+(defn element-alias?
+  "Whether `a` is the alias of an elements step, `a.data[*] as e` (see
+  pine.ast.elements)."
+  [state a]
+  (boolean (and a (get-in state [:aliases a :elements]))))
+
+(defn- element-column
+  "A name that reads an element of an elements step, as a path into its
+  `value` column, named as written unless `as` names it:
+
+  - `e.status.code`: the key `status.code` of each element of `e`;
+  - `e`, `e[0]`: the element itself, or a path into it;
+  - `status`, when the pipe is on `e`: a key of its element, as a bare name
+    is a column of the current table.
+
+  Any other name unchanged."
+  [state {:keys [alias column path] :as col}]
+  (let [current (:current state)]
+    (cond
+      (element-alias? state alias)
+      (cond-> (assoc col :column "value" :path (into [column] path))
+        (not (:column-alias col)) (assoc :column-alias (path-text column path)))
+
+      (and (nil? alias) (element-alias? state column))
+      (cond-> (assoc col :alias column :column "value" :path (vec path))
+        (not (:column-alias col)) (assoc :column-alias (path-text column path)))
+
+      (and (nil? alias) (element-alias? state current))
+      (cond-> (assoc col :alias current :column "value" :path (into [column] path))
+        (not (:column-alias col)) (assoc :column-alias (path-text column path)))
+
+      :else col)))
 
 (defn- named-result-column
   "A named result names a selected path after the path: after
@@ -239,6 +281,8 @@
     (unseal state col)
     col))
 
+(declare resolve-column*)
+
 (defn resolve-column
   "Resolve the alias of a column descriptor ({:alias :column :path}) and,
   when the name goes into a JSON value, name the column after its path with
@@ -250,7 +294,17 @@
   named result the pipe is on is refused.
 
   An alias that hides a JSON column of the current table is marked
-  :alias-hides-column, so the canvas can show which one was read."
+  :alias-hides-column, so the canvas can show which one was read.
+
+  A name that reads an element of `a.data[*] as e` is a path into the
+  element (see element-column)."
+  [state col]
+  (if (or (element-alias? state (:alias col))
+          (and (nil? (:alias col)) (or (element-alias? state (:column col)) (element-alias? state (:current state)))))
+    (unseal-column state (element-column state col))
+    (resolve-column* state col)))
+
+(defn- resolve-column*
   [state col]
   (let [{:keys [alias column path] :as col} (unseal-column state col)
         current (:current state)

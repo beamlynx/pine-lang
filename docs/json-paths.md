@@ -24,9 +24,12 @@ A column followed by keys and array indexes:
 
 A key may contain `-`, as any Pine name can: `data.first-name`.
 
-A path can go in `select:`, `where:`, `order:` and `group:`. In a join, `[*]` reads every element of an
-array: `documents_package as dp | officer .id = .officers[*].id`. See
-[joins](joins.md#joining-on-values-in-a-json-array). `[*]` isn't read anywhere else yet.
+A path can go in `select:`, `where:`, `order:` and `group:`. `[*]` reads every element of an array, in two places:
+
+- As a step of its own, `| a.data[*] as e`, it gives one row for each element. See
+  [Arrays as rows](#arrays-as-rows).
+- In a join, `documents_package as dp | officer .id = .officers[*].id` joins each row to the rows its array lists. See
+  [joins](joins.md#joining-on-values-in-a-json-array).
 
 ## Examples
 
@@ -159,6 +162,56 @@ the same way, `json_extract(?, '$')`, so `data.age = 31` compares the integer 31
   told from a number, and an object or array arrives as text, so it counts as a string.
 - `order:` sorts by SQLite's own order for the extracted values, which puts text after numbers.
 - A column must hold valid JSON text. `json_extract` on text that isn't JSON is an error.
+
+### Arrays as rows
+
+```
+activity as a | a.data.changes[*] as e | where: e.field = 'giin' | s: a.id, e.field, e.after
+```
+
+A step that is a path ending in `[*]` gives one row for each element of the array there. Each row keeps the row it
+came from, as a join does. Here each activity gives one row per change it lists, and the `where:` keeps the changes
+to `giin`.
+
+The elements act like a table named by the alias after `as`:
+
+| Written | Means |
+|---|---|
+| `e.field`, `e.after.value` | a key of the element |
+| `field`, while the pipe is on `e` | a key of the element, as a bare name is a column of the current table |
+| `e` | the element itself, for an array of strings or numbers: `customer \| data.tags[*] as t \| where: t = 'vip'` |
+| `e[0]` | an index into the element |
+
+So after `| a.data[*] as e`, write the table's columns with its alias, `a.id`. A bare `id` is the element's key `id`.
+
+Keys and the element compare, sort and show as any [path](#filtering) does: `=` compares JSON values, and a selected
+key is text. Without `as`, the elements get a name made like a table's alias, such as `c_1` for `changes[*]`. Without
+`select:`, the result is the element itself.
+
+The SQL on Postgres:
+
+```sql
+FROM "activity" AS "a"
+CROSS JOIN LATERAL jsonb_array_elements(
+  CASE WHEN jsonb_typeof(jsonb_extract_path("a"."data"::jsonb, ?::text)) = 'array'
+       THEN jsonb_extract_path("a"."data"::jsonb, ?::text) END) AS "e"("value")
+WHERE jsonb_extract_path("e"."value"::jsonb, ?::text) = ?::jsonb
+-- params: 'changes', 'changes', 'field', '"giin"'
+```
+
+- **A row whose value isn't an array has no elements, so it drops out.** That includes a missing key and NULL. An
+  empty array drops out too. Postgres's own `jsonb_array_elements` stops the whole query with an error on a value that
+  isn't an array; Pine skips that row instead.
+- **MySQL** reads the array with `JSON_TABLE(..., '$[*]' COLUMNS (value JSON PATH '$'))`.
+- **SQLite** reads it with `json_each`. It gives a string or number element as its SQL value, so Pine writes each
+  element back as JSON text before reading a key. A key of an element that is a string is NULL, not an error.
+- **Elements of elements** chain: `| data.orders[*] as o | o.items[*] as i`.
+- **A join after the elements** goes from a table, not from the elements: `| from: a | company .id = .company_id`.
+  A join from the elements is refused, because they have keys, not columns.
+- **`delete!` and `update!`** change a table. On the elements they are refused; `from: a` goes back to the table, and
+  the rows it changes are those with a matching element.
+- **Masking policy.** An element and its keys are part of their column. When the column is masked, so are they, and
+  a key can't be a `group:` key.
 
 ## How it works
 
