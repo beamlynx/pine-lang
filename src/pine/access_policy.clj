@@ -257,7 +257,7 @@
     true))
 
 (defn- element-source
-  "[alias column] of the real column an element of `a.data[*] as e` comes
+  "[alias column] of the real column an element of `unnest: a.data as e` comes
   from, through elements of elements; any other column unchanged. The
   policy decides on that column: an element, and every key of it, is
   part of its value."
@@ -321,7 +321,7 @@
   reads is. Otherwise a condition on a hidden column would leak through its
   true/false result. One that reads no column, like now(), is shown.
 
-  An element of `a.data[*] as e`, or a key of one, is decided as the
+  An element of `unnest: a.data as e`, or a key of one, is decided as the
   column it comes from, `a.data`."
   [state rules {:keys [alias] :as col}]
   (cond

@@ -788,7 +788,7 @@
        (let [{:keys [key hints]} (generate-path-hints state-for-hints)]
          (assoc-in state [:hints key] (or hints [])))
 
-       ;; `a.data[*] as e`: keys aren't in the schema, so nothing to hint.
+       ;; `unnest: a.data as e`: keys aren't in the schema, so nothing to hint.
        (= op-type :elements)
        state
 

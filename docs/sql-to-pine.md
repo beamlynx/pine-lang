@@ -118,7 +118,7 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `a::text AS k`, `CAST(a AS text) AS k` | `select: a::text as k` |
 | `t.data->>'plan' AS p`, `t.data->'tags'->>0 AS tag` | `select: data.plan as p, data.tags[0] as tag` (see [JSON keys](#json-keys)) |
 | `WHERE t.data->>'plan' = 'pro'`, `IN (...)`, `LIKE`, `IS NULL` | `where: data.plan = 'pro'` (see [JSON keys](#json-keys)) |
-| `CROSS JOIN LATERAL jsonb_array_elements(a.data) e` | `\| a.data[*] as e` (see [JSON arrays as rows](#json-arrays-as-rows)) |
+| `CROSS JOIN LATERAL jsonb_array_elements(a.data) e` | `\| unnest: a.data as e` (see [JSON arrays as rows](#json-arrays-as-rows)) |
 | `e->>'k'`, `e` of those elements | `e.k`, `e` |
 | `jsonb_typeof(x)`, `jsonb_array_length(x)` | the same, in Pine |
 | `jsonb_typeof(x) = 'array'`, in `WHERE` or `CASE WHEN` | `jsonb_typeof(x) = 'array'` |
@@ -232,7 +232,7 @@ company_structure_template as t
 ### JSON arrays as rows
 
 `jsonb_array_elements` in `FROM` gives one row for each element of an array. Pine says it with
-[`[*]` as a step](json-paths.md#arrays-as-rows):
+[`unnest:`](json-paths.md#arrays-as-rows):
 
 ```sql
 SELECT a.id, e->>'field' AS field
@@ -242,7 +242,7 @@ WHERE e->>'field' IN ('legalTypes', 'giin')
 
 ```
 activity as a
- | a.data.changes[*] as e
+ | unnest: a.data.changes as e
  | where: e.field in ('legalTypes', 'giin')
  | select: a.id, e.field as field
 ```

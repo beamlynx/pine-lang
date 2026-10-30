@@ -59,12 +59,12 @@
                         {}))))))
 
 (defn check-array-column
-  "Refuses `col[*]` when the schema says `col` isn't JSON: it has no
-  elements. An element's own value, `e[*]`, is JSON."
+  "Refuses `unnest: col` when the schema says `col` isn't JSON: it has no
+  elements. An element's own value, `unnest: e`, is JSON."
   [state {:keys [alias column path]}]
   (let [db-type (column-type state alias column)]
     (when (and db-type (not (json-type? db-type)))
-      (throw (ex-info (str "`" column "` is not a JSON column, so `" (path-text column path) "[*]` has no elements.")
+      (throw (ex-info (str "`" column "` is not a JSON column, so `unnest: " (path-text column path) "` has no elements.")
                       {})))))
 
 (defn- join-side-error
@@ -108,7 +108,7 @@
   state)
 
 (defn element-alias?
-  "Whether `a` is the alias of an elements step, `a.data[*] as e` (see
+  "Whether `a` is the alias of an elements step, `unnest: a.data as e` (see
   pine.ast.elements)."
   [state a]
   (boolean (and a (get-in state [:aliases a :elements]))))
@@ -296,7 +296,7 @@
   An alias that hides a JSON column of the current table is marked
   :alias-hides-column, so the canvas can show which one was read.
 
-  A name that reads an element of `a.data[*] as e` is a path into the
+  A name that reads an element of `unnest: a.data as e` is a path into the
   element (see element-column)."
   [state col]
   (if (or (element-alias? state (:alias col))

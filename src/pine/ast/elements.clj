@@ -1,5 +1,5 @@
 (ns pine.ast.elements
-  "`a.data[*] as e`: one row for each element of the JSON array at a path,
+  "`unnest: a.data as e`: one row for each element of the JSON array at a path,
   joined to the row it came from. The elements act like a table whose one
   column, `value`, holds the element as JSON. `e.status` is a key of the
   element, and `e` the element itself (see pine.ast.path). A row whose value
@@ -9,14 +9,14 @@
             [pine.ast.table :as table]))
 
 (defn- default-alias
-  "Named like a table: `changes[*]` is `c_2`."
+  "Named like a table: `unnest: data.changes` is `c_2`."
   [state {:keys [column path]}]
   (let [k (or (last (filter string? path)) column)]
     (str (table/make-alias k) "_" (:table-count state))))
 
 (defn handle [state value]
   (when-not (:current state)
-    (throw (ex-info "`[*]` reads an array in a table's JSON column, so a table comes first: `activity | data[*] as e`." {})))
+    (throw (ex-info "`unnest:` reads an array in a table's JSON column, so a table comes first: `activity | unnest: data as e`." {})))
   (let [{:keys [alias column path] :as col} (path/resolve-column state (select-keys value [:alias :column :path]))
         _ (path/check-array-column state col)
         a (or (:as value) (default-alias state {:column column :path path}))
@@ -40,6 +40,6 @@
   [state]
   (when (path/element-alias? state (:current state))
     (throw (ex-info (str "A join can't start from the elements `" (:current state) "`: it joins on columns, and "
-                         "elements have keys. Join the table before `[*]`, or go back to a table first with `from:`.")
+                         "elements have keys. Join the table before `unnest:`, or go back to a table first with `from:`.")
                     {})))
   state)

@@ -29,7 +29,7 @@
         current (state :current)
         ;; A live alias (e.g. re-bound via `as`) always wins over a stale |= snapshot
         resolve-alias #(if (contains? (:aliases state) %) % (or (get-in state [:pending-assignments % :current]) %))
-        ;; `e.*` of `a.data[*] as e` is its one column, the element.
+        ;; `e.*` of `unnest: a.data as e` is its one column, the element.
         col (if (and (s/blank? (:column col)) (path/element-alias? state (:alias col)))
               (-> col (assoc :column (:alias col)) (dissoc :alias :symbol))
               col)

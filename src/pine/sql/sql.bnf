@@ -54,7 +54,7 @@ delete        := <DELETE> <ws> <FROM> <ws> table-ref delete-using? where?
 delete-using  := <ws> <USING> <ws> (table-ref | derived) join*
 
 join          := <ws> join-type <JOIN> <ws> (table-ref | derived) <ws> (on | using) | array-join
-(* One row for each element of a JSON array, Pine's `a.data[*] as e`:
+(* One row for each element of a JSON array, Pine's `unnest: a.data as e`:
    `CROSS JOIN LATERAL jsonb_array_elements(a.data) e`, with a comma in place
    of CROSS JOIN, or as `JOIN LATERAL ... ON true`. LATERAL may be left out.
    A LEFT JOIN is read so it can be refused by name. *)

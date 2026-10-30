@@ -855,13 +855,13 @@
 
 (defn- plan-elements
   "{:anchor :source} for jsonb_array_elements(a.data) e, the i-th table:
-  Pine's `a.data[*] as e`. :source is the array's column, with :steps when
+  Pine's `unnest: a.data as e`. :source is the array's column, with :steps when
   it is a key inside one."
   [tables i {:keys [type at]}]
   (let [{f :fn :keys [source]} (:elements (nth tables i))
         in-scope (subvec tables 0 i)]
     (when (#{:left :right} type)
-      (refuse at (str "A " (s/upper-case (name type)) " JOIN LATERAL keeps the rows whose array is empty, and Pine's `[*]` drops them, as CROSS JOIN LATERAL does.")))
+      (refuse at (str "A " (s/upper-case (name type)) " JOIN LATERAL keeps the rows whose array is empty, and Pine's `unnest:` drops them, as CROSS JOIN LATERAL does.")))
     (let [col (resolve-column in-scope (:column source))]
       (when (and (= :json (:kind source)) (= "->>" (:op (peek (:steps source)))))
         (refuse (:at source) (str f "() reads JSON, and ->> gives text. Use ->.")))
@@ -1363,7 +1363,7 @@
        (when cast (str " ::" cast))))
 
 (defn- references
-  "Every table index the operations refer to by alias. `a.data[*]` refers
+  "Every table index the operations refer to by alias. `unnest: a.data` refers
   to `a`."
   [tables ops current]
   (let [cols (fn [c] (when (and (:t c) (not= current (:t c))) [(:t c)]))]
@@ -1404,7 +1404,7 @@
                     ;; Its source, written with its table's alias: Pine reads a
                     ;; bare name as the column of the table before.
                     (let [base (if (:elements (nth tables (:t source))) (alias-of (:t source)) (str (alias-of (:t source)) "." (:name source)))]
-                      (str (path-pine tables base (:steps source) (:at source)) "[*] as " alias))
+                      (str "unnest: " (path-pine tables base (:steps source) (:at source)) " as " alias))
                     (str (when schema (str schema "."))
                          (or db-table table)
                          (when (or alias (referenced t)) (str " as " (alias-of t)))
@@ -1451,7 +1451,7 @@
   (reduce (fn [{:keys [ops current]} i]
             (let [{:keys [anchor elements]} (nth tables i)]
               {:ops (cond-> ops
-                      ;; `a.data[*]` names its table itself.
+                      ;; `unnest: a.data` names its table itself.
                       (and (pos? i) (not= anchor current) (not elements)) (conj {:op :from :t anchor})
                       true (conj {:op :table :t i}))
                :current i}))

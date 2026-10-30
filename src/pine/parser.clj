@@ -127,11 +127,11 @@
                                    [:string & characters] (:value (parse-characters characters)))
     :json-index (Long/parseLong (second x))))
 
-(defmethod -normalize-op :ELEMENTS [[_ [_ head] & more]]
-  ;; `a.data.changes[*] as e`: written like a column, so `a` may be an alias
-  ;; or a column, and pine.ast.path decides once the aliases are known.
+(defmethod -normalize-op :UNNEST [[_ [_ head] & more]]
+  ;; `unnest: a.data.changes as e`: written like a column, so `a` may be an
+  ;; alias or a column, and pine.ast.path decides once the aliases are known.
   (let [as (some #(when (= :alias (first %)) (-> % second second)) more)
-        steps (mapv json-step (remove #(#{:alias :json-any} (first %)) more))
+        steps (mapv json-step (remove #(= :alias (first %)) more))
         [first-step] more
         named-key? (and (= :json-key (first first-step)) (= :symbol (first (second first-step))))]
     {:type :elements

@@ -47,7 +47,7 @@
     (let [{:keys [alias column path]} (path/resolve-column state (select-keys node [:alias :column :path]))]
       (cond-> {:kind :column :alias alias :column column
                :source (table/column-source state alias column)}
-        ;; An empty path is an element itself, `e` of `a.data[*] as e`.
+        ;; An empty path is an element itself, `e` of `unnest: a.data as e`.
         (or (seq path) (path/element-alias? state alias)) (assoc :path (vec path))
         (:cast node) (assoc :cast (:cast node))))))
 

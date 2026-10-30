@@ -19,7 +19,7 @@
   :postgres)
 
 (def ^:dynamic *element-aliases*
-  "The aliases of `a.data[*] as e` in the query being built. On SQLite an
+  "The aliases of `unnest: a.data as e` in the query being built. On SQLite an
   element's column holds the element as an SQL value, so `e.value` is
   written as the element's JSON text (see element-json)."
   #{})
@@ -174,7 +174,7 @@
     (map #(dt/string (str %)) path)))
 
 (defn- json-root
-  "[sql params] for a JSON value itself, an element of `a.data[*] as e`:
+  "[sql params] for a JSON value itself, an element of `unnest: a.data as e`:
   as JSON or as text, as json-extract gives a key."
   [as x]
   [(case *dialect*
@@ -377,7 +377,7 @@
                     {:error-type "unresolved-join" :from from :to to}))))
 
 (defn- elements-clause
-  "[sql params] adding the elements of `a.data[*] as e`: one row for each
+  "[sql params] adding the elements of `unnest: a.data as e`: one row for each
   element of the array, with the element as JSON in the column `value`. A
   value that isn't an array has no elements, so its row drops out, where
   Postgres's own jsonb_array_elements would stop the query with an error."
@@ -404,7 +404,7 @@
 
 (defn- build-join-clause
   "The JOINs, as [sql params], in the order of the tables they add. A join
-  on a JSON path has parameters, and so do the elements of `a.data[*]`."
+  on a JSON path has parameters, and so do the elements of `unnest: a.data`."
   [{:keys [tables joins aliases] :as state}]
   (check-joins-resolved state)
   (when (not-empty (rest tables))
@@ -464,7 +464,7 @@
         ;; Check if any non-auto-ID columns are selected for the current table
         current-table-has-columns? (some #(= (:alias %) current) user-columns)
         star-eligible? (not (contains? #{:select :delete-action :group} type))
-        ;; The elements of `a.data[*] as e` have one column, the element.
+        ;; The elements of `unnest: a.data as e` have one column, the element.
         elements? (some? (get-in state [:aliases current :elements]))
         ;; Under the access policy, a bare `current.*` is opaque to the
         ;; per-column check redaction depends on - expand it into an

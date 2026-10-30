@@ -1,15 +1,15 @@
 OPERATIONS := <ws*> OPERATION <ws*> (<"|"> <ws*> OPERATION <ws*>)*
 ASSIGN     := <"="> <ws*> symbol
 
-OPERATION    := SELECT-PARTIAL | SELECT | WHERE-PARTIAL | WHERE | LIMIT-PARTIAL | LIMIT | FROM | ORDER-PARTIAL | ORDER | COUNT | DELETE-ACTION | UPDATE-PARTIAL | UPDATE-ACTION | GROUP | ASSIGN | PATHS | ELEMENTS | TABLE
+OPERATION    := SELECT-PARTIAL | SELECT | WHERE-PARTIAL | WHERE | LIMIT-PARTIAL | LIMIT | FROM | ORDER-PARTIAL | ORDER | COUNT | DELETE-ACTION | UPDATE-PARTIAL | UPDATE-ACTION | GROUP | ASSIGN | PATHS | UNNEST | TABLE
 
 
 TABLE             := table table-mods
 PATHS             := <"?"> <ws*> table
-(* `a.data[*] as e`: one row for each element of the JSON array at the path,
-   joined to the row it came from. `e.status` is a key of the element, and `e`
-   the element itself. See docs/json-paths.md. *)
-ELEMENTS          := symbol json-step* json-any (<ws+> as-alias)?
+(* `unnest: a.data as e`: one row for each element of the JSON array at the
+   path, joined to the row it came from. `e.status` is a key of the element,
+   and `e` the element itself. See docs/json-paths.md. *)
+UNNEST            := <unnest-op> symbol json-step* (<ws+> as-alias)?
 
 SELECT-PARTIAL    := <select-op> aliased-columns <","> <ws*> partial-alias | <select-op> partial-alias | <select-op> (aliased-columns <",">)?
 SELECT            := <select-op> aliased-columns
@@ -44,6 +44,7 @@ group-op          := (<"group:">  | <"g:">) <ws*>
 delete-action-op  := (<"delete!"> | <"d!">) <ws*>
 update-action-op  := (<"update!"> | <"u!">) <ws*>
 count-op          := <"count:">
+unnest-op         := <"unnest:"> <ws*>
 per-op            := <ws+> <"per"> <ws+>
 
 <table>           := symbol* | symbol* <"."> symbol*
