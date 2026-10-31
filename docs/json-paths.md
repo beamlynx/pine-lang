@@ -215,6 +215,20 @@ WHERE jsonb_extract_path("e"."value"::jsonb, ?::text) = ?::jsonb
 - **A join after `unnest:`** starts from the table the pipe is on: `| unnest: data as e | company .id = .company_id`.
   A join on a key of the elements isn't supported yet.
 - **`delete!` and `update!`** change the table. The rows they change are those with a matching element.
+- **Editing an element in the results.** An element has no key of its own. It is found again by its table's key and
+  its position in the array. When the table's rows can be edited, Pine adds each element's position as a hidden
+  column, `__e__index`, counted from 0, with a type column for each value the grid can edit. An edit of `e.qty` in
+  the row of document 1, on the element at position 1, writes:
+
+  ```
+  doc | unnest: data.items as e | from: d_0 | where: id = 1 | update! d_0.data.items[1].qty = 7
+  ```
+
+  Elements of elements have a position at each level: `data.orders[2].items[0].qty`. `/build` and `/eval` return
+  each `unnest:` in `unnests`, with `source`, `column` and `path`, so a client can build that path. Postgres numbers
+  the elements `WITH ORDINALITY`, MySQL with `FOR ORDINALITY` in `JSON_TABLE`, and SQLite reads `json_each`'s `key`.
+  The array can change between reading and writing, and then the position names another element. No positions
+  are added under a masked column, or after `group:`.
 - **Hints.** After `unnest: `, the table's JSON columns are offered. A table without one gets none. Keys inside a
   column aren't in the schema, so they aren't offered.
 - **SQLite** has no JSON type and usually keeps JSON in text. There a text column, or one with no declared type, can

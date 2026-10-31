@@ -352,6 +352,19 @@
     (is (re-find #"'xxxxx' AS \"data\""
                  (:query (eval/build-query (state :test "customer | employee .id = .data[*].id | s: c_0.data, e_1.id" [jsonb-hidden])))))))
 
+(defn- sql-without-positions
+  "As sql, without the hidden columns that let the grid edit an element: its
+  position and its JSON type. test-element-positions tests those."
+  ([expression] (sql-without-positions :test expression))
+  ([connection expression]
+   (let [elements (fn [st] (set (keep #(when (:elements %) (:alias %)) (vals (:aliases st)))))]
+     (-> (let [st (state connection expression [])
+               e (elements st)]
+           (update st :columns (fn [cs] (vec (remove #(or (:element-index %) (and (:json-type-of %) (e (:alias %)))) cs)))))
+         eval/build-query
+         (select-keys [:query :params])
+         (update :params #(map :value %))))))
+
 (deftest test-array-elements
   (testing "`unnest: a.data as e` parses as a step, written like a column"
     (is (= {:type :elements :value {:alias "c" :column "data" :path ["staff"] :as "s"}}
@@ -368,16 +381,16 @@
                         "THEN jsonb_extract_path(\"c\".\"data\"::jsonb, ?::text) END) AS \"s\"(\"value\") "
                         "WHERE jsonb_extract_path(\"s\".\"value\"::jsonb, ?::text) = ?::jsonb LIMIT 250")
             :params ["name" "staff" "staff" "role" "\"admin\""]}
-           (sql "customer as c | unnest: c.data.staff as s | where: s.role = 'admin' | s: c.id, s.name"))))
+           (sql-without-positions "customer as c | unnest: c.data.staff as s | where: s.role = 'admin' | s: c.id, s.name"))))
 
   (testing "`e` is the element, `e.k` a key, and a bare name a column of the table"
     (is (re-find #"^SELECT \"c_0\".\"id\", jsonb_extract_path_text\(\"e\".\"value\"::jsonb, \?::text\) AS \"k\""
-                 (:query (sql "customer | unnest: data as e | s: id, e.k"))))
+                 (:query (sql-without-positions "customer | unnest: data as e | s: id, e.k"))))
     (is (re-find #"\(\"e\".\"value\"::jsonb #>> '\{\}'\) AS \"e\""
-                 (:query (sql "customer | unnest: data as e | s: e.*")))))
+                 (:query (sql-without-positions "customer | unnest: data as e | s: e.*")))))
 
   (testing "unnest: adds `e` to the result, in place of its table's columns, until a select: after it"
-    (let [columns (fn [expression] (second (re-find #"^SELECT (.*?) FROM" (:query (sql expression)))))
+    (let [columns (fn [expression] (second (re-find #"^SELECT (.*?) FROM" (:query (sql-without-positions expression)))))
           e "(\"e\".\"value\"::jsonb #>> '{}') AS \"e\""]
       (is (= (str "\"c_0\".\"id\" AS \"__c_0__id\", " e)
              (columns "customer | unnest: data as e")))
@@ -394,15 +407,15 @@
 
   (testing "An element compares as JSON, like a key"
     (is (re-find #"WHERE \"e\".\"value\"::jsonb = \?::jsonb"
-                 (:query (sql "customer | unnest: data as e | where: e = 'x'")))))
+                 (:query (sql-without-positions "customer | unnest: data as e | where: e = 'x'")))))
 
   (testing "Elements of elements, and a default name"
     (is (re-find #"AS \"i\"\(\"value\"\) CROSS JOIN LATERAL jsonb_array_elements\(CASE WHEN jsonb_typeof\(jsonb_extract_path\(\"i\".\"value\"::jsonb"
-                 (:query (sql "customer as c | unnest: data.items as i | unnest: i.parts as p | s: p.name"))))
-    (is (re-find #"AS \"s_1\"\(\"value\"\)" (:query (sql "customer | unnest: data.staff")))))
+                 (:query (sql-without-positions "customer as c | unnest: data.items as i | unnest: i.parts as p | s: p.name"))))
+    (is (re-find #"AS \"s_1\"\(\"value\"\)" (:query (sql-without-positions "customer | unnest: data.staff")))))
 
   (testing "A join after the elements is from the table the pipe is on, and comes after them in the SQL"
-    (let [{:keys [query]} (sql "customer as c | unnest: data as e | employee .id = .id")]
+    (let [{:keys [query]} (sql-without-positions "customer as c | unnest: data as e | employee .id = .id")]
       (is (re-find #"AS \"e\"\(\"value\"\) JOIN \"employee\" AS \"e_\d\" ON \"c\".\"id\" = \"e_\d\".\"id\"" query))
       (is (re-find #"\"e_\d\"\.\*" query) "The joined table shows its columns")
       (is (re-find #"AS \"e\", " query) "and the elements are still in the result")))
@@ -412,10 +425,10 @@
                         "CROSS JOIN JSON_TABLE(CASE WHEN JSON_TYPE(JSON_EXTRACT(`p_0`.`config`, ?)) = 'ARRAY' "
                         "THEN JSON_EXTRACT(`p_0`.`config`, ?) END, '$[*]' COLUMNS (`value` JSON PATH '$')) AS `t` LIMIT 250")
             :params ["$.\"tags\"" "$.\"tags\""]}
-           (sql :test-mysql "product | unnest: config.tags as t | s: t"))))
+           (sql-without-positions :test-mysql "product | unnest: config.tags as t | s: t"))))
 
   (testing "SQLite reads it with json_each, and writes each element as JSON text"
-    (let [{:keys [query]} (sql :test-sqlite "customer | unnest: data.staff as s | s: s.name")]
+    (let [{:keys [query]} (sql-without-positions :test-sqlite "customer | unnest: data.staff as s | s: s.name")]
       (is (re-find #"CROSS JOIN json_each\(CASE WHEN json_type\(\"c_0\".\"data\", \?\) = 'array' THEN json_extract\(\"c_0\".\"data\", \?\) END\) AS \"s\"" query))
       (is (re-find #"json_extract\(\(CASE \"s\".\"type\" WHEN 'object' THEN \"s\".\"value\" .* ELSE json_quote\(\"s\".\"value\"\) END\), \?\) AS \"name\"" query))))
 
@@ -430,7 +443,7 @@
 
   (testing "delete! changes the table's rows that have a matching element"
     (is (re-find #"^DELETE FROM \"customer\" WHERE \"id\" IN \( SELECT .* CROSS JOIN LATERAL jsonb_array_elements"
-                 (:query (sql "customer | unnest: data as e | where: e.x = 1 | delete! .id"))))))
+                 (:query (sql-without-positions "customer | unnest: data as e | where: e.x = 1 | delete! .id"))))))
 
 (deftest test-array-elements-access-policy
   (testing "An element, and every key of one, is masked when its column is"
@@ -461,3 +474,42 @@
   (testing "It shows on the node of the table whose column holds the array"
     (is (= [{:alias "e" :table "c" :text "data"}]
            (map #(select-keys % [:alias :table :text]) (:unnests (state "customer as c | employee .id = .id | unnest: c.data as e")))))))
+
+(deftest test-element-positions
+  (let [hidden (fn [expression]
+                 (->> (state expression) :columns (filter :hidden)
+                      (map #(select-keys % [:alias :column-alias :element-index :json-type-of :path]))))]
+    (testing "Each element's position comes back hidden, from 0, with the JSON type of each value the grid can edit"
+      (is (= [{:alias "c_0" :column-alias "__c_0__id"}
+              {:alias "e" :column-alias "__e__index" :element-index true}
+              {:alias "e" :column-alias "__e__k__type" :json-type-of "k" :path ["k"]}]
+             (hidden "customer | unnest: data as e | s: id, e.k")))
+      (is (re-find #"\(\"e\".\"pine_index\" - 1\) AS \"__e__index\""
+                   (:query (sql "customer | unnest: data as e | s: id, e.k"))))
+      (is (re-find #"jsonb_array_elements\(.*\) WITH ORDINALITY AS \"e\"\(\"value\", \"pine_index\"\)"
+                   (:query (sql "customer | unnest: data as e | s: id, e.k")))))
+
+    (testing "`e` shown by itself gets a type too"
+      (is (some #(= {:alias "e" :column-alias "__e__e__type" :json-type-of "e" :path []} %)
+                (hidden "customer | unnest: data as e"))))
+
+    (testing "Elements of elements: each level has its position"
+      (is (= ["__o__index" "__i__index"]
+             (map :column-alias (filter :element-index (hidden "customer | unnest: data as o | unnest: o.items as i | s: i.x")))))
+      (is (= [{:alias "o" :source "c_0" :column "data" :path []}
+              {:alias "i" :source "o" :column nil :path ["items"]}]
+             (map #(select-keys % [:alias :source :column :path])
+                  (:unnests (state "customer | unnest: data as o | unnest: o.items as i | s: i.x"))))))
+
+    (testing "MySQL numbers them with FOR ORDINALITY, SQLite with json_each's key"
+      (is (re-find #"COLUMNS \(`value` JSON PATH '\$', `pine_index` FOR ORDINALITY\)"
+                   (:query (sql :test-mysql "product | unnest: config.tags as t | s: t"))))
+      (is (re-find #"\"s\".\"key\" AS \"__s__index\""
+                   (:query (sql :test-sqlite "customer | unnest: data.staff as s | s: s.name")))))
+
+    (testing "Not when no row can be edited, as after group:, and not under a masked column"
+      (is (empty? (hidden "customer | unnest: data as e | group: e.k with count")))
+      (is (not-any? :element-index (:columns (state :test "customer | unnest: data as e | s: id, e.k" [jsonb-hidden])))))
+
+    (testing "Hidden columns don't hide `e`: it shows until a select: after the unnest:"
+      (is (re-find #"AS \"e\" FROM" (:query (sql "customer | unnest: data as e")))))))

@@ -161,3 +161,35 @@
        (result id "doc | unnest: data.items as i | where: i.qty = 5 | delete! .id")
        (is (= #{["1"] ["3"] ["4"]}
               (visible id "doc | s: id")))))))
+
+(defn- hidden-value
+  "The hidden column `column-alias` of each row, by the visible value in
+  column 0."
+  [id expression column-alias]
+  (let [{:keys [header rows]} (result id expression)
+        i (.indexOf header column-alias)]
+    (is (<= 0 i) (str column-alias " in " header))
+    (set (map (fn [row] [(first row) (nth row i)]) rows))))
+
+(deftest test-element-positions
+  (each-database
+   (fn [_ id]
+     (testing "Each element's position in its array, from 0"
+       (is (= #{["a" "0"] ["b" "1"]}
+              (hidden-value id "doc | where: id = 1 | unnest: data.tags as t | s: t" "__t__index")))
+       (is (= #{["p1" "0"] ["p2" "1"] ["p3" "0"]}
+              (hidden-value id "doc | unnest: data.items as i | unnest: i.parts as p | s: p" "__p__index"))))
+
+     (testing "and the JSON type of each value the grid can edit"
+       (is (= #{["1" "number"] ["2" "number"] ["5" "number"]}
+              (hidden-value id "doc | unnest: data.items as i | s: i.qty" "__i__qty__type"))))
+
+     (testing "`e` by itself is labelled as the element, not as a column of the table"
+       (is (= {:alias "t" :column "value" :path [] :column-alias "t"}
+              (-> (result id "doc | where: id = 2 | unnest: data.tags as t") :columns last
+                  (select-keys [:alias :column :path :column-alias])))))
+
+     (testing "The update the grid writes for `i.qty` changes that one value"
+       (result id "doc | unnest: data.items as i | from: d_0 | where: id = 1 | update! d_0.data.items[1].qty = 7")
+       (is (= #{["x" "1"] ["y" "7"] ["x" "5"]}
+              (visible id "doc | unnest: data.items as i | s: i.sku, i.qty")))))))
