@@ -1078,8 +1078,8 @@
   "The columns update! finds a table's rows by: its primary key. Refuses a
   table that has none, such as a view: no column is known to pick out one
   row, so the update could change rows nobody meant."
-  [{:keys [aliases row-keys]} update-alias]
-  (or (get row-keys update-alias)
+  [{:keys [aliases record-keys]} update-alias]
+  (or (get record-keys update-alias)
       (refuse-write (str "update! can't change `" (table-label aliases update-alias)
                          "`: it has no primary key, so there is no way to tell its rows apart."))))
 

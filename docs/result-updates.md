@@ -9,15 +9,16 @@ might want to edit a document's `name` field directly in that result. A plain
 `UPDATE document SET name = ?` doesn't know which document row you edited. It needs the key of that
 row.
 
-A row's key is its table's **primary key**. That can be one column, such as `id`, or several, such as
-`(group_code, member_code)`. A table without a primary key, such as a view, has no key, and its rows
-can't be edited this way.
+A row of the result can hold records from several tables. Each record is found again by its **record
+key**: its table's primary key. That can be one column, such as `id`, or several, such as
+`(group_code, member_code)`. A table without a primary key, such as a view, has no record key, and its
+rows can't be edited this way.
 
-Pine uses the key in two places:
+Pine uses record keys in two places:
 
-- **Hidden key columns**: for each table in the query, Pine adds a hidden column for each primary key
+- **In the result**: for each table in the query, Pine adds a hidden column for each primary key
   column, named `__<alias>__<column>`. They are never displayed but are always in the result, so the UI
-  can tell which row a cell belongs to.
+  can tell which record a cell belongs to.
 - **`update!`**: generates one UPDATE statement per table. Each finds its rows by the table's primary
   key, through a subquery that keeps the expression's joins and conditions.
 
@@ -82,13 +83,13 @@ UPDATE "document" SET "title" = ? WHERE "id" IN (
 
 Each subquery selects only its own table's key, narrowed by the full join condition.
 
-### Hidden key columns in the result
+### Record keys in the result
 
 ```
 user as u | document
 ```
 
-The generated SQL includes the hidden key columns alongside the visible data:
+The generated SQL includes the record keys alongside the visible data:
 
 ```sql
 SELECT "u"."id" AS "__u__id",
@@ -118,7 +119,7 @@ When you edit a cell directly in the result grid, the UI writes an `update!` exp
   indexed (`pine.db.references/primary-key`). An unqualified table uses the key of the schema it
   resolves to, the same schema its columns come from. When several schemas have the table and none of
   them is `public`, there is no key.
-- **Hidden key columns** are added for every real table that has a primary key. They are marked
+- **Record keys** are added for every real table that has a primary key. They are marked
   `hidden: true` (not shown in the grid) and `auto-id: true` (so the UI can find them). Named results
   are excluded: they have no primary key.
 - **Column qualification**: unqualified columns (e.g. `name`) default to the last table in the
@@ -130,10 +131,10 @@ When you edit a cell directly in the result grid, the UI writes an `update!` exp
 
 ## Constraints
 
-- A table without a primary key gets no hidden key columns, and `update!` refuses it with
+- A table without a primary key gets no record keys, and `update!` refuses it with
   `error-type: "write-refused"`. This includes views, and tables that have an `id` column but no
   primary key.
-- Under an access policy, a table gets no hidden key columns when the policy hides any column of its
+- Under an access policy, a table gets no record keys when the policy hides any column of its
   key, so a hidden value is never sent as a key. Its rows can't be edited from the grid. `id` is always
   shown.
 - If the user explicitly selects a key column (e.g. `s: id, name`), the hidden column is still added
@@ -151,9 +152,9 @@ MySQL from `information_schema.key_column_usage` (`constraint_name = 'PRIMARY'`)
 files them under `[:schema s :table t :primary-key]`, and `resolve-bare-tables` copies the resolved
 schema's key to `[:table t :primary-key]`.
 
-### Row keys and hidden columns (`ast/select.clj`)
+### Record keys and hidden columns (`ast/select.clj`)
 
-`add-row-keys` runs in `post-handle` and records each real table's key as `:row-keys {alias [column
+`add-record-keys` runs in `post-handle` and records each real table's key as `:record-keys {alias [column
 ...]}`. `update!` reads it from there, since `:references` is dropped from the final state.
 
 `add-auto-id-columns` runs next. For each key column of each table, it appends:

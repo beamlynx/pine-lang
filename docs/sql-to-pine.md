@@ -555,7 +555,7 @@ Without a connection, a bare identifier is folded to lowercase: `FROM Users` is 
 
 ### Pine's own SQL
 
-The SQL preview beamlynx shows for a Pine expression converts back. Its hidden key columns
+The SQL preview beamlynx shows for a Pine expression converts back. Its record keys
 (`"c_0"."id" AS "__c_0__id"`) are left out, with a warning, since Pine adds them itself. Only that exact
 form is: an alias that merely looks like one is kept. Its `LIMIT 250` becomes `limit: 250`. Computed
 values convert back, including the casts Pine writes around each part of a `concat()`. A preview that
