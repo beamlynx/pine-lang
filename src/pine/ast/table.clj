@@ -4,9 +4,10 @@
 
 (defn added-column?
   "A hidden column Pine added for the results grid, not one the user
-  selected: a table's key (:auto-id) or a JSON value's type (:json-type-of)."
+  selected: a table's key (:auto-id), a JSON value's type (:json-type-of),
+  or an element's position in its array (:element-index)."
   [col]
-  (boolean (or (:auto-id col) (:json-type-of col))))
+  (boolean (or (:auto-id col) (:json-type-of col) (:element-index col))))
 
 (defn column-source
   "The real table (and schema) this column ultimately traces back to - itself
