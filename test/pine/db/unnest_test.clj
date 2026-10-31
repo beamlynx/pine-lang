@@ -153,3 +153,22 @@
        (result id "doc | unnest: data.items as i | where: i.qty = 5 | delete! .id")
        (is (= #{["1"] ["3"] ["4"]}
               (visible id "doc | s: id")))))))
+
+(deftest test-join-from-a-name
+  (each-database
+   (fn [_ id]
+     (testing "Elements named `company_id` join `company` on each element"
+       (is (= #{["Ann" "Acme"] ["Ann" "Initech"] ["Bob" "Globex"]}
+              (visible id "doc | unnest: data.companyIds as company_id | company | s: d_0.name, name"))))
+
+     (testing "Elements named after the table join it on their `id`"
+       (is (= #{["Ann" "Globex"]}
+              (visible id "doc | unnest: data.companies as company | company | s: d_0.name, name"))))
+
+     (testing "A key inside JSON named with `as`"
+       (is (= #{["1" "Acme"]}
+              (visible id "doc | where: id = 1 | s: data.companyIds[0] as company_id | company | s: name"))))
+
+     (testing "A plain column named with `as`"
+       (is (= #{["1" "Ann" "Acme"] ["2" "Bob" "Globex"]}
+              (visible id "doc | where: id < 3 | s: id as company_id | company | s: d_0.name, name")))))))
