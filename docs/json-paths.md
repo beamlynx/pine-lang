@@ -24,9 +24,11 @@ A column followed by keys and array indexes:
 
 A key may contain `-`, as any Pine name can: `data.first-name`.
 
-A path can go in `select:`, `where:`, `order:` and `group:`. In a join, `[*]` reads every element of an
-array: `documents_package as dp | officer .id = .officers[*].id`. See
-[joins](joins.md#joining-on-values-in-a-json-array). `[*]` isn't read anywhere else yet.
+A path can go in `select:`, `where:`, `order:` and `group:`. Two more things read every element of an array:
+
+- `| unnest: a.data as e` gives one row for each element. See [Arrays as rows](#arrays-as-rows).
+- In a join, `[*]` stands for every element: `documents_package as dp | officer .id = .officers[*].id` joins each row
+  to the rows its array lists. See [joins](joins.md#joining-on-values-in-a-json-array).
 
 ## Examples
 
@@ -159,6 +161,66 @@ the same way, `json_extract(?, '$')`, so `data.age = 31` compares the integer 31
   told from a number, and an object or array arrives as text, so it counts as a string.
 - `order:` sorts by SQLite's own order for the extracted values, which puts text after numbers.
 - A column must hold valid JSON text. `json_extract` on text that isn't JSON is an error.
+
+### Arrays as rows
+
+```
+activity | unnest: data.changes as e | where: e.field = 'giin' | s: id, e.field, e.after
+```
+
+`unnest:` takes a path to an array and gives one row for each element of the array there. Each row keeps the row it
+came from. Here each activity gives one row per change it lists, and the `where:` keeps the changes to `giin`.
+
+`unnest:` is an operation on the table the pipe is on, like `where:`. The pipe stays on that table, so a bare name is
+still one of its columns, and a join after `unnest:` starts from it. The name after `as` reads the elements:
+
+| Written | Means |
+|---|---|
+| `e.field`, `e.after.value` | a key of the element |
+| `e` | the element itself, for an array of strings or numbers: `customer \| unnest: data.tags as t \| where: t = 'vip'` |
+| `e[0]` | an index into the element |
+
+Keys and the element compare, sort and show as any [path](#filtering) does: `=` compares JSON values, and a selected
+key is text. Without `as`, the elements get a name made like a table's alias, such as `c_1` for
+`unnest: data.changes`.
+
+`unnest:` adds `e` to the result, in place of the table's columns. A `select:` after it says which columns to show
+instead:
+
+| Expression | Columns |
+|---|---|
+| `activity \| unnest: data as e` | `e` |
+| `activity \| s: id \| unnest: data as e` | `id`, `e` |
+| `activity \| s: id \| unnest: data as e \| s: e.field` | `id`, `e.field` |
+| `activity \| unnest: data as e \| s: e.field, e.after` | `e.field`, `e.after` |
+
+The SQL on Postgres:
+
+```sql
+FROM "activity" AS "a"
+CROSS JOIN LATERAL jsonb_array_elements(
+  CASE WHEN jsonb_typeof(jsonb_extract_path("a"."data"::jsonb, ?::text)) = 'array'
+       THEN jsonb_extract_path("a"."data"::jsonb, ?::text) END) AS "e"("value")
+WHERE jsonb_extract_path("e"."value"::jsonb, ?::text) = ?::jsonb
+-- params: 'changes', 'changes', 'field', '"giin"'
+```
+
+- **A row whose value isn't an array has no elements, so it drops out.** That includes a missing key and NULL. An
+  empty array drops out too. Postgres's own `jsonb_array_elements` stops the whole query with an error on a value that
+  isn't an array; Pine skips that row instead.
+- **MySQL** reads the array with `JSON_TABLE(..., '$[*]' COLUMNS (value JSON PATH '$'))`.
+- **SQLite** reads it with `json_each`. It gives a string or number element as its SQL value, so Pine writes each
+  element back as JSON text before reading a key. A key of an element that is a string is NULL, not an error.
+- **Elements of elements** chain: `| unnest: data.orders as o | unnest: o.items as i`. The result shows `i`.
+- **A join after `unnest:`** starts from the table the pipe is on: `| unnest: data as e | company .id = .company_id`.
+  A join on a key of the elements isn't supported yet.
+- **`delete!` and `update!`** change the table. The rows they change are those with a matching element.
+- **Hints.** After `unnest: `, the table's JSON columns are offered. A table without one gets none. Keys inside a
+  column aren't in the schema, so they aren't offered.
+- **SQLite** has no JSON type and usually keeps JSON in text. There a text column, or one with no declared type, can
+  be unnested too, and is offered.
+- **Masking policy.** An element and its keys are part of their column. When the column is masked, so are they, and
+  a key can't be a `group:` key.
 
 ## How it works
 

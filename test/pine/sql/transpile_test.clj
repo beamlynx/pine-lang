@@ -137,9 +137,29 @@
                   "In SQL, `->` gives JSON, so a string keeps its quotes. Pine shows d.b as text, without them, as `->>` does."])
     (converts-to "select coalesce(t.d->>'a', t.name) as x from t" "t | select: coalesce(d.a, name) as x"))
 
-  (testing "A JSON key outside a value, or where Pine would read it as text, is refused"
-    (refuses "select * from t where t.data->>'plan' = 'pro'" "A JSON key with -> or ->> converts in a selected value")
-    (refuses "select * from t where t.data->>'plan' is null" "A JSON key with -> or ->> converts in a selected value")
+  (testing "A ->> key in WHERE compares its text, where Pine's comparison means the same"
+    (converts-to "select * from t where t.data->>'plan' = 'pro'" "t | where: data.plan = 'pro'")
+    (converts-to "select * from t where 'pro' = t.data->>'plan'" "t | where: data.plan = 'pro'")
+    ;; ->> gives NULL for a JSON null, which SQL's != drops and Pine's would keep.
+    (converts-to "select * from t where not (t.data->>'plan' = 'pro')" "t | where: data.plan != 'pro' | where: data.plan is not null")
+    (is (= "t\n | where: data.plan != 'pro'" (:expression (t/sql->pine "select * from t where t.data->>'$.plan' != 'pro'" nil {:dialect :mysql}))))
+    (is (re-find #"IS NULL on a ->> key isn't converted on MySQL"
+                 (:error (t/sql->pine "select * from t where t.data->>'$.plan' is null" nil {:dialect :mysql}))))
+    (converts-to "select * from t where t.data->>'plan' is null" "t | where: data.plan is null")
+    (converts-to "select * from t where t.data->>'plan' like 'p%'" "t | where: data.plan like 'p%'")
+    (converts-to "select * from t where t.data->>'plan' not in ('a', 'b')" "t | where: data.plan not in ('a', 'b')"))
+
+  (testing "and refuses where it doesn't"
+    (refuses "select * from t where t.data->>'n' = '10'" "'10' is also how a JSON number reads as text")
+    (refuses "select * from t where t.data->>'n' = 'null'" "'null' is also how a JSON null reads as text")
+    (refuses "select * from t where t.data->>'n' = '{}'" "'{}' is also how a JSON object or array reads as text")
+    (refuses "select * from t where t.data->>'n' = 10" "The text of a JSON key is compared with a string")
+    (refuses "select * from t where t.data->>'n' in ('a', 1)" "The text of a JSON key is compared with strings")
+    (refuses "select * from t where t.data->>'n' > 'a'" "Comparing the text of a JSON key with > isn't converted")
+    (refuses "select * from t where t.data->'n' = '\"a\"'" "A -> key here is JSON")
+    (refuses "select * from t where (t.data->>'n')::int = 1" "A cast on a JSON key isn't converted here"))
+
+  (testing "A JSON key elsewhere, or where Pine would read it as text, is refused"
     (refuses "select jsonb_array_length(coalesce(t.d->'a', t.d->'b')) as n from t" "A JSON key inside this function isn't converted")
     (refuses "select t.x->-1 as y from t" "A JSON index converts when it is a whole number")
     (refuses "select * from t where jsonb_typeof(t.d) = t.kind" "Functions like jsonb_typeof() aren't in Pine here")
@@ -1232,3 +1252,92 @@ s | group: a with count as subjects, n => max as max_n | order: max_n desc | lim
                  "t | group: with count where status = 'x' as n"))
   (testing "A column next to an aggregate still needs GROUP BY"
     (refuses "select count(*) as n, name from t" "A column next to an aggregate needs GROUP BY.")))
+
+(deftest test-json-array-elements
+  (testing "jsonb_array_elements in FROM is Pine's `unnest:`: one row for each element"
+    (converts-to "select a.id, e->>'k' as k from a cross join lateral jsonb_array_elements(a.data) e"
+                 "a as a | unnest: a.data as e | select: id, e.k as k")
+    (converts-to "select a.id, e->>'k' as k from a, lateral json_array_elements(a.data->'items') as e"
+                 "a as a | unnest: a.data.items as e | select: id, e.k as k")
+    (converts-to "select a.id, e->>'k' as k from a join jsonb_array_elements(a.data) e on true"
+                 "a as a | unnest: a.data as e | select: id, e.k as k"))
+
+  (testing "The element itself is its alias. SQL names it `value`, or what e(x) says"
+    (converts-to "select a.id, e from a, jsonb_array_elements_text(a.data->'tags') e"
+                 "a as a | unnest: a.data.tags as e | select: id, e")
+    (converts-to "select a.id, e.value from a, jsonb_array_elements_text(a.data) e"
+                 "a as a | unnest: a.data as e | select: id, e as value")
+    (converts-to "select a.id, e.tag from a, jsonb_array_elements_text(a.data) e(tag)"
+                 "a as a | unnest: a.data as e | select: id, e as tag")
+    (converts-to "select * from a cross join lateral jsonb_array_elements_text(a.data) e"
+                 "a as a | unnest: a.data as e | select: a.*, e as value"))
+
+  (testing "jsonb_array_elements gives JSON, so a string keeps its quotes in SQL"
+    (converts-to "select a.id, e from a, jsonb_array_elements(a.data) e"
+                 "a as a | unnest: a.data as e | select: id, e"
+                 ["In SQL, jsonb_array_elements() gives JSON, so a string keeps its quotes. Pine shows e as text, without them, as jsonb_array_elements_text() does."]))
+
+  (testing "Elements of elements"
+    (converts-to "select i->>'sku' as sku from a cross join lateral jsonb_array_elements(a.data->'orders') o cross join lateral jsonb_array_elements(o->'items') i"
+                 "a as a | unnest: a.data.orders as o | unnest: o.items as i | select: i.sku as sku"))
+
+  (testing "A table joined after the elements is joined from the table the pipe is on"
+    (converts-to "select a.id, b.name from a cross join lateral jsonb_array_elements(a.data) e join b on b.id = a.b_id where e->>'k' = 'v'"
+                 "a as a | unnest: a.data as e | b .id = .b_id | where: e.k = 'v' | select: a.id, name"))
+
+  (testing "An element of jsonb_array_elements_text compares as text"
+    (converts-to "select a.id from a, jsonb_array_elements_text(a.tags) e where e != 'red'"
+                 "a as a | unnest: a.tags as e | where: e != 'red' | where: e is not null | select: id")
+    (converts-to "select a.id from a, jsonb_array_elements_text(a.tags) e where e = 'red'"
+                 "a as a | unnest: a.tags as e | where: e = 'red' | select: id")
+    (refuses "select a.id from a, jsonb_array_elements_text(a.tags) e where e = '5'" "'5' is also how a JSON number reads as text")
+    (refuses "select a.id from a, jsonb_array_elements(a.tags) e where e = '\"red\"'" "Use jsonb_array_elements_text()"))
+
+  (testing "ROW_NUMBER() over a key of the elements ranks by the key"
+    (converts-to-blocks "select * from (select a.id, e->>'k' as k, row_number() over (partition by a.id, e->>'k' order by e->'n' desc) as rn from a cross join lateral jsonb_array_elements(a.data) e) x where rn = 1"
+                        "a as a | unnest: a.data as e | select: id, e.k as k | order: e.n desc | limit: 1 per id, e.k |= x\n\nx"
+                        ["`rn` from ROW_NUMBER() isn't a column in Pine: `x` keeps the first rows of each group instead."])
+    (refuses "select * from (select a.id, row_number() over (partition by e->'k') as rn from a, jsonb_array_elements(a.data) e) x where rn = 1"
+             "PARTITION BY a -> key isn't converted"))
+
+  (testing "Refused"
+    (refuses "select a.id from a left join lateral jsonb_array_elements(a.data) e on true" "A LEFT JOIN LATERAL keeps the rows whose array is empty")
+    (refuses "select a.id from a cross join lateral jsonb_array_elements(a.data->>'x') e" "->> gives text. Use ->")
+    (refuses "select * from a cross join b" "A CROSS JOIN converts only for the elements of a JSON array")
+    (refuses "select * from a cross join lateral generate_series(1, 3) g" "A CROSS JOIN converts only for the elements of a JSON array")))
+
+(deftest test-reported-edits-query
+  (testing "The last edit of each field, from the elements of a JSON array"
+    (converts-to-blocks
+     "WITH edits AS (
+  SELECT ar.\"resourceableId\"::uuid AS company_id, a.\"createdAt\", a.updated_by_email,
+         e->>'field' AS field, e->'after' AS manual_value,
+         row_number() OVER (PARTITION BY ar.\"resourceableId\", e->>'field' ORDER BY a.\"createdAt\" DESC) AS rn
+  FROM activity a
+  JOIN activity_resource ar ON ar.\"activityId\" = a.id AND ar.\"resourceableType\" = 'Company'
+  CROSS JOIN LATERAL jsonb_array_elements(a.data) e
+  WHERE a.\"tenantId\" = '1d4ec3f6-2046-4b18-aea2-c27c80e89103' AND a.type = 'company-edited'
+    AND a.\"createdAt\" >= '2026-01-01 00:00' AND e->>'field' IN ('legalTypes', 'giin'))
+SELECT c.name, ed.field, ed.manual_value, ed.\"createdAt\", ed.updated_by_email,
+       c.legal_types AS current_legal_types, c.giin AS current_giin
+FROM edits ed JOIN company c ON c.id = ed.company_id
+WHERE ed.rn = 1
+ORDER BY c.name, ed.field;"
+     "activity as a
+ | activity_resource as ar .activityId = .id
+ | unnest: a.data as e
+ | where: resourceableType = 'Company'
+ | where: a.tenantId = '1d4ec3f6-2046-4b18-aea2-c27c80e89103'
+ | where: a.type = 'company-edited'
+ | where: a.createdAt >= '2026-01-01 00:00'
+ | where: e.field in ('legalTypes', 'giin')
+ | select: resourceableId::uuid as company_id, a.createdAt, a.updated_by_email, e.field as field, e.after as manual_value
+ | order: a.createdAt desc
+ | limit: 1 per resourceableId, e.field |= edits
+
+edits as ed
+ | company as c .id = .company_id
+ | select: name, ed.field, ed.manual_value, ed.createdAt, ed.updated_by_email, legal_types as current_legal_types, giin as current_giin
+ | order: name asc, ed.field asc"
+     ["A condition in an inner join's ON moved to where:. It means the same there."
+      "In SQL, `->` gives JSON, so a string keeps its quotes. Pine shows e.after as text, without them, as `->>` does."])))
