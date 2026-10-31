@@ -92,12 +92,12 @@
   (let [operation-type (-> state :operation :type)]
     (not (contains? #{:count :group :delete-action :update-action} operation-type))))
 
-(defn add-row-keys
+(defn add-record-keys
   "Record the primary key of every real table in the state, as
-  `:row-keys {alias [column ...]}`. A table without one is left out."
+  `:record-keys {alias [column ...]}`. A table without one is left out."
   [state]
   (let [{:keys [references aliases]} state]
-    (assoc state :row-keys
+    (assoc state :record-keys
            (into {}
                  (for [{:keys [alias]} (:tables state)
                        :when (not (:ast (get aliases alias)))
@@ -126,10 +126,10 @@
           ;; Use the current operation index as the starting point for auto-ID columns
           ;; This ensures they come after all other operations
           next-operation-index (inc (:index state))
-          row-keys (:row-keys state)
+          record-keys (:record-keys state)
           ;; Only real tables (not variables/CTEs) that have a primary key
           keyed (for [alias table-aliases
-                      :let [columns (get row-keys alias)]
+                      :let [columns (get record-keys alias)]
                       :when (not (key-hidden-by-policy? state alias columns))
                       column columns]
                   [alias column])
