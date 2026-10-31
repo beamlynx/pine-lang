@@ -1,29 +1,27 @@
 (ns pine.db.engines.postgres-test
-  "SQL to Pine, checked on a real Postgres: the motivating script's UPDATE
-  and the Pine it converts to pick the same rows.
+  "What only Postgres has: SQL to Pine, checked on a real Postgres. The SQL
+  written for Postgres (UPDATE ... FROM, jsonb functions, ...) and the Pine
+  it converts to pick the same rows.
 
-  Runs only when PINE_TEST_POSTGRES_URL names a Postgres server, like
-  postgres://pine:pine@localhost:5435/pine. The user must be allowed to
-  create a database: the test creates one with a fresh name, fills it, and
-  drops it at the end. Nothing else on the server is touched.
-
-  To run it against a throwaway server:
-
-    docker run -d --rm --name pine_eq_pg -e POSTGRES_USER=pine -e POSTGRES_PASSWORD=pine \\
-      -e POSTGRES_DB=pine -p 55432:5432 postgres:15
-    PINE_TEST_POSTGRES_URL=postgres://pine:pine@localhost:55432/pine clojure -M:test -n pine.db.engines.postgres-test
-    docker stop pine_eq_pg"
+  Runs when PINE_TEST_POSTGRES_URL names a Postgres server (see
+  pine.db.engines, and scripts/test-databases.sh to start one). The user
+  must be allowed to create a database: the test creates one with a fresh
+  name, fills it, and drops it at the end."
   (:require [cheshire.core :as json]
             [clojure.java.jdbc :as jdbc]
             [clojure.string :as s]
             [clojure.test :refer [deftest is testing]]
             [pine.api :as api]
             [pine.db.connections :as connections]
+            [pine.db.engines :as e]
             [pine.db.main :as db]
             [pine.sql.transpile :as t])
   (:import (java.net URI)))
 
-(def ^:private server (System/getenv "PINE_TEST_POSTGRES_URL"))
+(def ^:private server
+  "Fails the run when CI requires the server and it isn't named. See
+  pine.db.engines."
+  (e/server-url :postgres))
 
 ;; The tenant the script works on, another tenant, the user whose edits
 ;; don't count, and a user whose edits do.
