@@ -449,6 +449,11 @@
     (is (= [] (get-in (state "customer | unnest: data.x") [:hints :unnest])) "Keys aren't in the schema")
     (is (= [] (get-in (state "customer | unnest: data.") [:hints :unnest]))))
 
+  (testing "A table with no JSON column gets none, except on SQLite, which keeps JSON in text"
+    (is (= [] (get-in (state "report | unnest: ") [:hints :unnest])))
+    (is (= ["id" "title"]
+           (map :column (get-in (state :test-sqlite "report | unnest: " []) [:hints :unnest])))))
+
   (testing "The pipe stays on the table. The elements aren't a table node: the canvas gets them as :unnests"
     (let [s (state "customer as c | unnest: data.orders as o | unnest: o.items as i | s: i.sku")]
       (is (= "c" (:current s)))

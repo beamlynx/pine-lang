@@ -2,7 +2,8 @@
   (:require [clojure.set :as set]
             [clojure.string :as str]
             [pine.ast.path :as path]
-            [pine.ast.table :as table]))
+            [pine.ast.table :as table]
+            [pine.db.connections :as connections]))
 
 (defn- filter-relations
   "Given a partial token (which can be completed to a table) and all the
@@ -765,10 +766,11 @@
 
 (defn- generate-unnest-hints
   "The columns `unnest:` can read: the JSON columns of the table the pipe is
-  on, or of the alias typed, `unnest: a.`. A table whose types say none is
-  JSON may keep JSON in text, as SQLite does, so then every column is
-  offered. While `unnest: da` is typed, the columns matching `da`. Keys
-  inside a column aren't in the schema, so a path gets none."
+  on, or of the alias typed, `unnest: a.`. SQLite has no JSON type and keeps
+  JSON in text, so there every column is offered. Elsewhere a table with no
+  JSON column gets none, and the canvas leaves `unnest` out of its menu.
+  While `unnest: da` is typed, the columns matching `da`. Keys inside a
+  column aren't in the schema, so a path gets none."
   [state]
   (let [{:keys [type value partial-alias]} (:operation state)
         typed (if (= :elements type) value partial-alias)
@@ -777,7 +779,7 @@
       []
       (let [hints (generate-all-column-hints state a)
             json (filter #(path/json-column? state a (:column %)) hints)]
-        (cond-> (if (seq json) json hints)
+        (cond-> (if (= :sqlite (connections/get-dialect (:connection-id state))) hints json)
           (seq (:column typed)) (find-relevant-columns typed))))))
 
 (defn- in-json-path?

@@ -215,8 +215,8 @@ WHERE jsonb_extract_path("e"."value"::jsonb, ?::text) = ?::jsonb
 - **A join after `unnest:`** starts from the table the pipe is on: `| unnest: data as e | company .id = .company_id`.
   A join on a key of the elements isn't supported yet.
 - **`delete!` and `update!`** change the table. The rows they change are those with a matching element.
-- **Hints.** After `unnest: `, the table's JSON columns are offered. Keys inside a column aren't in the schema, so
-  they aren't offered.
+- **Hints.** After `unnest: `, the table's JSON columns are offered. A table without one gets none. SQLite has no
+  JSON type, so there every column is offered. Keys inside a column aren't in the schema, so they aren't offered.
 - **Masking policy.** An element and its keys are part of their column. When the column is masked, so are they, and
   a key can't be a `group:` key.
 
