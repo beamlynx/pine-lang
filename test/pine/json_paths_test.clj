@@ -370,12 +370,27 @@
             :params ["name" "staff" "staff" "role" "\"admin\""]}
            (sql "customer as c | unnest: c.data.staff as s | where: s.role = 'admin' | s: c.id, s.name"))))
 
-  (testing "Without select:, the element. `e` is the element, `e.k` a key, and a bare name a key"
-    (is (re-find #"^SELECT \"c_0\".\"id\" AS \"__c_0__id\", \(\"e\".\"value\"::jsonb #>> '\{\}'\) AS \"e\" FROM"
-                 (:query (sql "customer | unnest: data as e"))))
-    (is (= ["k" "k"] (take 2 (:params (sql "customer | unnest: data as e | s: e.k, k as k2")))))
+  (testing "`e` is the element, `e.k` a key, and a bare name a column of the table"
+    (is (re-find #"^SELECT \"c_0\".\"id\", jsonb_extract_path_text\(\"e\".\"value\"::jsonb, \?::text\) AS \"k\""
+                 (:query (sql "customer | unnest: data as e | s: id, e.k"))))
     (is (re-find #"\(\"e\".\"value\"::jsonb #>> '\{\}'\) AS \"e\""
                  (:query (sql "customer | unnest: data as e | s: e.*")))))
+
+  (testing "unnest: adds `e` to the result, in place of its table's columns, until a select: after it"
+    (let [columns (fn [expression] (second (re-find #"^SELECT (.*?) FROM" (:query (sql expression)))))
+          e "(\"e\".\"value\"::jsonb #>> '{}') AS \"e\""]
+      (is (= (str "\"c_0\".\"id\" AS \"__c_0__id\", " e)
+             (columns "customer | unnest: data as e")))
+      (is (= (str "\"c_0\".\"id\", \"c_0\".\"id\" AS \"__c_0__id\", " e)
+             (columns "customer | s: id | unnest: data as e")))
+      (is (= "\"c_0\".\"id\", jsonb_extract_path_text(\"e\".\"value\"::jsonb, ?::text) AS \"k\", \"c_0\".\"id\" AS \"__c_0__id\""
+             (columns "customer | s: id | unnest: data as e | s: e.k")))
+      (is (= "jsonb_extract_path_text(\"e\".\"value\"::jsonb, ?::text) AS \"k\", \"c_0\".\"id\" AS \"__c_0__id\""
+             (columns "customer | unnest: data as e | s: e.k")))
+      (is (= (str "\"c_0\".\"id\" AS \"__c_0__id\", " e)
+             (columns "customer | unnest: data as e | where: e = 'x' | order: id")))
+      (testing "Only the inner elements of elements"
+        (is (re-find #"AS \"i\"$" (columns "customer | unnest: data.orders as o | unnest: o.items as i"))))))
 
   (testing "An element compares as JSON, like a key"
     (is (re-find #"WHERE \"e\".\"value\"::jsonb = \?::jsonb"
@@ -386,9 +401,11 @@
                  (:query (sql "customer as c | unnest: data.items as i | unnest: i.parts as p | s: p.name"))))
     (is (re-find #"AS \"s_1\"\(\"value\"\)" (:query (sql "customer | unnest: data.staff")))))
 
-  (testing "A join after the elements comes after them, from the table named by from:"
-    (is (re-find #"AS \"e\"\(\"value\"\) JOIN \"employee\""
-                 (:query (sql "customer as c | unnest: data as e | from: c | employee .id = .id")))))
+  (testing "A join after the elements is from the table the pipe is on, and comes after them in the SQL"
+    (let [{:keys [query]} (sql "customer as c | unnest: data as e | employee .id = .id")]
+      (is (re-find #"AS \"e\"\(\"value\"\) JOIN \"employee\" AS \"e_\d\" ON \"c\".\"id\" = \"e_\d\".\"id\"" query))
+      (is (re-find #"\"e_\d\"\.\*" query) "The joined table shows its columns")
+      (is (re-find #"AS \"e\", " query) "and the elements are still in the result")))
 
   (testing "MySQL reads the array with JSON_TABLE"
     (is (= {:query (str "SELECT JSON_UNQUOTE(`t`.`value`) AS `t`, `p_0`.`id` AS `__p_0__id` FROM `product` AS `p_0` "
@@ -409,11 +426,11 @@
                           (state "customer | unnest: uuid_col as e")))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`c` is already an alias"
                           (state "customer as c | unnest: data as c")))
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"A join can't start from the elements `e`"
-                          (state "customer | unnest: data as e | employee .id = .x")))
-    (is (state "customer | unnest: data as e | ") "A table still being typed isn't refused")
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"delete! can't change the elements of a JSON array"
-                          (sql "customer | unnest: data as e | where: e.x = 1 | delete! .id")))))
+    (is (state "customer | unnest: data as e | ") "A table still being typed isn't refused"))
+
+  (testing "delete! changes the table's rows that have a matching element"
+    (is (re-find #"^DELETE FROM \"customer\" WHERE \"id\" IN \( SELECT .* CROSS JOIN LATERAL jsonb_array_elements"
+                 (:query (sql "customer | unnest: data as e | where: e.x = 1 | delete! .id"))))))
 
 (deftest test-array-elements-access-policy
   (testing "An element, and every key of one, is masked when its column is"
@@ -423,3 +440,21 @@
     (is (:query (sql :test "customer | unnest: data as e | where: e.k = 'x' | s: id" [jsonb-hidden])))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`c_0.data` is a masked column"
                           (sql :test "customer | unnest: data as e | group: e.k with count" [jsonb-hidden])))))
+
+(deftest test-unnest-hints-and-canvas
+  (testing "unnest: is offered the JSON columns of the table the pipe is on, or of an alias"
+    (is (= [{:column "data" :alias "c_0"}] (get-in (state "customer | unnest: ") [:hints :unnest])))
+    (is (= [{:column "data" :alias "c"}] (get-in (state "customer as c | unnest: c.") [:hints :unnest])))
+    (is (= [{:column "data" :alias "c_0"}] (get-in (state "customer | unnest: da") [:hints :unnest])))
+    (is (= [] (get-in (state "customer | unnest: data.x") [:hints :unnest])) "Keys aren't in the schema")
+    (is (= [] (get-in (state "customer | unnest: data.") [:hints :unnest]))))
+
+  (testing "The pipe stays on the table. The elements aren't a table node: the canvas gets them as :unnests"
+    (let [s (state "customer as c | unnest: data.orders as o | unnest: o.items as i | s: i.sku")]
+      (is (= "c" (:current s)))
+      (is (= ["c"] (map :alias (:selected-tables s))))
+      (is (= [{:alias "o" :table "c" :text "data.orders"} {:alias "i" :table "c" :text "o.items"}]
+             (map #(select-keys % [:alias :table :text]) (:unnests s))))))
+  (testing "It shows on the node of the table whose column holds the array"
+    (is (= [{:alias "e" :table "c" :text "data"}]
+           (map #(select-keys % [:alias :table :text]) (:unnests (state "customer as c | employee .id = .id | unnest: c.data as e")))))))

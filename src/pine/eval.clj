@@ -461,16 +461,25 @@
                   columns)
         ;; Separate auto-ID columns from user-selected columns
         {auto-id-columns true user-columns nil} (group-by #(:auto-id %) columns)
+        ;; `unnest: a.data as e` adds `e` to the result, in place of the
+        ;; columns of the table it was on, until a select: after it says
+        ;; which columns to show. An `e` whose elements another unnest:
+        ;; reads isn't shown either: those are.
+        elements (->> (vals (:aliases state)) (filter :elements) (sort-by :index))
+        sources (set (map #(get-in % [:elements :alias]) elements))
+        shown-elements (remove (fn [{:keys [alias index]}]
+                                 (or (sources alias)
+                                     (some #(some-> (:operation-index %) (> index)) user-columns)))
+                               elements)
         ;; Check if any non-auto-ID columns are selected for the current table
-        current-table-has-columns? (some #(= (:alias %) current) user-columns)
+        current-table-has-columns? (or (some #(= (:alias %) current) user-columns)
+                                       (some #(= current (get-in % [:elements :on])) elements))
         star-eligible? (not (contains? #{:select :delete-action :group} type))
-        ;; The elements of `unnest: a.data as e` have one column, the element.
-        elements? (some? (get-in state [:aliases current :elements]))
         ;; Under the access policy, a bare `current.*` is opaque to the
         ;; per-column check redaction depends on - expand it into an
         ;; explicit column list (pine.access-policy/expand-star) so each one
         ;; can be checked and redacted individually. Policy off: unchanged.
-        expanded (when (and restricted? star-eligible? (not current-table-has-columns?) (not elements?))
+        expanded (when (and restricted? star-eligible? (not current-table-has-columns?))
                    (access-policy/expand-star state current))
         columns (if (seq expanded) (into columns expanded) columns)
         current-table-has-columns? (or current-table-has-columns? (seq expanded))
@@ -495,11 +504,12 @@
                            ;; names after the column without an `AS`.
                            :plain? (and (nil? out-alias) (seq column) (= c (q alias column)))})))
                     columns)]
-    (cond-> items
-      select-all? (conj (if elements?
-                          (let [[c params] (column-sql state rules {:alias current :column "value" :path []})]
-                            {:expr c :params params :out-alias current :name current})
-                          {:star current})))))
+    (cond-> (into items
+                  (when star-eligible?
+                    (for [{e :alias} shown-elements
+                          :let [[c params] (column-sql state rules {:alias e :column "value" :path []})]]
+                      {:expr c :params params :out-alias e :name e})))
+      select-all? (conj {:star current}))))
 
 (defn- item-sql [{:keys [star expr out-alias]}]
   (cond
@@ -1118,8 +1128,6 @@
   [{:keys [group aliases] :as state} op-name target]
   (when (get-in aliases [target :ast])
     (refuse-write (str op-name " can't change a named result. Pipe it onto the table itself.")))
-  (when (get-in aliases [target :elements])
-    (refuse-write (str op-name " can't change the elements of a JSON array. Go back to their table with `from:` first.")))
   (when (seq group)
     (refuse-write (str op-name " after group: is not supported. Remove the group:, or select the rows with where:.")))
   (when-not (scoped? state)

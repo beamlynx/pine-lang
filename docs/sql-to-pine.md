@@ -244,7 +244,7 @@ WHERE e->>'field' IN ('legalTypes', 'giin')
 activity as a
  | unnest: a.data.changes as e
  | where: e.field in ('legalTypes', 'giin')
- | select: a.id, e.field as field
+ | select: id, e.field as field
 ```
 
 - `CROSS JOIN LATERAL`, a comma, and `JOIN LATERAL ... ON true` all convert. `LATERAL` may be left out.

@@ -1256,46 +1256,46 @@ s | group: a with count as subjects, n => max as max_n | order: max_n desc | lim
 (deftest test-json-array-elements
   (testing "jsonb_array_elements in FROM is Pine's `unnest:`: one row for each element"
     (converts-to "select a.id, e->>'k' as k from a cross join lateral jsonb_array_elements(a.data) e"
-                 "a as a | unnest: a.data as e | select: a.id, e.k as k")
+                 "a as a | unnest: a.data as e | select: id, e.k as k")
     (converts-to "select a.id, e->>'k' as k from a, lateral json_array_elements(a.data->'items') as e"
-                 "a as a | unnest: a.data.items as e | select: a.id, e.k as k")
+                 "a as a | unnest: a.data.items as e | select: id, e.k as k")
     (converts-to "select a.id, e->>'k' as k from a join jsonb_array_elements(a.data) e on true"
-                 "a as a | unnest: a.data as e | select: a.id, e.k as k"))
+                 "a as a | unnest: a.data as e | select: id, e.k as k"))
 
   (testing "The element itself is its alias. SQL names it `value`, or what e(x) says"
     (converts-to "select a.id, e from a, jsonb_array_elements_text(a.data->'tags') e"
-                 "a as a | unnest: a.data.tags as e | select: a.id, e")
+                 "a as a | unnest: a.data.tags as e | select: id, e")
     (converts-to "select a.id, e.value from a, jsonb_array_elements_text(a.data) e"
-                 "a as a | unnest: a.data as e | select: a.id, e as value")
+                 "a as a | unnest: a.data as e | select: id, e as value")
     (converts-to "select a.id, e.tag from a, jsonb_array_elements_text(a.data) e(tag)"
-                 "a as a | unnest: a.data as e | select: a.id, e as tag")
+                 "a as a | unnest: a.data as e | select: id, e as tag")
     (converts-to "select * from a cross join lateral jsonb_array_elements_text(a.data) e"
                  "a as a | unnest: a.data as e | select: a.*, e as value"))
 
   (testing "jsonb_array_elements gives JSON, so a string keeps its quotes in SQL"
     (converts-to "select a.id, e from a, jsonb_array_elements(a.data) e"
-                 "a as a | unnest: a.data as e | select: a.id, e"
+                 "a as a | unnest: a.data as e | select: id, e"
                  ["In SQL, jsonb_array_elements() gives JSON, so a string keeps its quotes. Pine shows e as text, without them, as jsonb_array_elements_text() does."]))
 
   (testing "Elements of elements"
     (converts-to "select i->>'sku' as sku from a cross join lateral jsonb_array_elements(a.data->'orders') o cross join lateral jsonb_array_elements(o->'items') i"
                  "a as a | unnest: a.data.orders as o | unnest: o.items as i | select: i.sku as sku"))
 
-  (testing "A table joined after the elements is joined to its own table"
+  (testing "A table joined after the elements is joined from the table the pipe is on"
     (converts-to "select a.id, b.name from a cross join lateral jsonb_array_elements(a.data) e join b on b.id = a.b_id where e->>'k' = 'v'"
-                 "a as a | unnest: a.data as e | from: a | b .id = .b_id | where: e.k = 'v' | select: a.id, name"))
+                 "a as a | unnest: a.data as e | b .id = .b_id | where: e.k = 'v' | select: a.id, name"))
 
   (testing "An element of jsonb_array_elements_text compares as text"
     (converts-to "select a.id from a, jsonb_array_elements_text(a.tags) e where e != 'red'"
-                 "a as a | unnest: a.tags as e | where: e != 'red' | where: e is not null | select: a.id | from: a")
+                 "a as a | unnest: a.tags as e | where: e != 'red' | where: e is not null | select: id")
     (converts-to "select a.id from a, jsonb_array_elements_text(a.tags) e where e = 'red'"
-                 "a as a | unnest: a.tags as e | where: e = 'red' | select: a.id | from: a")
+                 "a as a | unnest: a.tags as e | where: e = 'red' | select: id")
     (refuses "select a.id from a, jsonb_array_elements_text(a.tags) e where e = '5'" "'5' is also how a JSON number reads as text")
     (refuses "select a.id from a, jsonb_array_elements(a.tags) e where e = '\"red\"'" "Use jsonb_array_elements_text()"))
 
   (testing "ROW_NUMBER() over a key of the elements ranks by the key"
     (converts-to-blocks "select * from (select a.id, e->>'k' as k, row_number() over (partition by a.id, e->>'k' order by e->'n' desc) as rn from a cross join lateral jsonb_array_elements(a.data) e) x where rn = 1"
-                        "a as a | unnest: a.data as e | select: a.id, e.k as k | order: e.n desc | limit: 1 per a.id, e.k |= x\n\nx"
+                        "a as a | unnest: a.data as e | select: id, e.k as k | order: e.n desc | limit: 1 per id, e.k |= x\n\nx"
                         ["`rn` from ROW_NUMBER() isn't a column in Pine: `x` keeps the first rows of each group instead."])
     (refuses "select * from (select a.id, row_number() over (partition by e->'k') as rn from a, jsonb_array_elements(a.data) e) x where rn = 1"
              "PARTITION BY a -> key isn't converted"))
@@ -1326,14 +1326,14 @@ ORDER BY c.name, ed.field;"
      "activity as a
  | activity_resource as ar .activityId = .id
  | unnest: a.data as e
- | where: ar.resourceableType = 'Company'
+ | where: resourceableType = 'Company'
  | where: a.tenantId = '1d4ec3f6-2046-4b18-aea2-c27c80e89103'
  | where: a.type = 'company-edited'
  | where: a.createdAt >= '2026-01-01 00:00'
  | where: e.field in ('legalTypes', 'giin')
- | select: ar.resourceableId::uuid as company_id, a.createdAt, a.updated_by_email, e.field as field, e.after as manual_value
+ | select: resourceableId::uuid as company_id, a.createdAt, a.updated_by_email, e.field as field, e.after as manual_value
  | order: a.createdAt desc
- | limit: 1 per ar.resourceableId, e.field |= edits
+ | limit: 1 per resourceableId, e.field |= edits
 
 edits as ed
  | company as c .id = .company_id

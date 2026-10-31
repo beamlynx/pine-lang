@@ -1,7 +1,7 @@
 OPERATIONS := <ws*> OPERATION <ws*> (<"|"> <ws*> OPERATION <ws*>)*
 ASSIGN     := <"="> <ws*> symbol
 
-OPERATION    := SELECT-PARTIAL | SELECT | WHERE-PARTIAL | WHERE | LIMIT-PARTIAL | LIMIT | FROM | ORDER-PARTIAL | ORDER | COUNT | DELETE-ACTION | UPDATE-PARTIAL | UPDATE-ACTION | GROUP | ASSIGN | PATHS | UNNEST | TABLE
+OPERATION    := SELECT-PARTIAL | SELECT | WHERE-PARTIAL | WHERE | LIMIT-PARTIAL | LIMIT | FROM | ORDER-PARTIAL | ORDER | COUNT | DELETE-ACTION | UPDATE-PARTIAL | UPDATE-ACTION | GROUP | ASSIGN | PATHS | UNNEST-PARTIAL | UNNEST | TABLE
 
 
 TABLE             := table table-mods
@@ -10,6 +10,8 @@ PATHS             := <"?"> <ws*> table
    path, joined to the row it came from. `e.status` is a key of the element,
    and `e` the element itself. See docs/json-paths.md. *)
 UNNEST            := <unnest-op> symbol json-step* (<ws+> as-alias)?
+(* While the array is typed: `unnest: ` or `unnest: a.`. *)
+UNNEST-PARTIAL    := <unnest-op> partial-alias?
 
 SELECT-PARTIAL    := <select-op> aliased-columns <","> <ws*> partial-alias | <select-op> partial-alias | <select-op> (aliased-columns <",">)?
 SELECT            := <select-op> aliased-columns

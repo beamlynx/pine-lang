@@ -186,6 +186,10 @@
     :else
     {:alias (-> children first second second) :column ""}))
 
+(defmethod -normalize-op :UNNEST-PARTIAL [[_ partial-alias]]
+  (cond-> {:type :unnest-partial :value {}}
+    partial-alias (assoc :partial-alias (parse-partial-alias partial-alias))))
+
 (defn normalize-select [payload type]
   (match payload
     [:aliased-columns & columns] {:type type :value (mapv -normalize-column columns)}

@@ -90,7 +90,7 @@
             ;; POST
             ;; ---
             ;; - hints
-            :hints          {:table [] :select [] :order [] :where [] :update [] :paths []}
+            :hints          {:table [] :select [] :order [] :where [] :update [] :paths [] :unnest []}
 
             ;; ---
             ;; Checkpoint
@@ -338,8 +338,10 @@
     :select (select/handle state value)
     :select-partial (select/handle state value)
     ;; A table still being typed, `| `, isn't a join yet.
-    :table (path/check-join-paths (table/handle (cond-> state (seq (:table value)) elements/check-join-from) value))
+    :table (path/check-join-paths (table/handle state value))
     :elements (elements/handle state value)
+    ;; Nothing to add while the array is typed: see hints.
+    :unnest-partial state
     :limit (limit/handle state value per)
     :limit-partial (limit/handle state value per)
     :where (where/handle state value)
@@ -470,6 +472,24 @@
             (assoc :ranges ranges)))
       state)))
 
+(defn- unnest-entries
+  "Each `unnest:` for the client, in pipe order: `table`, the alias of the
+  table whose column holds the array, and whose node shows it, and `text`,
+  the array's path from there: `data.changes`, or `o.items` for the
+  elements of the elements `o`."
+  [state]
+  (let [aliases (:aliases state)
+        table-of (fn table-of [a] (if-let [source (get-in aliases [a :elements :alias])] (table-of source) a))]
+    (->> (:tables state)
+         (filter :elements)
+         (mapv (fn [{e :alias {:keys [alias column path]} :elements :keys [index]}]
+                 {:alias e
+                  :table (table-of alias)
+                  :index index
+                  :text (if (path/element-alias? state alias)
+                          (path/path-text alias path)
+                          (path/path-text column path))})))))
+
 (defn post-handle [state truncated-state]
   (-> state
       (hints/handle truncated-state)
@@ -480,7 +500,10 @@
       select/add-auto-id-columns
       ;; After the key columns: only a table that has them is editable
       select/add-json-type-columns
-      (assoc :selected-tables (let [tables (state :tables)
+      (assoc :unnests (unnest-entries state))
+      ;; A node is a table. The elements of unnest: are shown on the node
+      ;; of the table they came from, as :unnests.
+      (assoc :selected-tables (let [tables (remove :elements (state :tables))
                                     type (-> state :operation :type)]
                                 (if
                                  (= type :table)

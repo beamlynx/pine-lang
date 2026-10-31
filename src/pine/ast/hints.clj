@@ -1,6 +1,7 @@
 (ns pine.ast.hints
   (:require [clojure.set :as set]
             [clojure.string :as str]
+            [pine.ast.path :as path]
             [pine.ast.table :as table]))
 
 (defn- filter-relations
@@ -762,6 +763,23 @@
                                                (remove listed names)))
            []))))
 
+(defn- generate-unnest-hints
+  "The columns `unnest:` can read: the JSON columns of the table the pipe is
+  on, or of the alias typed, `unnest: a.`. A table whose types say none is
+  JSON may keep JSON in text, as SQLite does, so then every column is
+  offered. While `unnest: da` is typed, the columns matching `da`. Keys
+  inside a column aren't in the schema, so a path gets none."
+  [state]
+  (let [{:keys [type value partial-alias]} (:operation state)
+        typed (if (= :elements type) value partial-alias)
+        a (or (:alias typed) (:current state))]
+    (if (or (seq (:path typed)) (not (contains? (:aliases state) a)))
+      []
+      (let [hints (generate-all-column-hints state a)
+            json (filter #(path/json-column? state a (:column %)) hints)]
+        (cond-> (if (seq json) json hints)
+          (seq (:column typed)) (find-relevant-columns typed))))))
+
 (defn- in-json-path?
   "Whether the name being typed stops inside a JSON path, like `c.data.`.
   What follows is a key, and keys aren't in the schema, so there are no
@@ -788,9 +806,9 @@
        (let [{:keys [key hints]} (generate-path-hints state-for-hints)]
          (assoc-in state [:hints key] (or hints [])))
 
-       ;; `unnest: a.data as e`: keys aren't in the schema, so nothing to hint.
-       (= op-type :elements)
-       state
+       (#{:elements :unnest-partial} op-type)
+       ;; Its own key: picking one completes the column alone, not `col, `.
+       (assoc-in state [:hints :unnest] (if json-path? [] (sort-column-hints (generate-unnest-hints state-for-hints))))
 
        :else
        (let [hints (case (if json-path? :json-path op-type)

@@ -33,6 +33,11 @@
 (defn- json-type? [db-type]
   (contains? #{"json" "jsonb"} (some-> db-type s/lower-case)))
 
+(defn json-column?
+  "Whether the schema says `alias.column` is JSON."
+  [state alias column]
+  (json-type? (column-type state alias column)))
+
 (defn- table-label [state alias]
   (or (get-in state [:aliases alias :table]) alias))
 
@@ -118,27 +123,21 @@
   `value` column, named as written unless `as` names it:
 
   - `e.status.code`: the key `status.code` of each element of `e`;
-  - `e`, `e[0]`: the element itself, or a path into it;
-  - `status`, when the pipe is on `e`: a key of its element, as a bare name
-    is a column of the current table.
+  - `e`, `e[0]`: the element itself, or a path into it.
 
-  Any other name unchanged."
+  A bare name stays a column of the table the pipe is on. Any other name
+  unchanged."
   [state {:keys [alias column path] :as col}]
-  (let [current (:current state)]
-    (cond
-      (element-alias? state alias)
-      (cond-> (assoc col :column "value" :path (into [column] path))
-        (not (:column-alias col)) (assoc :column-alias (path-text column path)))
+  (cond
+    (element-alias? state alias)
+    (cond-> (assoc col :column "value" :path (into [column] path))
+      (not (:column-alias col)) (assoc :column-alias (path-text column path)))
 
-      (and (nil? alias) (element-alias? state column))
-      (cond-> (assoc col :alias column :column "value" :path (vec path))
-        (not (:column-alias col)) (assoc :column-alias (path-text column path)))
+    (and (nil? alias) (element-alias? state column))
+    (cond-> (assoc col :alias column :column "value" :path (vec path))
+      (not (:column-alias col)) (assoc :column-alias (path-text column path)))
 
-      (and (nil? alias) (element-alias? state current))
-      (cond-> (assoc col :alias current :column "value" :path (into [column] path))
-        (not (:column-alias col)) (assoc :column-alias (path-text column path)))
-
-      :else col)))
+    :else col))
 
 (defn- named-result-column
   "A named result names a selected path after the path: after
@@ -300,7 +299,7 @@
   element (see element-column)."
   [state col]
   (if (or (element-alias? state (:alias col))
-          (and (nil? (:alias col)) (or (element-alias? state (:column col)) (element-alias? state (:current state)))))
+          (and (nil? (:alias col)) (element-alias? state (:column col))))
     (unseal-column state (element-column state col))
     (resolve-column* state col)))
 

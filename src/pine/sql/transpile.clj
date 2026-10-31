@@ -1454,7 +1454,8 @@
                       ;; `unnest: a.data` names its table itself.
                       (and (pos? i) (not= anchor current) (not elements)) (conj {:op :from :t anchor})
                       true (conj {:op :table :t i}))
-               :current i}))
+               ;; unnest: leaves the pipe on its table.
+               :current (if elements current i)}))
           {:ops [] :current 0}
           (range (count tables))))
 
@@ -1519,8 +1520,11 @@
   would then come back with all of the last table's too. So such a pipe
   ends with `from:` the first selected table, which leaves the last
   table's columns out. At the end, so no step after it reads its bare
-  column names differently."
-  [ops current]
+  column names differently.
+
+  A table that unnest: was used on doesn't show its columns, and the
+  elements are never a from: target."
+  [tables ops current]
   (let [sel (first (filter #(= :select (:op %)) ops))
         selected (when sel
                    (mapcat (fn [item]
@@ -1528,9 +1532,11 @@
                                (contains? item :star) [(:star item)]
                                (:expr item) (:refs item)
                                :else [(:t (:col item))]))
-                           (:items sel)))]
-    (if (and (seq selected) (not-any? #{current} selected))
-      (conj ops {:op :from :t (first selected)})
+                           (:items sel)))
+        unnested? (some #(:elements (nth tables %)) (range (inc current) (count tables)))
+        target (first (remove #(:elements (nth tables %)) selected))]
+    (if (and target (not unnested?) (not-any? #{current} selected))
+      (conj ops {:op :from :t target})
       ops)))
 
 (defn- transpile-query
@@ -1549,6 +1555,7 @@
         ops (if-let [action (:action query)]
               (into ops (action-ops tables current action (count clauses)))
               (end-on-selected-table
+               tables
                (into ops (plan-select tables current query warn-q! {:window window :in-set-only in-set-only}))
                current))]
     (when name
