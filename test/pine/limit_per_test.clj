@@ -371,7 +371,7 @@
 
   (testing "MySQL: a key inside a JSON column"
     (is (s/includes? (:query (sql "customer | l: 1 per data.region" :test-mysql))
-                     "PARTITION BY JSON_UNQUOTE(JSON_EXTRACT(`c_0`.`data`, ?))")))
+                     "PARTITION BY CASE WHEN JSON_TYPE(JSON_EXTRACT(`c_0`.`data`, ?)) = 'NULL' THEN NULL ELSE JSON_UNQUOTE(JSON_EXTRACT(`c_0`.`data`, ?)) END")))
 
   (testing "MySQL: delete! wraps the subquery"
     (is (s/starts-with? (:query (sql "employee | o: id desc | l: 1 per company_id | delete! .id" :test-mysql))

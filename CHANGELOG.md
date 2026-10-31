@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Fixed
+- **MySQL: a JSON null reads as NULL.** Selecting, grouping by or using a key that holds `null`, such as in `coalesce(data.country, 'none')`, gave the text `null` on MySQL. It is now NULL, as on Postgres and SQLite.
 
 ## [0.52.0] - 2026-10-28
 ### Added
