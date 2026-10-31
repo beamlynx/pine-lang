@@ -206,7 +206,33 @@
         (and (next ids) (quoted? (first ids))) (assoc :schema-quoted true)
         alias (assoc :alias (identifier (second alias)))))))
 
+(declare join*)
+
+(defn- array-join
+  "CROSS JOIN LATERAL jsonb_array_elements(a.data) e as a join whose :table
+  is the elements: {:alias :elements {:fn :source :column :on-true}}.
+  :source is the column or JSON key the array is in, and :column the name
+  the elements' one column has: `value`, or the name in `e(x)`."
+  [[_ & parts :as node]]
+  (let [type-node (first (filter #(= :join-type (first %)) parts))
+        [_ [_ f] source] (first (filter #(= :array-elements (first %)) parts))
+        alias (first (filter #(= :alias (first %)) parts))
+        column-alias (first (filter #(= :column-alias (first %)) parts))]
+    {:type (some-> type-node second first name keyword)
+     :table {:alias (identifier (second alias))
+             :elements (cond-> {:fn (s/lower-case f)
+                                :source (if (= :json-path (first source)) (json-path source) {:kind :column :column (column source) :at (at source)})
+                                :column (if column-alias (identifier (second column-alias)) "value")}
+                         (some #(= :on-true (first %)) parts) (assoc :on-true true))
+             :at (at node)}
+     :at (at node)}))
+
 (defn- join [node]
+  (if (= :array-join (first (second node)))
+    (array-join (second node))
+    (join* node)))
+
+(defn- join* [node]
   (let [[_ [_ & type-nodes] table how] node]
     (cond-> {:type (some-> (ffirst type-nodes) name keyword) :table (table-ref table) :at (at node)}
       (= :on (first how)) (assoc :on (predicate (second how)))
@@ -321,7 +347,7 @@
    "window" "A window function isn't in Pine."
    "escape" "LIKE ... ESCAPE isn't in Pine."
    "similar" "SIMILAR TO isn't in Pine. Use like or ilike."
-   "lateral" "LATERAL isn't in Pine."
+   "lateral" "LATERAL converts only for the elements of a JSON array, like CROSS JOIN LATERAL jsonb_array_elements(a.data) e."
    "all" "ALL isn't in Pine."})
 
 (def ^:private other-statements
@@ -427,6 +453,17 @@
       (and (re-find #"^\s*\(" after) (re-find #"(?is)\bset\b(?:(?!\bwhere\b).)*=\s*[A-Za-z_][A-Za-z0-9_]*\s*$" before))
       (let [f (s/lower-case (second (re-find #"([A-Za-z_][A-Za-z0-9_]*)\s*$" before)))]
         [(str (s/upper-case f) "() isn't in Pine's update!. update! writes a value, coalesce(...), a || b, or now().") "sql-unsupported"])
+
+      ;; Read up to here as the elements of a JSON array, the only cross
+      ;; join that converts.
+      (re-find #"(?i)\bcross\s+join\s+(?:lateral\s+)?$" before)
+      ["A CROSS JOIN converts only for the elements of a JSON array, like CROSS JOIN LATERAL jsonb_array_elements(a.data) e. Pine joins other tables on named columns." "sql-unsupported"]
+
+      (re-find #"(?i)\blateral\s+$" before)
+      ["LATERAL converts only for the elements of a JSON array, like CROSS JOIN LATERAL jsonb_array_elements(a.data) e." "sql-unsupported"]
+
+      (and (re-find #",\s*$" before) (re-find #"(?is)\bfrom\b(?:(?!\b(?:where|join|on|group|order|limit)\b).)*$" before))
+      ["A comma between tables isn't in Pine. Join them with JOIN ... ON." "sql-unsupported"]
 
       (and word (unsupported-words word))
       [(unsupported-words word) "sql-unsupported"]

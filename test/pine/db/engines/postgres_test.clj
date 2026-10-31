@@ -377,3 +377,147 @@ ORDER BY t.company_id NULLS FIRST, t.is_primary DESC, t.created_at;")
             (finally
               (connections/remove-connection-pool id)
               (db/clear-connection-if id))))))))
+
+;; The elements of a JSON array, one row each. Each activity is an edit of
+;; a company, its data the list of fields changed. Company 1's legalTypes
+;; was edited twice, so the later edit counts; 2's giin once, and its name,
+;; which isn't asked for. An edit in another tenant, one of another type,
+;; one before the date, one on another kind of resource and one with no
+;; data don't count.
+(def ^:private edits-fixture
+  ["CREATE TABLE company (id uuid PRIMARY KEY, name text, legal_types jsonb, giin text)"
+   "CREATE TABLE activity (id int PRIMARY KEY, \"tenantId\" uuid, type text, \"createdAt\" timestamp,
+      updated_by_email text, data jsonb)"
+   "CREATE TABLE activity_resource (\"activityId\" int, \"resourceableId\" text, \"resourceableType\" text)"
+   "INSERT INTO company VALUES
+      ('c0000000-0000-0000-0000-000000000001', 'Acme', '[\"LLC\"]', NULL),
+      ('c0000000-0000-0000-0000-000000000002', 'Bolt', '[]', 'G2')"
+   "INSERT INTO activity VALUES
+      (1, '1d4ec3f6-2046-4b18-aea2-c27c80e89103', 'company-edited', '2026-02-01', 'a@x', '[{\"field\": \"legalTypes\", \"after\": [\"LP\"]}]'),
+      (2, '1d4ec3f6-2046-4b18-aea2-c27c80e89103', 'company-edited', '2026-03-01', 'b@x', '[{\"field\": \"legalTypes\", \"after\": [\"LLC\"]}, {\"field\": \"name\", \"after\": \"Acme\"}]'),
+      (3, '1d4ec3f6-2046-4b18-aea2-c27c80e89103', 'company-edited', '2026-02-15', 'c@x', '[{\"field\": \"giin\", \"after\": \"G2\"}, {\"field\": \"name\", \"after\": \"Bolt\"}]'),
+      (4, '11111111-1111-1111-1111-111111111111', 'company-edited', '2026-04-01', 'd@x', '[{\"field\": \"giin\", \"after\": \"no\"}]'),
+      (5, '1d4ec3f6-2046-4b18-aea2-c27c80e89103', 'company-created', '2026-04-01', 'e@x', '[{\"field\": \"giin\", \"after\": \"no\"}]'),
+      (6, '1d4ec3f6-2046-4b18-aea2-c27c80e89103', 'company-edited', '2025-12-01', 'f@x', '[{\"field\": \"giin\", \"after\": \"no\"}]'),
+      (7, '1d4ec3f6-2046-4b18-aea2-c27c80e89103', 'company-edited', '2026-04-01', 'g@x', '[{\"field\": \"giin\", \"after\": \"no\"}]'),
+      (8, '1d4ec3f6-2046-4b18-aea2-c27c80e89103', 'company-edited', '2026-04-02', 'h@x', NULL)"
+   "INSERT INTO activity_resource VALUES
+      (1, 'c0000000-0000-0000-0000-000000000001', 'Company'),
+      (2, 'c0000000-0000-0000-0000-000000000001', 'Company'),
+      (3, 'c0000000-0000-0000-0000-000000000002', 'Company'),
+      (4, 'c0000000-0000-0000-0000-000000000002', 'Company'),
+      (5, 'c0000000-0000-0000-0000-000000000002', 'Company'),
+      (6, 'c0000000-0000-0000-0000-000000000002', 'Company'),
+      (7, 'c0000000-0000-0000-0000-000000000002', 'Document'),
+      (8, 'c0000000-0000-0000-0000-000000000002', 'Company')"])
+
+(def ^:private edits-query
+  "The query reported: the last manual edit of each company's legal types
+  and GIIN, next to their values now."
+  "WITH edits AS (
+  SELECT ar.\"resourceableId\"::uuid AS company_id,
+         a.\"createdAt\", a.updated_by_email,
+         e->>'field' AS field,
+         e->'after'  AS manual_value,
+         row_number() OVER (PARTITION BY ar.\"resourceableId\", e->>'field'
+                            ORDER BY a.\"createdAt\" DESC) AS rn
+  FROM activity a
+  JOIN activity_resource ar
+    ON ar.\"activityId\" = a.id AND ar.\"resourceableType\" = 'Company'
+  CROSS JOIN LATERAL jsonb_array_elements(a.data) e
+  WHERE a.\"tenantId\" = '1d4ec3f6-2046-4b18-aea2-c27c80e89103'
+    AND a.type = 'company-edited'
+    AND a.\"createdAt\" >= '2026-01-01 00:00'   -- e.g. '2026-09-01 00:00'
+    AND e->>'field' IN ('legalTypes', 'giin')
+)
+SELECT c.name, ed.field, ed.manual_value, ed.\"createdAt\", ed.updated_by_email,
+       c.legal_types AS current_legal_types, c.giin AS current_giin
+FROM edits ed
+JOIN company c ON c.id = ed.company_id
+WHERE ed.rn = 1
+ORDER BY c.name, ed.field;")
+
+(deftest test-json-array-elements-on-postgres
+  (if-not server
+    (println "Skipping the Postgres JSON array check: set PINE_TEST_POSTGRES_URL to run it.")
+    (with-database edits-fixture
+      (fn [db dbname]
+        (let [{:keys [host port user password]} db
+              id (connections/add-connection-pool {:dbtype "postgres" :host host :port port :dbname dbname
+                                                   :user user :password password})
+              ;; Pine shows a JSON value as text: `->` keeps a string's quotes.
+              text (fn [v] (let [parsed (some-> v str json/parse-string)]
+                             (if (string? parsed) parsed (some-> parsed json/generate-string))))]
+          (try
+            (doseq [references [(db/init-references id) nil]]
+              (testing (str (if references "With" "Without") " the schema")
+                (let [{:keys [expression error]} (t/sql->pine edits-query references)
+                      result (when expression (api/api-eval (s/split expression #"\n\s*\n") id))
+                      [header & rows] (:result result)
+                      at (fn [k] (.indexOf ^java.util.List (vec header) k))
+                      pine (map (fn [r] [(nth r (at :name)) (nth r (at :field)) (nth r (at :manual_value))
+                                         (str (nth r (at :createdAt))) (nth r (at :updated_by_email))])
+                                rows)
+                      from-sql (map (fn [r] [(:name r) (:field r) (text (:manual_value r)) (str (:createdat r)) (:updated_by_email r)])
+                                    (jdbc/query db [edits-query]))]
+                  (is (nil? error) error)
+                  (is (nil? (:error result)) (str (:error result)))
+                  (testing "The last edit of each field asked for, in the same order"
+                    (is (= [["Acme" "legalTypes" "[\"LLC\"]" "2026-03-01 00:00:00.0" "b@x"]
+                            ["Bolt" "giin" "G2" "2026-02-15 00:00:00.0" "c@x"]]
+                           from-sql))
+                    (is (= from-sql pine) expression)))))
+            (finally
+              (connections/remove-connection-pool id)
+              (db/clear-connection-if id))))))))
+
+;; A ->> key in WHERE, with a string, a JSON null, a missing key, a number
+;; and a non-JSON-looking string. And the elements of a text array, one of
+;; them a JSON null.
+(def ^:private json-where-fixture
+  ["CREATE TABLE tj (id int PRIMARY KEY, data jsonb, tags jsonb)"
+   "INSERT INTO tj VALUES
+      (1, '{\"plan\": \"pro\"}', '[\"a\", \"b\"]'),
+      (2, '{\"plan\": null}', '[null, \"b\"]'),
+      (3, '{}', '[]'),
+      (4, '{\"plan\": \"free\"}', '[\"c\"]'),
+      (5, '{\"plan\": 10}', NULL)"])
+
+(def ^:private json-where-queries
+  ["SELECT t.id FROM tj t WHERE t.data->>'plan' = 'pro'"
+   "SELECT t.id FROM tj t WHERE t.data->>'plan' != 'pro'"
+   "SELECT t.id FROM tj t WHERE NOT (t.data->>'plan' = 'pro')"
+   "SELECT t.id FROM tj t WHERE t.data->>'plan' != 'pro' OR t.id = 2"
+   "SELECT t.id FROM tj t WHERE t.data->>'plan' IN ('pro', 'free')"
+   "SELECT t.id FROM tj t WHERE t.data->>'plan' NOT IN ('pro')"
+   "SELECT t.id FROM tj t WHERE t.data->>'plan' LIKE 'f%'"
+   "SELECT t.id FROM tj t WHERE t.data->>'plan' IS NULL"
+   "SELECT t.id FROM tj t WHERE t.data->>'plan' IS NOT NULL"
+   "SELECT t.id, e FROM tj t CROSS JOIN LATERAL jsonb_array_elements_text(t.tags) e WHERE e != 'b'"
+   "SELECT t.id, e FROM tj t, jsonb_array_elements_text(t.tags) e WHERE e IS NULL"])
+
+(deftest test-json-text-in-where-on-postgres
+  (if-not server
+    (println "Skipping the Postgres JSON WHERE check: set PINE_TEST_POSTGRES_URL to run it.")
+    (with-database json-where-fixture
+      (fn [db dbname]
+        (let [{:keys [host port user password]} db
+              id (connections/add-connection-pool {:dbtype "postgres" :host host :port port :dbname dbname
+                                                   :user user :password password})]
+          (try
+            (doseq [sql json-where-queries
+                    references [(db/init-references id) nil]]
+              (testing (str (if references "With" "Without") " the schema: " sql)
+                (let [{:keys [expression error]} (t/sql->pine sql references)
+                      result (when expression (api/api-eval [expression] id))
+                      [header & rows] (:result result)
+                      at (fn [k] (.indexOf ^java.util.List (vec header) k))
+                      cols (cond-> [:id] (s/includes? sql " e ") (conj :e))]
+                  (is (nil? error) error)
+                  (is (nil? (:error result)) (str (:error result)))
+                  (is (= (frequencies (map (apply juxt cols) (jdbc/query db [sql])))
+                         (frequencies (map (fn [r] (mapv #(nth r (at %)) cols)) rows)))
+                      expression))))
+            (finally
+              (connections/remove-connection-pool id)
+              (db/clear-connection-if id))))))))

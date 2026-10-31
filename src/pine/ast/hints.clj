@@ -1,6 +1,7 @@
 (ns pine.ast.hints
   (:require [clojure.set :as set]
             [clojure.string :as str]
+            [pine.ast.path :as path]
             [pine.ast.table :as table]))
 
 (defn- filter-relations
@@ -762,6 +763,24 @@
                                                (remove listed names)))
            []))))
 
+(defn- generate-unnest-hints
+  "The columns `unnest:` can read: the JSON columns of the table the pipe is
+  on, or of the alias typed, `unnest: a.`. SQLite has no JSON type and keeps
+  JSON in text, so there its text columns are offered too (see
+  path/may-hold-json?). A table with none gets none, and the canvas leaves
+  `unnest` out of its menu.
+  While `unnest: da` is typed, the columns matching `da`. Keys inside a
+  column aren't in the schema, so a path gets none."
+  [state]
+  (let [{:keys [type value partial-alias]} (:operation state)
+        typed (if (= :elements type) value partial-alias)
+        a (or (:alias typed) (:current state))]
+    (if (or (seq (:path typed)) (not (contains? (:aliases state) a)))
+      []
+      (let [hints (filter #(path/may-hold-json? state a (:column %)) (generate-all-column-hints state a))]
+        (cond-> hints
+          (seq (:column typed)) (find-relevant-columns typed))))))
+
 (defn- in-json-path?
   "Whether the name being typed stops inside a JSON path, like `c.data.`.
   What follows is a key, and keys aren't in the schema, so there are no
@@ -783,9 +802,16 @@
      ;; :paths is handled separately: unlike every other op-type, which bucket
      ;; it lands in (:table vs :paths) depends on the search's runtime result,
      ;; not on op-type alone (see generate-path-hints).
-     (if (= op-type :paths)
+     (cond
+       (= op-type :paths)
        (let [{:keys [key hints]} (generate-path-hints state-for-hints)]
          (assoc-in state [:hints key] (or hints [])))
+
+       (#{:elements :unnest-partial} op-type)
+       ;; Its own key: picking one completes the column alone, not `col, `.
+       (assoc-in state [:hints :unnest] (if json-path? [] (sort-column-hints (generate-unnest-hints state-for-hints))))
+
+       :else
        (let [hints (case (if json-path? :json-path op-type)
                      :json-path []
                      :table (generate-table-hints state-for-hints)
