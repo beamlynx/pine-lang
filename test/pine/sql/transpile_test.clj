@@ -1300,8 +1300,12 @@ s | group: a with count as subjects, n => max as max_n | order: max_n desc | lim
     (refuses "select * from (select a.id, row_number() over (partition by e->'k') as rn from a, jsonb_array_elements(a.data) e) x where rn = 1"
              "PARTITION BY a -> key isn't converted"))
 
+  (testing "LEFT JOIN LATERAL keeps the rows with no elements, as :left does"
+    (converts-to "select a.id, e->>'k' as k from a left join lateral jsonb_array_elements(a.data) e on true"
+                 "a as a | unnest: a.data as e :left | select: id, e.k as k"))
+
   (testing "Refused"
-    (refuses "select a.id from a left join lateral jsonb_array_elements(a.data) e on true" "A LEFT JOIN LATERAL keeps the rows whose array is empty")
+    (refuses "select a.id from a right join lateral jsonb_array_elements(a.data) e on true" "A RIGHT JOIN LATERAL keeps elements without their row")
     (refuses "select a.id from a cross join lateral jsonb_array_elements(a.data->>'x') e" "->> gives text. Use ->")
     (refuses "select * from a cross join b" "A CROSS JOIN converts only for the elements of a JSON array")
     (refuses "select * from a cross join lateral generate_series(1, 3) g" "A CROSS JOIN converts only for the elements of a JSON array")))

@@ -127,3 +127,35 @@
          (let [before (ann-data)]
            (data-change db "doc | unnest: data.items as i | unnest: i.parts as p | from: d_0 | where: id = 1 | update! d_0.data.items[0].parts[1] = 'P2'")
            (is (= (assoc-in before ["items" 0 "parts" 1] "P2") (ann-data)))))))))
+
+(deftest test-unnest-left
+  (e/on-every-engine
+   fixture
+   (fn [db]
+     (testing "`:left` keeps a row with no elements, once, with the element empty"
+       (is (= #{["Ann" "a"] ["Ann" "b"] ["Bob" "b"] ["Bob" nil] ["Cy" nil] ["Di" nil]}
+              (set (e/rows db "doc | unnest: data.tags as t :left | s: name, t")))))
+
+     (testing "a value that is an object, not an array, keeps its row too"
+       (is (= #{["Ann" nil] ["Bob" nil] ["Cy" nil] ["Di" nil]}
+              (set (e/rows db "doc | unnest: data as d :left | s: name, d")))))
+
+     (testing "so one unnest: of a value that isn't an array no longer empties the result"
+       (is (= #{} (set (e/rows db "doc | unnest: data.tags as t | unnest: data as d | s: name, t"))) "without :left")
+       (is (= #{["Ann" "a"] ["Ann" "b"] ["Bob" "b"] ["Bob" nil]}
+              (set (e/rows db "doc | unnest: data.tags as t | unnest: data as d :left | s: name, t")))))
+
+     (testing "elements of elements, each :left on its own"
+       (is (= #{["Ann" "x" "p1"] ["Ann" "x" "p2"] ["Ann" "y" nil] ["Bob" "x" "p3"]}
+              (set (e/rows db "doc | unnest: data.items as i | unnest: i.parts as p :left | s: name, i.sku, p")))))
+
+     (testing "a row without elements has no position, so the grid can't edit an element there"
+       (is (= #{["a" 0] ["b" 1] ["b" 0] [nil 1] [nil nil]}
+              (set (map (fn [[t i]] [t (some-> i long)])
+                        (hidden db "doc | unnest: data.tags as t :left | s: t" "__t__index"))))))
+
+     (testing "update! after :left changes the rows the condition selects, those without elements too"
+       (let [before (e/snapshot db tables)]
+         (e/write! db "doc | unnest: data.tags as t :left | where: t is null | update! name = 'none'")
+         (is (= {"doc" {:changed {[2] {:name ["Bob" "none"]} [3] {:name ["Cy" "none"]} [4] {:name ["Di" "none"]}}}}
+                (e/changes before (e/snapshot db tables)))))))))

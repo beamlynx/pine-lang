@@ -205,9 +205,17 @@ WHERE jsonb_extract_path("e"."value"::jsonb, ?::text) = ?::jsonb
 -- params: 'changes', 'changes', 'field', '"giin"'
 ```
 
-- **A row whose value isn't an array has no elements, so it drops out.** That includes a missing key and NULL. An
-  empty array drops out too. Postgres's own `jsonb_array_elements` stops the whole query with an error on a value that
-  isn't an array; Pine skips that row instead.
+- **A row whose value isn't an array has no elements, so it drops out.** That includes a missing key, NULL and an
+  object. An empty array drops out too. Postgres's own `jsonb_array_elements` stops the whole query with an error on a
+  value that isn't an array; Pine skips that row instead.
+- **`:left` keeps those rows.** `| unnest: options.officers as officer :left` keeps a row with no officers once, with
+  `officer` empty. In the SQL it is a `LEFT JOIN ... ON TRUE` instead of a `CROSS JOIN`. Use it when a missing array
+  shouldn't hide the row. One `unnest:` of a value that is never an array, such as an object, otherwise empties the
+  whole result.
+- **Unnests of unrelated arrays give every combination.** `| unnest: officers as o | unnest: companies as c` gives each
+  officer next to each company of the same row: 3 officers and 4 companies are 12 rows. The JSON doesn't pair them, so
+  Pine doesn't either. To see both lists, unnest one and select the other as it is: `| unnest: officers as o | s: o.id,
+  companies`.
 - **MySQL** reads the array with `JSON_TABLE(..., '$[*]' COLUMNS (value JSON PATH '$'))`.
 - **SQLite** reads it with `json_each`. It gives a string or number element as its SQL value, so Pine writes each
   element back as JSON text before reading a key. A key of an element that is a string is NULL, not an error.

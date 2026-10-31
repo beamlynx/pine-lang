@@ -5,7 +5,8 @@
   and `e` the element itself (see pine.ast.path). In the SQL the elements are
   a table whose one column, `value`, holds the element as JSON. A row whose
   value there isn't an array, or is missing, has no elements, so it drops
-  out, as in an inner join. See docs/json-paths.md."
+  out, as in an inner join. With `:left` it stays, with `e` empty, as in a
+  left join. See docs/json-paths.md."
   (:require [pine.ast.path :as path]
             [pine.ast.table :as table]))
 
@@ -26,7 +27,8 @@
         ;; :on is the table the pipe was on. Without select:, the result
         ;; shows `e` in place of that table's columns (see pine.eval).
         entry {:alias a :table nil :schema nil
-               :elements {:alias alias :column column :path (vec path) :on (:current state)}
+               :elements (cond-> {:alias alias :column column :path (vec path) :on (:current state)}
+                           (:left value) (assoc :left true))
                :index (:index state)}]
     (-> state
         (update :tables conj entry)

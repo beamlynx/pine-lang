@@ -407,26 +407,30 @@
   element of the array, with the element as JSON in the column `value`. A
   value that isn't an array has no elements, so its row drops out, where
   Postgres's own jsonb_array_elements would stop the query with an error.
-  With `index?`, also each element's position, `pine_index`, from 1."
-  [alias {source :alias :keys [column path]} index?]
+  With `index?`, also each element's position, `pine_index`, from 1. With
+  `:left`, the row stays once, with NULL for the element: a LEFT JOIN ON
+  TRUE."
+  [alias {source :alias :keys [column path left]} index?]
   (let [col (q source column)
-        e (q alias)]
+        e (q alias)
+        join (if left "LEFT JOIN " "CROSS JOIN ")
+        on (if left " ON TRUE" "")]
     (case *dialect*
       :mysql
       (let [[h ps] (json-extract :json col path)]
-        [(str "CROSS JOIN JSON_TABLE(CASE WHEN JSON_TYPE(" h ") = 'ARRAY' THEN " h " END, '$[*]' COLUMNS ("
-              (q "value") " JSON PATH '$'" (when index? (str ", " (q "pine_index") " FOR ORDINALITY")) ")) AS " e)
+        [(str join "JSON_TABLE(CASE WHEN JSON_TYPE(" h ") = 'ARRAY' THEN " h " END, '$[*]' COLUMNS ("
+              (q "value") " JSON PATH '$'" (when index? (str ", " (q "pine_index") " FOR ORDINALITY")) ")) AS " e on)
          (concat ps ps)])
 
       ;; json_extract gives an array as its JSON text.
       :sqlite
       (let [[h ps] (if (empty? path) [col []] (json-extract :json col path))]
-        [(str "CROSS JOIN json_each(CASE WHEN json_type(" col ", ?) = 'array' THEN " h " END) AS " e)
+        [(str join "json_each(CASE WHEN json_type(" col ", ?) = 'array' THEN " h " END) AS " e on)
          (concat (json-path-params path) ps)])
 
       (let [[h ps] (json-extract :json col path)]
-        [(str "CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(" h ") = 'array' THEN " h " END)"
-              (when index? " WITH ORDINALITY") " AS " e "(" (q "value") (when index? (str ", " (q "pine_index"))) ")")
+        [(str join "LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(" h ") = 'array' THEN " h " END)"
+              (when index? " WITH ORDINALITY") " AS " e "(" (q "value") (when index? (str ", " (q "pine_index"))) ")" on)
          (concat ps ps)]))))
 
 (defn- build-join-clause
