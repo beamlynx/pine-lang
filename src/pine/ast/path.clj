@@ -14,7 +14,8 @@
   docs/json-paths.md."
   (:require [clojure.string :as s]
             [pine.ast.table :as table]
-            [pine.data-types :as dt]))
+            [pine.data-types :as dt]
+            [pine.db.connections :as connections]))
 
 (defn- in-scope?
   "An alias of a table in the expression, or a named result."
@@ -37,6 +38,16 @@
   "Whether the schema says `alias.column` is JSON."
   [state alias column]
   (json-type? (column-type state alias column)))
+
+(defn may-hold-json?
+  "Whether `alias.column` can hold JSON. A JSON column can. On SQLite, which
+  has no JSON type and usually keeps JSON in text, so can a text column, one
+  of a type SQLite reads as text, and one with no declared type."
+  [state alias column]
+  (let [db-type (column-type state alias column)]
+    (or (json-type? db-type)
+        (and (= :sqlite (connections/get-dialect (:connection-id state)))
+             (or (nil? db-type) (contains? #{"text" "string" "json"} (s/lower-case db-type)))))))
 
 (defn- table-label [state alias]
   (or (get-in state [:aliases alias :table]) alias))
@@ -68,7 +79,7 @@
   elements. An element's own value, `unnest: e`, is JSON."
   [state {:keys [alias column path]}]
   (let [db-type (column-type state alias column)]
-    (when (and db-type (not (json-type? db-type)))
+    (when (and db-type (not (may-hold-json? state alias column)))
       (throw (ex-info (str "`" column "` is not a JSON column, so `unnest: " (path-text column path) "` has no elements.")
                       {})))))
 

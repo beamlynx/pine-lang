@@ -229,8 +229,10 @@ WHERE jsonb_extract_path("e"."value"::jsonb, ?::text) = ?::jsonb
   the elements `WITH ORDINALITY`, MySQL with `FOR ORDINALITY` in `JSON_TABLE`, and SQLite reads `json_each`'s `key`.
   The array can change between reading and writing, and then the position names another element. No positions
   are added under a masked column, or after `group:`.
-- **Hints.** After `unnest: `, the table's JSON columns are offered. A table without one gets none. SQLite has no
-  JSON type, so there every column is offered. Keys inside a column aren't in the schema, so they aren't offered.
+- **Hints.** After `unnest: `, the table's JSON columns are offered. A table without one gets none. Keys inside a
+  column aren't in the schema, so they aren't offered.
+- **SQLite** has no JSON type and usually keeps JSON in text. There a text column, or one with no declared type, can
+  be unnested too, and is offered.
 - **Masking policy.** An element and its keys are part of their column. When the column is masked, so are they, and
   a key can't be a `group:` key.
 

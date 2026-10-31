@@ -30,6 +30,8 @@
   (let [json (if (= dialect :postgres) "jsonb" "JSON")]
     [(str "CREATE TABLE company (id INTEGER PRIMARY KEY, name VARCHAR(50))")
      (str "CREATE TABLE doc (id INTEGER PRIMARY KEY, name VARCHAR(50), data " json ")")
+     "CREATE TABLE note (id INTEGER PRIMARY KEY, body TEXT, size INTEGER)"
+     "INSERT INTO note VALUES (1, '[\"x\", \"y\"]', 2)"
      "INSERT INTO company VALUES (1, 'Acme'), (2, 'Globex'), (3, 'Initech')"
      (str "INSERT INTO doc VALUES "
           "(1, 'Ann', '{\"tags\": [\"a\", \"b\"], \"items\": [{\"sku\": \"x\", \"qty\": 1, \"parts\": [\"p1\", \"p2\"]}, {\"sku\": \"y\", \"qty\": 2, \"parts\": []}], \"companyIds\": [1, 3], \"companies\": [{\"id\": 2}]}'), "
@@ -116,7 +118,7 @@
 
 (deftest test-unnest
   (each-database
-   (fn [_ id]
+   (fn [dialect id]
      (testing "One row for each element, next to the row it came from"
        (is (= #{["Ann" "a"] ["Ann" "b"] ["Bob" "b"]}
               (visible id "doc | unnest: data.tags as t | s: name, t"))))
@@ -136,6 +138,12 @@
      (testing "Grouped by an element"
        (is (= #{["a" "1"] ["b" "2"]}
               (visible id "doc | unnest: data.tags as t | group: t with count"))))
+
+     (testing "On SQLite, which keeps JSON in text, a text column can be unnested, and is suggested"
+       (if (= dialect :sqlite)
+         (do (is (= #{["x"] ["y"]} (visible id "note | unnest: body as b | s: b")))
+             (is (= ["body"] (map :column (get-in (api/api-build "note | unnest: " nil id) [:ast :hints :unnest])))))
+         (is (re-find #"not a JSON column" (str (:error (api/api-eval "note | unnest: body as b" id)))))))
 
      (testing "The pipe stays on the table: a bare name is its column"
        (is (= #{["2"]}
