@@ -181,7 +181,7 @@
 ;; Heuristic Relation Detection
 ;; ---------------------------------------------------------------------------
 
-(defn- extract-table-from-column
+(defn extract-table-from-column
   "Returns potential table name from column, or nil.
    'tenant_id' -> 'tenant', 'tenantId' -> 'tenant', 'foo' -> nil"
   [col-name]
@@ -197,7 +197,7 @@
 
       :else nil)))
 
-(defn- normalize-plural
+(defn normalize-plural
   "Returns set of normalized forms: #{singular plural}
    'tenant' -> #{'tenant' 'tenants'}
    'companies' -> #{'company' 'companies'}"

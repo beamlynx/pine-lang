@@ -344,13 +344,20 @@
   empty) never gets here: build-join-clause rejects it first."
   [{:keys [from to columns cast]}]
   (when (seq columns)
-    (let [conditions (map (fn [{from-column :from to-column :to :keys [from-cast to-cast from-path to-path]}]
+    (let [conditions (map (fn [{from-column :from to-column :to :keys [from-cast to-cast from-path to-path from-value-path]}]
                             ;; A cast written on one side of an explicit
                             ;; pair, `.resourceableId = .id ::text`, is
                             ;; that side's alone.
                             (let [from-ref (join-column-ref (or from-cast cast) from from-column)
                                   to-ref (join-column-ref (or to-cast cast) to to-column)]
                               (cond
+                                ;; A join from a name given with `as` to a
+                                ;; key inside JSON, or an element: the
+                                ;; value's text. Postgres compares text with
+                                ;; text only, so `id` is cast there.
+                                from-value-path
+                                (let [[x ps] (json-extract :text (q from from-column) from-value-path)]
+                                  [(str x " = " (if (= *dialect* :postgres) (render-cast to-ref "text") to-ref)) ps])
                                 from-path (json-element-join (q from from-column) from-path to-ref)
                                 to-path (json-element-join (q to to-column) to-path from-ref)
                                 :else [(str from-ref " = " to-ref) []])))
