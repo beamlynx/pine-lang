@@ -1,6 +1,7 @@
 (ns pine.ast.table
   (:require
-   [clojure.string :as s]))
+   [clojure.string :as s]
+   [pine.db.references :as refs]))
 
 (defn added-column?
   "A hidden column Pine added for the results grid, not one the user
@@ -272,6 +273,63 @@
         :columns [{:from id1 :to id2}]
         :resolution "synthetic" :cast nil}))))
 
+;; ---------------------------------------------------------------------------
+;; Joins from names given with `as`
+;; ---------------------------------------------------------------------------
+
+(defn named-values
+  "The values given a name with `as` before this step, that a join from
+  `context` can start from, newest first: a column of `select:`, `id as
+  company_id`, and the elements of `unnest: data as company_id`. A column
+  without `as`, or a computed value, is left out: only a name chosen in the
+  query says what the values are.
+
+  Each is {:name :alias :column :path :element?}. :path is nil for a plain
+  column, and the keys inside the JSON value otherwise ([] for an element
+  itself)."
+  [{:keys [columns aliases]} context]
+  (let [on-context? (fn [a] (or (= a context) (= context (get-in aliases [a :elements :on]))))]
+    (->> (concat
+          (for [{:keys [column-alias alias column path computed col-fn operation-index] :as c} columns
+                :when (and column-alias column (not computed) (not col-fn)
+                           (not (added-column? c)) (on-context? alias))]
+            {:name column-alias :alias alias :column column :path path :index operation-index})
+          (for [{:keys [alias elements index]} (vals aliases)
+                :when (and elements (on-context? alias))]
+            {:name alias :alias alias :column "value" :path [] :index index :element? true}))
+         (sort-by :index >))))
+
+(defn named-value-target
+  "How `named` leads to the table `table`, or nil. `company_id` and
+  `companyId` lead to `company` or `companies` by its `id`, the same rule the
+  index uses for column names. An element named after the table itself,
+  `unnest: companies as company`, leads to it by the element's own `id`."
+  [{:keys [name path element?] :as named} table]
+  (let [t (s/lower-case table)]
+    (cond
+      (some-> (refs/extract-table-from-column name) refs/normalize-plural (contains? t))
+      named
+
+      (and element? (contains? (refs/normalize-plural name) t))
+      (assoc named :path (conj (vec path) "id")))))
+
+(defn- named-value-join
+  "The join from a value named with `as` to the table `y`, or nil. The newest
+  name that leads to `y` wins. A join on a key inside JSON compares the key's
+  text with `id`. A join on a plain column is cast to text, as a heuristic
+  join is, when the two types differ."
+  [{:keys [references aliases] :as state} context y]
+  (when (and (not (:ast y)) (has-id-column? references y))
+    (when-let [{:keys [alias column path]} (some #(named-value-target % (:table y)) (named-values state context))]
+      (let [{s1 :schema t1 :table} (get aliases alias)]
+        {:from alias :to (:alias y) :parent "from"
+         :columns [(cond-> {:from column :to "id"}
+                     path (assoc :from-value-path path))]
+         :resolution "alias"
+         :cast (when (and (nil? path)
+                          (mismatched-heuristic-types? "heuristic" s1 t1 column (:schema y) (:table y) "id" references))
+                 "text")}))))
+
 ;; TODO: use spec for the state value i.e. first arg
 (defn- join-tables [{:keys [references aliases]} x y columns parent]
   (let [a1 (x :alias)
@@ -329,11 +387,17 @@
         (update state :joins conj (assoc join-result :type join)))
 
       :else (let [x (-> state :aliases (get from-alias))
+                  ;; A name given with `as` is the query saying what its
+                  ;; values are, so it comes before the index. Only when no
+                  ;; join column is named: `.col` picks a relation itself.
+                  ;;
                   ;; Nothing connects these two tables. Still a join - the
                   ;; user wrote one - but an unresolved one, and it says so
                   ;; with a nil :resolution rather than by being absent. One
                   ;; spelling for "unresolved", so a client checks one thing.
-                  join-result (or (join-tables state x current join-columns parent)
+                  join-result (or (when (and (empty? join-columns) (not parent))
+                                    (named-value-join state from-alias current))
+                                  (join-tables state x current join-columns parent)
                                   {:from (x :alias) :to (current :alias) :parent "from"
                                    :columns [] :resolution nil :cast nil})]
               (update state :joins conj (assoc join-result :type join))))))

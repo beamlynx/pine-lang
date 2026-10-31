@@ -76,8 +76,10 @@
   ;; Skip it entirely for a synthetic join: there's exactly one synthetic
   ;; id=id entry, never ambiguous, so no name is needed - keeps
   ;; `var_x | var_y` as the canonical form instead of `var_x | var_y .id`.
+  ;; A join from a name given with `as` needs none either: the bare table
+  ;; finds the name, and a `.column` would pick a relation of the index.
   (let [pairs (or columns [{:column column :related-column related-column}])
-        hint-columns (when-not (= resolution "synthetic")
+        hint-columns (when-not (#{"synthetic" "alias"} resolution)
                        (keep (if parent :related-column :column) pairs))]
     (str (if schema (str schema ".") "") table
          (if alias (str " as " alias) "")
@@ -233,8 +235,18 @@
                                         :parent false
                                         :resolution "synthetic"}]))]
              (concat real-hints variable-hints same-source-hints self-source-hint)))
-         sources)]
-    (->> hints
+         sources)
+        ;; Tables a name given with `as` leads to, `s: resourceId as
+        ;; company_id` to `company`. First, since a bare table joins on them.
+        named (table/named-values state from-alias)
+        named-hints (when (seq named)
+                      (for [[t {:keys [columns]}] (get-in state [:references :table])
+                            :when (and (not= t from-name) (some #(= "id" (:column %)) columns))
+                            :let [{:keys [name]} (some #(table/named-value-target % t) named)]
+                            :when name]
+                        {:schema nil :table t :column "id" :related-column name
+                         :parent false :resolution "alias"}))]
+    (->> (concat named-hints hints)
          (filter #(str/includes? (str/lower-case (:table %)) (str/lower-case (or token ""))))
          (map (fn [h]
                 (if (contains? (known-variables state) (:table h))
