@@ -256,6 +256,46 @@
     (matcher-matches? state col match true)
     true))
 
+(defn- element-source
+  "[alias column] of the real column an element of `unnest: a.data as e` comes
+  from, through elements of elements; any other column unchanged. The
+  policy decides on that column: an element, and every key of it, is
+  part of its value."
+  [aliases alias column]
+  (if-let [{source :alias c :column} (get-in aliases [alias :elements])]
+    (recur aliases source c)
+    [alias column]))
+
+(declare decide)
+
+(defn- decide-computed
+  "A computed value is shown only when every column it reads is."
+  [state rules col]
+  {:hidden (boolean (some #(:hidden (decide state rules (select-keys % [:alias :column :source])))
+                          (computed/columns (:computed col))))})
+
+(defn- decide-column [state rules {:keys [alias source] :as col}]
+  (let [catalog?  (catalog-column? state alias source)
+        resolved  (when-not catalog? (resolve-column state alias (:column col) source))
+        ;; Decide on the index's spelling of the column and its table.
+        col       (if (:column resolved)
+                    (assoc col :column (:column resolved) :source (:table-info resolved))
+                    col)
+        {:keys [auto-id column]} col
+        hide      (when-not catalog?
+                    (some #(when (and (hide-rule? %) (hide-matches? state col %)) %) rules))]
+    (cond
+      hide                                 {:hidden true :by hide}
+      catalog?                             {:hidden false}
+      ;; A table the index has, without this column: nothing to decide
+      ;; on, so it stays hidden. check-references refuses it outright.
+      (and resolved (nil? (:column resolved))) {:hidden true}
+      (and auto-id (= "id" column))        {:hidden false}
+      :else
+      (if-let [show (some #(when (and (not (hide-rule? %)) (matcher-matches? state col % false)) %) rules)]
+        {:hidden false :by show}
+        {:hidden true}))))
+
 (defn decide
   "How the policy treats one SELECT column descriptor: {:hidden bool}, plus
   :by, the rule that decided it, when one did. Only meaningful when `rules`
@@ -279,31 +319,19 @@
 
   A computed value (or an aggregate) is shown only when every column it
   reads is. Otherwise a condition on a hidden column would leak through its
-  true/false result. One that reads no column, like now(), is shown."
-  [state rules {:keys [alias source] :as col}]
-  (if-let [node (:computed col)]
-    {:hidden (boolean (some #(:hidden (decide state rules (select-keys % [:alias :column :source])))
-                            (computed/columns node)))}
-    (let [catalog?  (catalog-column? state alias source)
-          resolved  (when-not catalog? (resolve-column state alias (:column col) source))
-          ;; Decide on the index's spelling of the column and its table.
-          col       (if (:column resolved)
-                      (assoc col :column (:column resolved) :source (:table-info resolved))
-                      col)
-          {:keys [auto-id column]} col
-          hide      (when-not catalog?
-                      (some #(when (and (hide-rule? %) (hide-matches? state col %)) %) rules))]
-      (cond
-        hide                                 {:hidden true :by hide}
-        catalog?                             {:hidden false}
-        ;; A table the index has, without this column: nothing to decide
-        ;; on, so it stays hidden. check-references refuses it outright.
-        (and resolved (nil? (:column resolved))) {:hidden true}
-        (and auto-id (= "id" column))        {:hidden false}
-        :else
-        (if-let [show (some #(when (and (not (hide-rule? %)) (matcher-matches? state col % false)) %) rules)]
-          {:hidden false :by show}
-          {:hidden true})))))
+  true/false result. One that reads no column, like now(), is shown.
+
+  An element of `unnest: a.data as e`, or a key of one, is decided as the
+  column it comes from, `a.data`."
+  [state rules {:keys [alias] :as col}]
+  (cond
+    (:computed col) (decide-computed state rules col)
+
+    (get-in state [:aliases alias :elements])
+    (let [[a c] (element-source (:aliases state) alias (:column col))]
+      (decide state rules {:alias a :column c}))
+
+    :else (decide-column state rules col)))
 
 (defn sensitive-column?
   "Whether a SELECT column descriptor should be redacted under `rules`. See
@@ -547,14 +575,18 @@
                          (get aliases alias)
                          (not (get-in aliases [alias :ast]))
                          (sensitive-column? state rules (reference state alias column))))]
-      (doseq [[alias column source] (concat (select-columns columns) named
-                                            (map (fn [[a c]] [a c nil]) joined))
+      (doseq [[alias column source] (map (fn [[a c :as entry]]
+                                           (if (get-in aliases [a :elements])
+                                             (conj (element-source aliases a c) nil)
+                                             entry))
+                                         (concat (select-columns columns) named
+                                                 (map (fn [[a c]] [a c nil]) joined)))
               :when (and (not (s/blank? column)) (not (get-in aliases [alias :ast])))]
         (check-known! state alias column source))
-      (doseq [[alias column :as side] (mapcat entry-columns group)
+      (doseq [[alias column :as side] (map (fn [[a c]] (element-source aliases a c)) (mapcat entry-columns group))
               :when (hidden? side)]
         (refuse-hidden! state rules alias column "a `group:` key: the key is a column of the result."))
-      (doseq [[alias column :as side] (uuid-cast-columns state current)
+      (doseq [[alias column :as side] (map (fn [[a c]] (element-source aliases a c)) (uuid-cast-columns state current))
               :when (hidden? side)]
         (refuse-hidden! state rules alias column
                         "cast with `::uuid`: the database's error would print a value that isn't a uuid.")))))

@@ -223,13 +223,13 @@
   [var-ast]
   (-> (select-keys var-ast [:tables :selected-tables :joins :columns :where :order :group])
       describe-entries
-      (update :tables #(mapv prune-table %))
-      (update :selected-tables #(mapv prune-table %))))
+      (update :tables #(mapv prune-table (remove :elements %)))
+      (update :selected-tables #(mapv prune-table (remove :elements %)))))
 
 (defn- prune-ast
   "Prune a generated state down to the :ast value returned to the frontend."
   [state]
-  (-> (select-keys state [:hints :selected-tables :joins :context :current :operation :columns :order :where :group :prettified :ranges :assign :checkpoints])
+  (-> (select-keys state [:hints :selected-tables :unnests :joins :context :current :operation :columns :order :where :group :prettified :ranges :assign :checkpoints])
       describe-entries
       (update :selected-tables #(mapv prune-table %))
       (assoc :named-results

@@ -127,6 +127,19 @@
                                    [:string & characters] (:value (parse-characters characters)))
     :json-index (Long/parseLong (second x))))
 
+(defmethod -normalize-op :UNNEST [[_ [_ head] & more]]
+  ;; `unnest: a.data.changes as e`: written like a column, so `a` may be an
+  ;; alias or a column, and pine.ast.path decides once the aliases are known.
+  (let [as (some #(when (= :alias (first %)) (-> % second second)) more)
+        steps (mapv json-step (remove #(= :alias (first %)) more))
+        [first-step] more
+        named-key? (and (= :json-key (first first-step)) (= :symbol (first (second first-step))))]
+    {:type :elements
+     :value (cond-> (if named-key?
+                      {:alias head :column (first steps) :path (vec (rest steps))}
+                      {:column head :path steps})
+              as (assoc :as as))}))
+
 (defn- column-info
   "{:alias :column} for a [:column ...] node, with :path when it goes into a
   JSON value, and :column-function for a date bucket, `created_at => month`.
@@ -172,6 +185,10 @@
 
     :else
     {:alias (-> children first second second) :column ""}))
+
+(defmethod -normalize-op :UNNEST-PARTIAL [[_ partial-alias]]
+  (cond-> {:type :unnest-partial :value {}}
+    partial-alias (assoc :partial-alias (parse-partial-alias partial-alias))))
 
 (defn normalize-select [payload type]
   (match payload

@@ -14,7 +14,8 @@
   docs/json-paths.md."
   (:require [clojure.string :as s]
             [pine.ast.table :as table]
-            [pine.data-types :as dt]))
+            [pine.data-types :as dt]
+            [pine.db.connections :as connections]))
 
 (defn- in-scope?
   "An alias of a table in the expression, or a named result."
@@ -32,6 +33,21 @@
 
 (defn- json-type? [db-type]
   (contains? #{"json" "jsonb"} (some-> db-type s/lower-case)))
+
+(defn json-column?
+  "Whether the schema says `alias.column` is JSON."
+  [state alias column]
+  (json-type? (column-type state alias column)))
+
+(defn may-hold-json?
+  "Whether `alias.column` can hold JSON. A JSON column can. On SQLite, which
+  has no JSON type and usually keeps JSON in text, so can a text column, one
+  of a type SQLite reads as text, and one with no declared type."
+  [state alias column]
+  (let [db-type (column-type state alias column)]
+    (or (json-type? db-type)
+        (and (= :sqlite (connections/get-dialect (:connection-id state)))
+             (or (nil? db-type) (contains? #{"text" "string" "json"} (s/lower-case db-type)))))))
 
 (defn- table-label [state alias]
   (or (get-in state [:aliases alias :table]) alias))
@@ -57,6 +73,15 @@
       (when (and db-type (not (json-type? db-type)))
         (throw (ex-info (str "`" column "` is not a JSON column, so `" (path-text column path) "` has no keys.")
                         {}))))))
+
+(defn check-array-column
+  "Refuses `unnest: col` when the schema says `col` isn't JSON: it has no
+  elements. An element's own value, `unnest: e`, is JSON."
+  [state {:keys [alias column path]}]
+  (let [db-type (column-type state alias column)]
+    (when (and db-type (not (may-hold-json? state alias column)))
+      (throw (ex-info (str "`" column "` is not a JSON column, so `unnest: " (path-text column path) "` has no elements.")
+                      {})))))
 
 (defn- join-side-error
   "Why one side of a join pair can't read the JSON path it names, or nil.
@@ -97,6 +122,33 @@
                              to-path (join-side-error state pair [to (:to pair) to-path (:to-cast pair)] from))]
           (throw (ex-info message {}))))))
   state)
+
+(defn element-alias?
+  "Whether `a` is the alias of an elements step, `unnest: a.data as e` (see
+  pine.ast.elements)."
+  [state a]
+  (boolean (and a (get-in state [:aliases a :elements]))))
+
+(defn- element-column
+  "A name that reads an element of an elements step, as a path into its
+  `value` column, named as written unless `as` names it:
+
+  - `e.status.code`: the key `status.code` of each element of `e`;
+  - `e`, `e[0]`: the element itself, or a path into it.
+
+  A bare name stays a column of the table the pipe is on. Any other name
+  unchanged."
+  [state {:keys [alias column path] :as col}]
+  (cond
+    (element-alias? state alias)
+    (cond-> (assoc col :column "value" :path (into [column] path))
+      (not (:column-alias col)) (assoc :column-alias (path-text column path)))
+
+    (and (nil? alias) (element-alias? state column))
+    (cond-> (assoc col :alias column :column "value" :path (vec path))
+      (not (:column-alias col)) (assoc :column-alias (path-text column path)))
+
+    :else col))
 
 (defn- named-result-column
   "A named result names a selected path after the path: after
@@ -239,6 +291,8 @@
     (unseal state col)
     col))
 
+(declare resolve-column*)
+
 (defn resolve-column
   "Resolve the alias of a column descriptor ({:alias :column :path}) and,
   when the name goes into a JSON value, name the column after its path with
@@ -250,7 +304,17 @@
   named result the pipe is on is refused.
 
   An alias that hides a JSON column of the current table is marked
-  :alias-hides-column, so the canvas can show which one was read."
+  :alias-hides-column, so the canvas can show which one was read.
+
+  A name that reads an element of `unnest: a.data as e` is a path into the
+  element (see element-column)."
+  [state col]
+  (if (or (element-alias? state (:alias col))
+          (and (nil? (:alias col)) (element-alias? state (:column col))))
+    (unseal-column state (element-column state col))
+    (resolve-column* state col)))
+
+(defn- resolve-column*
   [state col]
   (let [{:keys [alias column path] :as col} (unseal-column state col)
         current (:current state)
