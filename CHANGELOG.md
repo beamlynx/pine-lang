@@ -5,6 +5,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ## [Unreleased]
 ### Added
 - **One row for each element of a JSON array:** `activity | unnest: data.changes as e | where: e.field = 'giin'`. Each element becomes a row next to the row it came from. Read its keys as `e.field`, or the element itself as `e`. The result shows `e` until a `select:` after it says which columns to show. A row whose value isn't an array is skipped. After `unnest: `, the table's JSON columns are suggested. This works on Postgres, MySQL and SQLite. See [json-paths.md](docs/json-paths.md#arrays-as-rows).
+- **Edit a value inside an unnested element in the results.** Each element now comes back with its position in the array, hidden. The results grid uses it to write the edit into the right element: `data.items[1].qty = 7`. See [json-paths.md](docs/json-paths.md#arrays-as-rows).
 - **SQL to Pine converts `CROSS JOIN LATERAL jsonb_array_elements(...)`** to this step, with its keys in `SELECT`, `WHERE`, `PARTITION BY` and `ORDER BY`.
 - **SQL to Pine converts a `->>` key in `WHERE`** when the test means the same in Pine: `=` and `!=` with a string, `IN`, `LIKE` and `IS NULL`. A string such as `'10'` or `'true'`, which is also how a JSON number or boolean reads as text, is still refused. So is `IS NULL` on MySQL, where `->>` reads a JSON null as the text `'null'`.
 

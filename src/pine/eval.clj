@@ -228,8 +228,11 @@
        (concat params params)]
 
       ;; json_type, not json_extract: it tells true and false from 1 and 0.
+      ;; It reads the path itself, so its parameter is the path even when
+      ;; the path is empty, an element itself, where json-extract has none.
       :sqlite
-      (let [t (str "json_type(" col-ref ", ?)")]
+      (let [t (str "json_type(" col-ref ", ?)")
+            params (json-path-params path)]
         [(str "CASE " t " WHEN 'true' THEN 'boolean' WHEN 'false' THEN 'boolean' WHEN 'integer' THEN 'number'"
               " WHEN 'real' THEN 'number' WHEN 'text' THEN 'string' ELSE " t " END")
          (concat params params)])
