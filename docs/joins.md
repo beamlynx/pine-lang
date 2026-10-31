@@ -30,6 +30,8 @@ table_a | table_b :left
   pairs, comma-separated, for a join on more than one column.
 - **`.col = .json_col[*].key`** — join on the values inside a JSON array. See
   [Joining on values in a JSON array](#joining-on-values-in-a-json-array).
+- **A name given with `as`** — `s: resourceId as company_id | company` joins `company` on that column. See
+  [Joining on a name you give](#joining-on-a-name-you-give).
 - **`:parent`** — force the join to treat `table_b` as the parent (i.e. the table `table_a` refers to,
   not the table that refers to `table_a`).
 - **`:child`** — inverse of `:parent`; explicit but rarely needed since it is the default.
@@ -131,6 +133,49 @@ JOIN "officer" AS "o_1" ON EXISTS (SELECT 1 FROM json_each("dp"."officers", ?) A
 - **Masking policy.** A join on a masked JSON column runs. The column itself still comes back masked. See
   [what the policy protects](access-policy.md#what-it-protects-output-not-inference).
 
+### Joining on a name you give
+
+```
+activity_resource | where: resourceableType = 'Company' | s: id, resourceableId as company_id | company
+```
+
+A name you give a column with `as` tells Pine what its values are. When the name follows the naming rule
+for joins, a bare table joins on it. Here `company_id` leads to `company`, so the join is
+`company.id = activity_resource.resourceableId`. No foreign key or column name could say this, because
+`resourceableId` holds the ids of several tables.
+
+The rule is the one Pine uses for column names (see [How it works](#how-it-works)): `company_id` and
+`companyId` lead to a table called `company` or `companies` that has an `id` column.
+
+The name can be on:
+
+- **A column of `select:`**: `s: resourceableId as company_id`.
+- **A key inside a JSON column**: `s: data.ownerId as employee_id`. The key's text is compared with `id`.
+- **The elements of `unnest:`**: `unnest: companyIds as company_id | company` joins each element to the
+  company it names. Elements named after the table itself join on their own `id` key:
+  `unnest: companies as company | company` joins `company.id` to each element's `id`.
+- **A key of an element**: `unnest: data as e | s: e.companyId as company_id | company`.
+
+```sql
+-- s: resourceableId as company_id | company (text compared with uuid, so both are cast)
+JOIN "company" AS "c_1" ON "ar_0"."resourceableId"::text = "c_1"."id"::text
+-- unnest: companyIds as company_id | company
+JOIN "company" AS "c_2" ON ("company_id"."value"::jsonb #>> '{}') = "c_2"."id"::text
+```
+
+- **Only names you give count.** A column without `as`, or a computed value, doesn't. The column's own
+  name is already in the index.
+- **The name comes before the index.** A bare table joins on the newest name that leads to it, even when a
+  foreign key also connects the two tables. Name a join column, `company .company_id`, to use the index
+  instead.
+- **The name must be on the table the join starts from**, or on the elements of an `unnest:` on it.
+- **Pine can't check what the values are.** In the example, only the `where:` makes sure the ids are
+  company ids. Without it, ids of other resources are matched too.
+- **Types that don't compare are cast to text,** as for a join guessed from column names. A key inside
+  JSON is always compared as text.
+- **Hints.** After the name, the table it leads to is suggested as a bare table, with the resolution
+  `"alias"`.
+
 ## How it works
 
 1. At startup, Pine queries the database for all foreign keys and scans all column names. It builds a
@@ -221,7 +266,11 @@ Every table hint (`ast.hints.table[]`, the autocomplete suggestions for what to 
   self-join between two real tables (once Pine can tell two occurrences of the same table apart) would use
   it too.
 
-A fourth value, `"manual"`, is reserved on the frontend type for the explicit `.col1 = .col2` case — but
+- **`"alias"`** — a join from a name given with `as` in the query, `s: resourceId as company_id`. It comes
+  from the query, not the index, so its hint is the bare table. See
+  [Joining on a name you give](#joining-on-a-name-you-give).
+
+A fifth value, `"manual"`, is reserved on the frontend type for the explicit `.col1 = .col2` case — but
 since that syntax bypasses the reference map entirely (see Syntax above), there's nothing for a hint to
 suggest there, so the backend never actually emits it.
 
@@ -242,6 +291,11 @@ carrying a direction.
 
 When `.hint_col` is present, `join-column` is set. `join-helper` uses it to select a specific key from the
 `via` map instead of taking `first`.
+
+Before either, when no join column is named, `named-value-join` looks for a name given with `as`
+(`named-values` lists them, newest first). Its join map has `:resolution "alias"`. A pair on a JSON value
+carries `:from-value-path`, the keys inside the value (`[]` for an element itself), and `eval.clj`
+compares that value's text with the other column.
 
 When `.col1 = .col2` is present, `join-left-column` and `join-right-column` are set. `update-joins` bypasses
 `join-tables` entirely and records the explicit pair directly.
