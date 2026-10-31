@@ -504,7 +504,7 @@
       (hints/handle truncated-state)
       ;; Each table's primary key, kept for update!, which is built after
       ;; :references is dropped below
-      select/add-row-keys
+      select/add-record-keys
       ;; Add auto-ID columns based on final operation type
       select/add-auto-id-columns
       ;; After the key columns: only a table that has them is editable

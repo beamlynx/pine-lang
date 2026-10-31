@@ -46,7 +46,7 @@ operation runs, the DB schema is loaded so that join paths and column lists are 
 list of operations and what each one does, see [expressions.md](expressions.md).
 
 After all operations are applied, a **post-processing** step runs: autocomplete hints are computed,
-hidden key columns are appended for row tracking, and a prettified form of the expression is attached.
+record keys are appended as hidden columns, so each cell can be traced to its record, and a prettified form of the expression is attached.
 
 The result is a single **state map** that fully describes the query.
 

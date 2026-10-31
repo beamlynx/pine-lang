@@ -1261,7 +1261,7 @@
     (testing "without a policy, nothing changes"
       (is (re-find #"\"o_0\".\"CUSTOMER_ID\"" (:query (generate "order | s: CUSTOMER_ID")))))))
 
-(deftest test-access-policy-row-keys
+(deftest test-access-policy-record-keys
   (let [rules [{:type "column-type" :allow ["uuid"]}]]
     (testing "a primary key called `id` can be filtered on, as it is shown in every result"
       (is (:query (generate "report | where: id = 1" rules)))
