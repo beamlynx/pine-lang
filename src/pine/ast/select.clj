@@ -143,6 +143,38 @@
       (update state :columns into auto-id-columns))
     state))
 
+(defn- element-root
+  "The table alias an element of `unnest:` comes from, through elements of
+  elements."
+  [aliases alias]
+  (if-let [source (get-in aliases [alias :elements :alias])]
+    (recur aliases source)
+    alias))
+
+(defn add-element-index-columns
+  "Add a hidden column with each element's position in its array, for every
+  `unnest:` on a table whose rows can be edited: one that got hidden key
+  columns. The table's record key and the positions, from the outermost
+  array in, say which value an edit of `e.field` changes:
+  `data.changes[3].field`. Not when the policy hides the array's column."
+  [state]
+  (if (should-add-auto-ids? state)
+    (let [{:keys [aliases columns]} state
+          editable (set (keep #(when (:auto-id %) (:alias %)) columns))
+          rules (:access-policy state)
+          next-index (inc (reduce max (:index state) (keep :operation-index columns)))
+          index-columns (for [{:keys [alias elements]} (:tables state)
+                              :when (and elements (editable (element-root aliases alias)))
+                              :when (not (and (seq rules)
+                                              (access-policy/sensitive-column? state rules {:alias alias :column "value"})))]
+                          {:column "value"
+                           :alias alias
+                           :column-alias (str "__" alias "__index")
+                           :hidden true
+                           :element-index true})]
+      (update state :columns into (map-indexed #(assoc %2 :operation-index (+ next-index %1)) index-columns)))
+    state))
+
 (defn- json-type-column
   "A hidden column carrying the JSON type of a selected path's value:
   string, number, boolean, null, object or array, and NULL when the key is
@@ -159,13 +191,31 @@
 
 (defn add-json-type-columns
   "Add a hidden type column for each selected JSON path of a table whose
-  rows can be edited: one that got hidden key columns. The type is only
-  used to write an edit back."
+  rows can be edited: one that got hidden key columns. An element, or a key
+  of one, counts when the element got its position (see
+  add-element-index-columns). The type is only used to write an edit back."
   [state]
-  (let [editable (set (keep #(when (:auto-id %) (:alias %)) (:columns state)))
+  (let [editable (set (keep #(when (or (:auto-id %) (:element-index %)) (:alias %)) (:columns state)))
         rules (:access-policy state)
         type-columns (for [col (:columns state)
-                           :when (and (seq (:path col)) (editable (:alias col)))
+                           :when (not (table/added-column? col))
+                           :when (and (some? (:path col)) (editable (:alias col)))
                            :when (not (and (seq rules) (access-policy/sensitive-column? state rules col)))]
-                       (json-type-column col))]
-    (update state :columns into type-columns)))
+                       (json-type-column col))
+        ;; An element `unnest:` adds to the result by itself, `e`, is in the
+        ;; SELECT list but not in :columns. It is there until a select:
+        ;; after the unnest:, and not when other elements come from it (see
+        ;; eval/select-items).
+        typed (set (map :json-type-of type-columns))
+        aliases (:aliases state)
+        sources (set (keep #(get-in % [:elements :alias]) (vals aliases)))
+        user-columns (remove table/added-column? (:columns state))
+        shown? (fn [alias]
+                 (let [index (get-in aliases [alias :index])]
+                   (not (or (sources alias)
+                            (some #(some-> (:operation-index %) (> index)) user-columns)))))
+        element-types (for [{:keys [alias element-index]} (:columns state)
+                            :when (and element-index (not (typed alias)) (shown? alias))]
+                        (json-type-column {:alias alias :column "value" :path [] :column-alias alias
+                                           :operation-index (:index state)}))]
+    (update state :columns into (concat type-columns element-types))))

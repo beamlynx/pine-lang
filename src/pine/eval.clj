@@ -235,8 +235,11 @@
        (concat params params)]
 
       ;; json_type, not json_extract: it tells true and false from 1 and 0.
+      ;; It reads the path itself, so its parameter is the path even when
+      ;; the path is empty, an element itself, where json-extract has none.
       :sqlite
-      (let [t (str "json_type(" col-ref ", ?)")]
+      (let [t (str "json_type(" col-ref ", ?)")
+            params (json-path-params path)]
         [(str "CASE " t " WHEN 'true' THEN 'boolean' WHEN 'false' THEN 'boolean' WHEN 'integer' THEN 'number'"
               " WHEN 'real' THEN 'number' WHEN 'text' THEN 'string' ELSE " t " END")
          (concat params params)])
@@ -390,19 +393,29 @@
                          (table-label aliases to) " .some_id`.")
                     {:error-type "unresolved-join" :from from :to to}))))
 
+(defn- element-index-sql
+  "An element's position in its array, from 0. Postgres and MySQL number the
+  elements from 1 (see elements-clause); SQLite's json_each gives an array
+  element's index as its `key`."
+  [alias]
+  (if (= *dialect* :sqlite)
+    (q alias "key")
+    (str "(" (q alias "pine_index") " - 1)")))
+
 (defn- elements-clause
   "[sql params] adding the elements of `unnest: a.data as e`: one row for each
   element of the array, with the element as JSON in the column `value`. A
   value that isn't an array has no elements, so its row drops out, where
-  Postgres's own jsonb_array_elements would stop the query with an error."
-  [alias {source :alias :keys [column path]}]
+  Postgres's own jsonb_array_elements would stop the query with an error.
+  With `index?`, also each element's position, `pine_index`, from 1."
+  [alias {source :alias :keys [column path]} index?]
   (let [col (q source column)
         e (q alias)]
     (case *dialect*
       :mysql
       (let [[h ps] (json-extract :json col path)]
         [(str "CROSS JOIN JSON_TABLE(CASE WHEN JSON_TYPE(" h ") = 'ARRAY' THEN " h " END, '$[*]' COLUMNS ("
-              (q "value") " JSON PATH '$')) AS " e)
+              (q "value") " JSON PATH '$'" (when index? (str ", " (q "pine_index") " FOR ORDINALITY")) ")) AS " e)
          (concat ps ps)])
 
       ;; json_extract gives an array as its JSON text.
@@ -412,8 +425,8 @@
          (concat (json-path-params path) ps)])
 
       (let [[h ps] (json-extract :json col path)]
-        [(str "CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(" h ") = 'array' THEN " h " END) AS "
-              e "(" (q "value") ")")
+        [(str "CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(" h ") = 'array' THEN " h " END)"
+              (when index? " WITH ORDINALITY") " AS " e "(" (q "value") (when index? (str ", " (q "pine_index"))) ")")
          (concat ps ps)]))))
 
 (defn- build-join-clause
@@ -422,7 +435,8 @@
   [{:keys [tables joins aliases] :as state}]
   (check-joins-resolved state)
   (when (not-empty (rest tables))
-    (let [join-sql (fn [{:keys [to type] :as join}]
+    (let [indexed (set (keep #(when (:element-index %) (:alias %)) (:columns state)))
+          join-sql (fn [{:keys [to type] :as join}]
                      (let [{to-table :table to-schema :schema} (get aliases to)
                            join-keyword (if type (str type " JOIN") "JOIN")
                            [on params] (build-on-clause join)]
@@ -431,7 +445,7 @@
           by-table (group-by :to joins)
           in-order (mapcat (fn [{:keys [alias]}]
                              (if-let [elements (get-in aliases [alias :elements])]
-                               [(elements-clause alias elements)]
+                               [(elements-clause alias elements (contains? indexed alias))]
                                (map join-sql (by-table alias))))
                            (rest tables))
           placed (set (map :alias (rest tables)))
@@ -442,6 +456,9 @@
   "[sql params] for one column of a SELECT list, before its `AS` name."
   [state rules {:keys [column alias symbol col-fn path json-type-of] :as col}]
   (cond
+    ;; A position isn't a value of the array, so the policy has nothing to
+    ;; decide: add-element-index-columns leaves it out under a masked column.
+    (:element-index col) [(element-index-sql alias) []]
     (and (seq rules) (access-policy/sensitive-column? state rules col)) [access-policy/redacted-sql-literal []]
     (:computed col) (render-value (:computed col))
     json-type-of (json-type-sql (q alias column) path)
@@ -481,9 +498,10 @@
         ;; reads isn't shown either: those are.
         elements (->> (vals (:aliases state)) (filter :elements) (sort-by :index))
         sources (set (map #(get-in % [:elements :alias]) elements))
+        chosen (remove table/added-column? user-columns)
         shown-elements (remove (fn [{:keys [alias index]}]
                                  (or (sources alias)
-                                     (some #(some-> (:operation-index %) (> index)) user-columns)))
+                                     (some #(some-> (:operation-index %) (> index)) chosen)))
                                elements)
         ;; Check if any non-auto-ID columns are selected for the current table
         current-table-has-columns? (or (some #(= (:alias %) current) user-columns)

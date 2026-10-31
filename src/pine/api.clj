@@ -321,9 +321,15 @@
          row-columns (if (seq rows)
                        (-> rows first)
                        [])
+         ;; An element `unnest:` adds by itself, `e`, is the element's
+         ;; value, not a column of the current table.
+         element? (fn [col] (get-in state [:aliases (name col) :elements]))
          remaining-columns (->> row-columns
                                 (drop (count state-columns))
-                                (map (fn [col] {:column col :alias (-> state :current)})))]
+                                (map (fn [col]
+                                       (if (element? col)
+                                         {:column "value" :alias (name col) :path [] :column-alias (name col)}
+                                         {:column col :alias (-> state :current)}))))]
      (concat state-columns
              remaining-columns
              (when-let [alias (state :alias)]

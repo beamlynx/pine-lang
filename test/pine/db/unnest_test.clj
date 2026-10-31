@@ -68,3 +68,62 @@
        (let [before (e/snapshot db tables)]
          (e/write! db "doc | unnest: data.items as i | where: i.qty = 5 | delete! .id")
          (is (= {"doc" {:deleted #{[2]}}} (e/changes before (e/snapshot db tables)))))))))
+
+(defn- hidden
+  "Each row's value in column 0 and in the hidden column `column-alias`."
+  [db expression column-alias]
+  (let [{:keys [header rows error]} (e/pine db expression)
+        i (.indexOf ^java.util.List header column-alias)]
+    (is (nil? error) (str expression ": " error))
+    (is (<= 0 i) (str column-alias " in " header))
+    (set (map (fn [row] [(first row) (nth row i)]) rows))))
+
+(deftest test-element-positions
+  (e/on-every-engine
+   fixture
+   (fn [db]
+     (testing "each element's position in its array, from 0"
+       (is (= #{["a" 0] ["b" 1]}
+              (set (map (fn [[t i]] [t (long i)]) (hidden db "doc | where: id = 1 | unnest: data.tags as t | s: t" "__t__index")))))
+       (is (= #{["p1" 0] ["p2" 1] ["p3" 0]}
+              (set (map (fn [[p i]] [p (long i)]) (hidden db "doc | unnest: data.items as i | unnest: i.parts as p | s: p" "__p__index"))))))
+
+     (testing "and the JSON type of each value the grid can edit"
+       (is (= #{["1" "number"] ["2" "number"] ["5" "number"]}
+              (set (map (fn [[q t]] [(str q) t]) (hidden db "doc | unnest: data.items as i | s: i.qty" "__i__qty__type"))))))
+
+     (testing "`e` by itself is labelled as the element, not as a column of the table"
+       (is (= {:alias "t" :column "value" :path [] :column-alias "t"}
+              (-> (e/pine db "doc | where: id = 2 | unnest: data.tags as t") :columns last
+                  (select-keys [:alias :column :path :column-alias]))))))))
+
+(defn- data-change
+  "Runs the update the results grid writes for one element value, and
+  returns what changed in every table: only doc `id`'s data may."
+  [db expression]
+  (let [before (e/snapshot db tables)]
+    (e/write! db expression)
+    (e/changes before (e/snapshot db tables))))
+
+(deftest test-element-edits
+  (e/on-every-engine
+   fixture
+   (fn [db]
+     (let [ann-data (fn [] (get-in (e/table db "doc" [:id]) [[1] :data]))]
+       (testing "a key of one element: that element's key changes, and nothing else"
+         (let [before (ann-data)
+               changes (data-change db "doc | unnest: data.items as i | from: d_0 | where: id = 1 | update! d_0.data.items[1].qty = 7")]
+           (is (= #{"doc"} (set (keys changes))))
+           (is (= [[1]] (keys (get-in changes ["doc" :changed]))))
+           (is (= (assoc-in before ["items" 1 "qty"] 7) (ann-data)))
+           (is (= "number" (e/json-type db "doc" "data" "id" 1 ["items" 1 "qty"])) "and a number stays a number")))
+
+       (testing "an element that is a value by itself"
+         (let [before (ann-data)]
+           (data-change db "doc | unnest: data.tags as t | from: d_0 | where: id = 1 | update! d_0.data.tags[0] = 'A'")
+           (is (= (assoc-in before ["tags" 0] "A") (ann-data)))))
+
+       (testing "an element of an element: a position at each level"
+         (let [before (ann-data)]
+           (data-change db "doc | unnest: data.items as i | unnest: i.parts as p | from: d_0 | where: id = 1 | update! d_0.data.items[0].parts[1] = 'P2'")
+           (is (= (assoc-in before ["items" 0 "parts" 1] "P2") (ann-data)))))))))
