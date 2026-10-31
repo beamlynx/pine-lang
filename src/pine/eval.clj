@@ -157,11 +157,17 @@
   (`:text`), to show or to match with like. A missing key is NULL. A plain
   Postgres `json` column is cast to `jsonb`, which a `jsonb` one already is."
   [as col-ref path]
-  (let [params (json-path-params path)]
+  (let [params (json-path-params path)
+        ;; MySQL's JSON_UNQUOTE turns a JSON null into the text 'null'. As
+        ;; text, a JSON null is NULL, as it is on Postgres and SQLite, so the
+        ;; path is read twice there.
+        mysql-text? (and (= *dialect* :mysql) (= as :text))]
     [(case *dialect*
        :mysql
        (let [x (str "JSON_EXTRACT(" col-ref ", ?)")]
-         (if (= as :text) (str "JSON_UNQUOTE(" x ")") x))
+         (if mysql-text?
+           (str "CASE WHEN JSON_TYPE(" x ") = 'NULL' THEN NULL ELSE JSON_UNQUOTE(" x ") END")
+           x))
 
        ;; SQLite has no JSON type. json_extract gives the value itself, as
        ;; an SQL integer, real or text, and NULL for a missing key or a JSON
@@ -171,7 +177,7 @@
 
        (str (if (= as :text) "jsonb_extract_path_text(" "jsonb_extract_path(")
             col-ref "::jsonb, " (s/join ", " (repeat (count params) "?::text")) ")"))
-     params]))
+     (if mysql-text? (concat params params) params)]))
 
 (defn- json-type-sql
   "[sql params] naming the JSON type of the value at `path`: string, number,

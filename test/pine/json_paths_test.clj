@@ -143,11 +143,12 @@
 
 (deftest test-mysql
   (testing "One path parameter, with each key quoted"
-    (is (= {:query (str "SELECT JSON_UNQUOTE(JSON_EXTRACT(`p_0`.`config`, ?)) AS `config.a.b`, `p_0`.`id` AS `__p_0__id`, "
+    (is (= {:query (str "SELECT CASE WHEN JSON_TYPE(JSON_EXTRACT(`p_0`.`config`, ?)) = 'NULL' THEN NULL "
+                        "ELSE JSON_UNQUOTE(JSON_EXTRACT(`p_0`.`config`, ?)) END AS `config.a.b`, `p_0`.`id` AS `__p_0__id`, "
                         "CASE JSON_TYPE(JSON_EXTRACT(`p_0`.`config`, ?)) WHEN 'INTEGER' THEN 'number' WHEN 'UNSIGNED INTEGER' THEN 'number' "
                         "WHEN 'DOUBLE' THEN 'number' WHEN 'DECIMAL' THEN 'number' ELSE LOWER(JSON_TYPE(JSON_EXTRACT(`p_0`.`config`, ?))) END "
                         "AS `__p_0__config.a.b__type` FROM `product` AS `p_0` LIMIT 250")
-            :params ["$.\"a\".\"b\"" "$.\"a\".\"b\"" "$.\"a\".\"b\""]}
+            :params ["$.\"a\".\"b\"" "$.\"a\".\"b\"" "$.\"a\".\"b\"" "$.\"a\".\"b\""]}
            (sql :test-mysql "product | s: config.a.b")))
     (is (= "$.\"tags\"[1]" (first (:params (sql :test-mysql "product | s: config.tags[1]")))))
     (is (= "$.\"we\\\"ird\"" (first (:params (sql :test-mysql "product | s: config.'we\"ird'"))))))
