@@ -476,7 +476,7 @@
   "Each `unnest:` for the client, in pipe order: `table`, the alias of the
   table whose column holds the array, and whose node shows it, and `text`,
   the array's path from there: `data.changes`, or `o.items` for the
-  elements of the elements `o`.
+  elements of the elements `o`. `left` is true for `:left`.
 
   `source`, `column` and `path` say where the array is: a column of the
   table and the keys inside it, or the keys inside the elements `source`.
@@ -487,13 +487,14 @@
         table-of (fn table-of [a] (if-let [source (get-in aliases [a :elements :alias])] (table-of source) a))]
     (->> (:tables state)
          (filter :elements)
-         (mapv (fn [{e :alias {:keys [alias column path]} :elements :keys [index]}]
+         (mapv (fn [{e :alias {:keys [alias column path left]} :elements :keys [index]}]
                  {:alias e
                   :table (table-of alias)
                   :index index
                   :source alias
                   :column (when-not (path/element-alias? state alias) column)
                   :path (vec path)
+                  :left (boolean left)
                   :text (if (path/element-alias? state alias)
                           (path/path-text alias path)
                           (path/path-text column path))})))))

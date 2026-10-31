@@ -248,6 +248,7 @@ activity as a
 ```
 
 - `CROSS JOIN LATERAL`, a comma, and `JOIN LATERAL ... ON true` all convert. `LATERAL` may be left out.
+  `LEFT JOIN LATERAL ... ON true` converts to `unnest: ... :left`, which keeps the rows whose array is empty.
   `json_array_elements` and the `_text` forms convert too.
 - `e` is the element, `e.value` and `e(x)`'s `x` name it too, and `e->>'k'` is a key of it. A selected element is
   named as SQL names it: `e.value` becomes `e as value`.
@@ -255,7 +256,8 @@ activity as a
   `jsonb_array_elements_text` does, and warns.
 - An element of the `_text` forms compares as a `->>` key does. An element of the JSON forms is refused in `WHERE`.
 - `PARTITION BY e->>'k'` partitions by the key's text, as Pine does. `PARTITION BY e->'k'` is refused.
-- Refused: `LEFT JOIN LATERAL`, which keeps rows whose array is empty, and `->>` inside the function, which gives text.
+- Refused: `RIGHT JOIN LATERAL`, which keeps elements without their row, and `->>` inside the function, which gives
+  text.
   Any other function in `FROM`, like `generate_series`, is refused as a cross join.
 
 The SQL fails on a row whose value isn't an array. Pine skips that row.

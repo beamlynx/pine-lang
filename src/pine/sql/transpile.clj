@@ -860,8 +860,10 @@
   [tables i {:keys [type at]}]
   (let [{f :fn :keys [source]} (:elements (nth tables i))
         in-scope (subvec tables 0 i)]
-    (when (#{:left :right} type)
-      (refuse at (str "A " (s/upper-case (name type)) " JOIN LATERAL keeps the rows whose array is empty, and Pine's `unnest:` drops them, as CROSS JOIN LATERAL does.")))
+    ;; LEFT JOIN LATERAL keeps a row whose array is empty, as `unnest: ...
+    ;; :left` does. Nothing in Pine keeps an element without its row.
+    (when (= :right type)
+      (refuse at "A RIGHT JOIN LATERAL keeps elements without their row, and Pine's `unnest:` always starts from the row. Use LEFT JOIN LATERAL, or CROSS JOIN LATERAL."))
     (let [col (resolve-column in-scope (:column source))]
       (when (and (= :json (:kind source)) (= "->>" (:op (peek (:steps source)))))
         (refuse (:at source) (str f "() reads JSON, and ->> gives text. Use ->.")))
@@ -1404,7 +1406,8 @@
                     ;; Its source, written with its table's alias: Pine reads a
                     ;; bare name as the column of the table before.
                     (let [base (if (:elements (nth tables (:t source))) (alias-of (:t source)) (str (alias-of (:t source)) "." (:name source)))]
-                      (str "unnest: " (path-pine tables base (:steps source) (:at source)) " as " alias))
+                      (str "unnest: " (path-pine tables base (:steps source) (:at source)) " as " alias
+                           (when (= :left type) " :left")))
                     (str (when schema (str schema "."))
                          (or db-table table)
                          (when (or alias (referenced t)) (str " as " (alias-of t)))

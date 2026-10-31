@@ -373,7 +373,23 @@
     (is (= {:type :elements :value {:column "data" :path []}}
            (last (parse "customer | unnest: data"))))
     (is (:error (parser/parse "customer | data[*] as e")) "`[*]` alone isn't a step: it reads as a join")
-    (is (:error (parser/parse "customer | unnest: data[*] as e")) "`unnest:` takes the array, without `[*]`"))
+    (is (:error (parser/parse "customer | unnest: data[*] as e")) "`unnest:` takes the array, without `[*]`")
+    (is (= {:type :elements :value {:column "data" :path [] :as "e" :left true}}
+           (last (parse "customer | unnest: data as e :left"))))
+    (is (:error (parser/parse "customer | unnest: data :left as e")) "`:left` comes after the name"))
+
+  (testing "`:left` keeps a row with no elements: a LEFT JOIN ON TRUE on each dialect"
+    (is (re-find #"LEFT JOIN LATERAL jsonb_array_elements\(.*\) WITH ORDINALITY AS \"e\"\(\"value\", \"pine_index\"\) ON TRUE"
+                 (:query (sql "customer | unnest: data as e :left")))
+        "with the positions, for the grid")
+    (is (re-find #"LEFT JOIN JSON_TABLE\(.*\) AS `t` ON TRUE"
+                 (:query (sql :test-mysql "product | unnest: config.tags as t :left | s: t"))))
+    (is (re-find #"LEFT JOIN json_each\(.*\) AS \"s\" ON TRUE"
+                 (:query (sql :test-sqlite "customer | unnest: data.staff as s :left | s: s"))))
+    (is (re-find #"CROSS JOIN LATERAL" (:query (sql "customer | unnest: data as e"))) "Without it, as before")
+    (is (= [true false]
+           (map :left (:unnests (state "customer | unnest: data as o :left | unnest: o.items as i"))))
+        "The canvas is told which"))
 
   (testing "One row for each element, joined to its row"
     (is (= {:query (str "SELECT \"c\".\"id\", jsonb_extract_path_text(\"s\".\"value\"::jsonb, ?::text) AS \"name\", "
