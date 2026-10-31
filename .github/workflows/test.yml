@@ -5,8 +5,8 @@ name: Tests
 on:
   push:
     branches: [master]
+  # Every pull request, including one stacked on another branch.
   pull_request:
-    branches: [master]
 
 jobs:
 
@@ -17,6 +17,30 @@ jobs:
         os: [ubuntu-latest] # [ubuntu-latest, macOS-latest, windows-latest]
 
     runs-on: ${{ matrix.os }}
+
+    # The tests in test/pine/db run on SQLite, MySQL and Postgres. These are
+    # the same images scripts/test-databases.sh starts locally.
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: pine
+          POSTGRES_PASSWORD: pine
+          POSTGRES_DB: pine
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U pine"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: pine
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -ppine --silent"
+          --health-interval 2s --health-timeout 5s --health-retries 60
 
     steps:
       - name: Checkout
@@ -95,6 +119,11 @@ jobs:
 
       - name: Run tests
         run: clojure -M:test
+        env:
+          # A missing server fails the run instead of skipping its tests.
+          PINE_TEST_REQUIRE_SERVERS: "1"
+          PINE_TEST_POSTGRES_URL: postgres://pine:pine@localhost:5432/pine
+          PINE_TEST_MYSQL_URL: mysql://root:pine@localhost:3306/mysql
 
       # The desktop app and the Docker image run pine-lang ahead-of-time
       # compiled. That can fail where the tests pass, as 0.48.0 did ("File

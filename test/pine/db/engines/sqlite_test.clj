@@ -1,8 +1,9 @@
-(ns pine.db.sqlite-test
-  "SQLite against a real file. Unlike Postgres and MySQL there is no server to
-  start, so these run against an actual database on every `clojure -M:test`:
-  introspection, generated SQL, and the connection's safety settings are
-  checked end to end rather than by string comparison alone."
+(ns pine.db.engines.sqlite-test
+  "What only SQLite has, on a real file: its connection and its safety
+  settings, how it reports column types, dates kept as text, and the
+  access policy's handling of its types and of case. What every engine
+  does alike is in the topic files of test/pine/db, which run on SQLite too
+  (see pine.db.engines)."
   (:require
    [clojure.test :refer [deftest is testing use-fixtures]]
    [pine.api :as api]
@@ -190,15 +191,9 @@
       (is (nil? (affinity "")))
       (is (nil? (affinity "  "))))))
 
-(deftest test-queries
-  (testing "a foreign-key join"
-    (is (= [["Ann" "Acme"] ["Bob" "Acme"] ["Cy" "Globex"]]
-           (map (fn [[a b]] [a b])
-                (rows "person as p | company as c | select: p.name, c.name")))))
-
-  (testing "ILIKE runs as LIKE, case-insensitively"
-    (is (= ["Ann"] (selected "person | where: name ilike 'a%' | select: name"))))
-
+(deftest test-dates
+  ;; SQLite has no date type: a date is the text it is stored as. The
+  ;; queries every engine runs alike are in pine.db.queries-test.
   (testing "a date compares as the text it is stored as"
     (is (= ["Globex"]
            (selected "company | where: created_at > '2024-02-01' | select: name")))
@@ -216,68 +211,30 @@
     (is (= ["2024-01-31 10" "2024-02-15 08"] (selected "company | select: created_at => hour")))
     (is (= ["2024-01-31 10:00" "2024-02-15 08:30"] (selected "company | select: created_at => minute"))))
 
-  (testing "a boolean column"
-    (is (= ["Ann" "Cy"] (selected "person | where: active = true | select: name"))))
-
-  (testing "group and count"
-    (is (= [[1 2] [2 1]] (rows "person | select: company_id | group: company_id with count")))
-    (is (= [[3]] (rows "person | count:")))
-    ;; No keys: one group, the whole table. SQLite takes no SELECT of
-    ;; nothing, so a bare count must still read something.
-    (is (= [[3]] (rows "person | group: with count as n")))
-    (is (= [[2 4]] (rows "person | where: active = true | group: with count as n, id => sum as ids"))))
-
-  (testing "a sealed table's column after a checkpoint is the checkpoint's column"
-    (is (= [1 2] (selected "company as c | person .company_id | group: c.id | s: c.id | o: id asc")))
-    (is (= [[1 "Bob"] [2 "Cy"]]
-           (map (fn [[a b]] [a b])
-                (rows "company as c | person .company_id | s: c.id as cid, p_1.name | o: name desc | l: 1 per c.id | s: c.id, name | o: cid asc"))))))
-
-(deftest test-computed-values
-  (testing "coalesce, and concat is NULL when any part is, like ||"
-    (is (= ["SE" "NO" "none" "none"] (selected "doc | s: coalesce(data.country, 'none') as c | o: id asc")))
-    (is (= ["n:SE" "n:NO" nil nil] (selected "doc | s: concat('n:', data.country) as c | o: id asc"))))
-
-  (testing "if, and a condition as a value"
-    (is (= ["on" "off" "on"] (selected "person | s: if active = true then 'on' else 'off' as s | o: id asc")))
-    (is (= [1 0 0] (selected "person | s: name like 'A%' as a | o: id asc"))))
-
-  (testing "Its name in where:, order: and after per"
-    (is (= ["Cy"] (selected "person | s: name, if active = true then 'on' else 'off' as s | where: s = 'on' | o: name desc | l: 1")))
-    (is (= ["Bob" "Cy"] (selected "person | s: name, company_id, coalesce(company_id, 0) as c | o: name desc | l: 1 per c | o: name asc"))))
-
-  (testing "Aggregates with a filter, any and all"
-    (is (= [[1 1 1 0 1] [2 3 1 1 1]]
-           (map #(vec (take 5 %))
-                (rows "person | group: company_id with min(id) as first, any(active = true) as some_on, all(active = true) as all_on, count where active = true as n | o: company_id asc")))))
-
-  (testing "now()"
+  (testing "now() compares with the text"
     (is (= [[2]] (rows "company | where: created_at < now() | count:")))))
 
 (deftest test-writes
+  ;; What update! and delete! change on every engine is in
+  ;; pine.db.writes-test. These are SQLite's own.
   (testing "foreign keys are enforced - this connection turns them on"
     (is (thrown-with-msg? Exception #"FOREIGN KEY constraint failed"
                           (db/run-sql *id* "DELETE FROM company WHERE id = 1"))))
 
-  (testing "update! and delete! change the rows they select, and a transaction rolls back as a whole"
+  (testing "a transaction rolls back as a whole"
     (db/run-sql *id* "INSERT INTO tag VALUES (10, 'a'), (11, 'b'), (12, 'c')")
-    (let [update (generate "tag | where: id = 10 | update! label = 'z'")]
-      (is (= [["tag" 1]] (db/run-action-queries-in-transaction *id* (:queries update)))))
-    (is (= ["z"] (selected "tag | where: id = 10 | select: label")))
-    (let [delete (generate "tag | where: id = 11 | delete! .id")]
-      (is (= 1 (db/run-action-query *id* delete))))
-    (is (= [10 12] (selected "tag | select: id")))
     (is (thrown? Exception
                  (db/run-action-queries-in-transaction
                   *id* [{:table "tag" :query "DELETE FROM tag WHERE id = 10" :params []}
                         {:table "tag" :query "DELETE FROM nope" :params []}])))
-    (is (= [10 12] (selected "tag | select: id")) "the first delete was rolled back")
-    (testing "a boolean column takes true and false as booleans, not text"
-      (db/run-action-queries-in-transaction *id* (:queries (generate "person | where: id = 1 | update! active = false")))
-      (is (= [0] (selected "person | where: id = 1 | select: active")))
-      (db/run-action-queries-in-transaction *id* (:queries (generate "person | where: id = 1 | update! active = true")))
-      (is (= [1] (selected "person | where: id = 1 | select: active"))))
-    (db/run-sql *id* "DELETE FROM tag")))
+    (is (= [10 11 12] (selected "tag | select: id")) "the first delete was rolled back")
+    (db/run-sql *id* "DELETE FROM tag"))
+
+  (testing "a boolean is kept as 1 or 0"
+    (db/run-action-queries-in-transaction *id* (:queries (generate "person | where: id = 1 | update! active = false")))
+    (is (= [0] (selected "person | where: id = 1 | select: active")))
+    (db/run-action-queries-in-transaction *id* (:queries (generate "person | where: id = 1 | update! active = true")))
+    (is (= [1] (selected "person | where: id = 1 | select: active")))))
 
 (deftest test-connection-is-contained
   (testing "ATTACH is refused, so a query can't open another file - or step around an access policy"
@@ -292,41 +249,7 @@
     (let [references (db/init-references *id*)]
       (is (= ["group_code" "member_code"] (get-in references [:schema "main" :table "membership" :primary-key])))
       (is (= ["id"] (get-in references [:schema "main" :table "person" :primary-key])))
-      (is (nil? (get-in references [:schema "main" :table "untyped" :primary-key])))))
-
-  (testing "a composite key changes exactly the row it names"
-    (let [update (generate "membership | where: group_code = 'g1' | where: member_code = 'm1' | update! role = 'b'")]
-      (is (= [["membership" 1]] (db/run-action-queries-in-transaction *id* (:queries update)))))
-    (is (= [["a"] ["a"] ["b"]] (sort-by (comp str first) (map vector (selected "membership | select: role | order: group_code, member_code desc")))))
-    (db/run-sql *id* "UPDATE membership SET role = 'a'"))
-
-  (testing "a table with no primary key can't be updated: its rows can't be told apart"
-    (is (thrown-with-msg? Exception #"no primary key"
-                          (generate "untyped | where: id = 1 | update! note = 'x'")))))
-
-(deftest test-json-paths
-  (testing "= compares typed JSON values: a string \"31\" is not the number 31"
-    (is (= ["Ann"] (selected "doc | where: data.country = 'SE' | select: name")))
-    (is (= ["Ann"] (selected "doc | where: data.age = 31 | select: name")))
-    (is (= ["Ann"] (selected "doc | where: data.vip = true | select: name"))))
-
-  (testing "< and > skip a value that isn't a number"
-    (is (= ["Ann"] (selected "doc | where: data.age > 30 | select: name")))
-    (is (= ["Cy"] (selected "doc | where: data.age < 30 | select: name"))))
-
-  (testing "like and in compare text; is null is true for a JSON null and for a missing key"
-    (is (= ["Ann"] (selected "doc | where: data.country like 'S%' | select: name")))
-    (is (= ["Ann" "Bob"] (selected "doc | where: data.country in ('SE', 'NO') | select: name")))
-    (is (= ["Cy" "Di"] (selected "doc | where: data.country is null | select: name"))))
-
-  (testing "nested keys, indexes and quoted keys"
-    (is (= [["Ann" "Oslo" "a"] ["Bob" "Bergen" nil] ["Cy" nil nil] ["Di" nil nil]]
-           (map #(vec (take 3 %)) (rows "doc | select: name, data.address.city, data.tags[0]"))))
-    (is (= ["x" nil nil nil] (selected "doc | select: data.'home address'"))))
-
-  (testing "group by a key"
-    (is (= #{[nil 2] ["NO" 1] ["SE" 1]}
-           (set (rows "doc | select: data.country | group: data.country with count"))))))
+      (is (nil? (get-in references [:schema "main" :table "untyped" :primary-key]))))))
 
 (defn- policy-rows
   "Like rows, under an access policy."
