@@ -1,4 +1,4 @@
-(ns pine.db.sqlite-test
+(ns pine.db.engines.sqlite-test
   "SQLite against a real file. Unlike Postgres and MySQL there is no server to
   start, so these run against an actual database on every `clojure -M:test`:
   introspection, generated SQL, and the connection's safety settings are

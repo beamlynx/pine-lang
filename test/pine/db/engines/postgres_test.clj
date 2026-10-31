@@ -1,4 +1,4 @@
-(ns pine.sql.postgres-equivalence-test
+(ns pine.db.engines.postgres-test
   "SQL to Pine, checked on a real Postgres: the motivating script's UPDATE
   and the Pine it converts to pick the same rows.
 
@@ -11,7 +11,7 @@
 
     docker run -d --rm --name pine_eq_pg -e POSTGRES_USER=pine -e POSTGRES_PASSWORD=pine \\
       -e POSTGRES_DB=pine -p 55432:5432 postgres:15
-    PINE_TEST_POSTGRES_URL=postgres://pine:pine@localhost:55432/pine clojure -M:test -n pine.sql.postgres-equivalence-test
+    PINE_TEST_POSTGRES_URL=postgres://pine:pine@localhost:55432/pine clojure -M:test -n pine.db.engines.postgres-test
     docker stop pine_eq_pg"
   (:require [cheshire.core :as json]
             [clojure.java.jdbc :as jdbc]

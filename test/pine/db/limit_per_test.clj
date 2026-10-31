@@ -1,4 +1,4 @@
-(ns pine.limit-per-postgres-test
+(ns pine.db.limit-per-test
   "`limit: N per`, run on a real Postgres: which rows it keeps, and the order
   they come back in. The SQL tests in limit_per_test.clj check the query's
   text. This checks what the database does with it.
