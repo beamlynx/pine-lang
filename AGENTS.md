@@ -57,6 +57,29 @@ When adding new features, follow this order:
 
 ---
 
+## Tests
+
+Tests are in three levels, as the code is:
+
+- **Parser:** `test/pine/parser_test.clj`. Pine text to its parse.
+- **AST:** `test/pine/ast_test.clj`. The parse to the state Pine builds.
+- **SQL:** `test/pine/eval_test.clj` and the feature files beside it, such as `json_paths_test.clj`. The SQL text Pine writes for each dialect, against made-up schemas. Nothing runs on a database.
+
+**Real databases.** `test/pine/db/` runs Pine on real SQLite, MySQL and Postgres databases:
+
+- **Topic files**, such as `writes_test.clj`, `queries_test.clj` and `policy_test.clj`. Each test runs on all three engines, on a fresh database, through `pine.db.engines/on-every-engine`.
+- **`engines/`.** Checks that only one engine has: SQLite's affinity types and file safety, how MySQL's schema is read, and SQL to Pine on Postgres.
+
+A write test reads every row of every table before and after, with plain SQL rather than Pine, and asserts the whole difference (`pine.db.engines/changes`). Do the same for a new write. A feature that runs differently per engine gets its cases in a topic file, so all three run them.
+
+SQLite runs on every `clojure -M:test`. MySQL and Postgres run when `PINE_TEST_MYSQL_URL` and `PINE_TEST_POSTGRES_URL` name servers. CI starts both and sets `PINE_TEST_REQUIRE_SERVERS=1`, so a missing server fails the run instead of skipping it. To run everything locally, in Docker:
+
+```
+scripts/test-databases.sh
+```
+
+---
+
 ## Formatting
 
 Run the formatter before committing:
