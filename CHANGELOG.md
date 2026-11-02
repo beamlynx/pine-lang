@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [0.53.0] - 2026-11-02
 ### Added
 - **One row for each element of a JSON array:** `activity | unnest: data.changes as e | where: e.field = 'giin'`. Each element becomes a row next to the row it came from. Read its keys as `e.field`, or the element itself as `e`. The result shows `e` until a `select:` after it says which columns to show. A row whose value isn't an array is skipped. After `unnest: `, the table's JSON columns are suggested. This works on Postgres, MySQL and SQLite. See [json-paths.md](docs/json-paths.md#arrays-as-rows).
 - **Join on a name you give with `as`:** `activity_resource | where: resourceableType = 'Company' | s: resourceableId as company_id | company` joins each row to the company its `resourceableId` names. A name like `company_id` leads to the `company` table, by the same rule Pine uses for column names. It works for a column, a key inside JSON, and the elements of `unnest:`. The table it leads to is suggested next. See [joins.md](docs/joins.md#joining-on-a-name-you-give).
