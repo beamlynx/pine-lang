@@ -77,7 +77,7 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `JOIN employee USING (company_id)` | `.company_id = .company_id` |
 | `WHERE a = 1 AND b = 'x'` | `\| where: a = 1 \| where: b = 'x'` |
 | `WHERE a = 1 OR b = 'x'` | `\| where: a = 1 or b = 'x'` |
-| `<>`, `!=`, `<`, `>`, `<=`, `>=` | the same, `<>` as `!=`. Two columns compare with `=` and `!=` only |
+| `<>`, `!=`, `<`, `>`, `<=`, `>=` | the same, `<>` as `!=`, between a column and a value or two columns |
 | `LIKE`, `ILIKE`, `NOT LIKE`, `NOT ILIKE` | the same |
 | `IS NULL`, `IS NOT NULL` | the same |
 | `IN ('a', 1)`, `NOT IN (...)` | the same |
@@ -646,7 +646,6 @@ Each is refused with its line.
 | A string with a line break | Pine's blocks are separated by blank lines. |
 | A time with a zone (`'...Z'`, `'...+02'`), or `'... 10:00'::date` | Pine refuses the zone, and would keep the time. |
 | `CURRENT_DATE`, `CURRENT_TIME`, `CURRENT_USER` | Not in Pine. |
-| Two columns compared with `<`, `>`, `<=` or `>=` | Pine compares two columns with `=` and `!=`. |
 | SQL nested too deeply | Simplify it. |
 | `OFFSET`, `FETCH`, `UNION`, `INTERSECT`, `EXCEPT` | Not in Pine. |
 | `HAVING` without `GROUP BY` | Not converted. |

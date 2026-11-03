@@ -452,6 +452,24 @@
             :params [{:type :date :value (java.sql.Timestamp/valueOf "2024-01-01 10:00:00") :text "2024-01-01 10:00"}]}
            (update (generate "employee | where: created_at > '2024-01-01 10:00'") :params vec))))
 
+  (testing "every comparison takes a column on the right"
+    (is (re-find #"WHERE \"c_0\"\.\"created_at\" < \"c_0\"\.\"updated_at\" "
+                 (:query (generate "company | where: created_at < updated_at"))))
+    (is (re-find #"WHERE \"e_1\"\.\"name\" >= \"c\"\.\"name\" "
+                 (:query (generate "company as c | employee | where: name >= c.name"))))
+    (is (re-find #"WHERE \"c_0\"\.\"name\" LIKE \"c_0\"\.\"country\" "
+                 (:query (generate "company | where: name like country"))))
+    (is (re-find #"WHERE \"c_0\"\.\"name\" NOT ILIKE \"c_0\"\.\"country\" "
+                 (:query (generate "company | where: name not ilike country"))))
+    (is (re-find #"WHERE \(\"c_0\"\.\"name\" < \"c_0\"\.\"country\" OR \"c_0\"\.\"name\" = \?\)"
+                 (:query (generate "company | where: name < country or name = 'x'")))))
+
+  (testing "`is` with a column says it takes null"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`is` takes null, not a column"
+                          (generate "company | where: name is country")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`is not` takes null, not a column"
+                          (generate "company | where: name is not country"))))
+
   (testing "a column on the right of a comparison is qualified with the current table, as the left one is"
     (is (re-find #"WHERE \"e_1\"\.\"name\" = \"e_1\"\.\"country\""
                  (:query (generate "company | employee | where: name = country")))))
