@@ -173,8 +173,11 @@ JOIN "company" AS "c_2" ON ("company_id"."value"::jsonb #>> '{}') = "c_2"."id"::
   company ids. Without it, ids of other resources are matched too.
 - **Types that don't compare are cast to text,** as for a join guessed from column names. A key inside
   JSON is always compared as text.
+- **The table is the parent.** The value names one of its rows, as a foreign key does, so the join
+  says `:parent "to"`, and its hint `:parent true` (beamlynx lists it under "belongs to").
 - **Hints.** After the name, the table it leads to is suggested as a bare table, with the resolution
-  `"alias"`.
+  `"alias"`. The hint has no `:parent` modifier, even though it is on the parent side: the modifier
+  would skip the join on the name.
 
 ## How it works
 

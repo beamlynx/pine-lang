@@ -84,7 +84,9 @@
     (str (if schema (str schema ".") "") table
          (if alias (str " as " alias) "")
          (if (seq hint-columns) (str " ." (str/join ", ." hint-columns)) "")
-         (if parent " :parent" ""))))
+         ;; `:parent` would skip the join on a name given with `as`
+         ;; (ast/table.clj's update-joins): the bare table is what finds it.
+         (if (and parent (not= "alias" resolution)) " :parent" ""))))
 
 (defn- relations-of
   "Every relation an index entry holds, flattened out of the per-column
@@ -244,8 +246,9 @@
                             :when (and (not= t from-name) (some #(= "id" (:column %)) columns))
                             :let [{:keys [name]} (some #(table/named-value-target % t) named)]
                             :when name]
+                        ;; The value names a row of `t`: `t` is its parent.
                         {:schema nil :table t :column "id" :related-column name
-                         :parent false :resolution "alias"}))]
+                         :parent true :resolution "alias"}))]
     (->> (concat named-hints hints)
          (filter #(str/includes? (str/lower-case (:table %)) (str/lower-case (or token ""))))
          (map (fn [h]
