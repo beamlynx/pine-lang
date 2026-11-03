@@ -3,9 +3,10 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [0.53.1] - 2026-11-04
 ### Fixed
 - **`where:` compares two columns with any operator:** `where: created_at < updated_at`, `where: name ilike pattern`. Only `=` and `!=` took a column on the right; the others failed with "Unknown condition in WHERE operation". `is` with a column now says it takes only null. SQL to Pine converts `WHERE a < b` and `HAVING count(*) > min(x)` too.
-### Fixed
 - **A join on a name you give with `as` now treats the table it leads to as the parent.** In `dp | unnest: dp.companies as company | s: company.id as company_id | company`, each row names one company, as a foreign key does. The join and its suggestion said the opposite, so beamlynx listed `company` under "has" instead of "belongs to". The rows were always right.
 
 ## [0.53.0] - 2026-11-02
