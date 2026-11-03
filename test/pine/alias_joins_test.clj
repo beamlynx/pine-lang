@@ -17,6 +17,20 @@
 (defn- join [expression]
   (-> (state expression) :joins last (select-keys [:from :to :columns :resolution :cast])))
 
+(deftest test-join-from-a-name-direction
+  (testing "The value names a row of the table it joins, as a foreign key does: that table is the parent"
+    (is (= "to" (-> (state "customer | s: id as company_id | company") :joins last :parent)))
+    (is (= "to" (-> (state "customer | unnest: data.companies as company | company") :joins last :parent))))
+
+  (testing "Its suggestion belongs to the parent side, and stays a bare table"
+    (is (= [{:table "company" :parent true :pine "company"}]
+           (->> (get-in (state "customer | s: uuid_col as company_id | comp") [:hints :table])
+                (filter #(= "alias" (:resolution %)))
+                (map #(select-keys % [:table :parent :pine])))))
+    (is (= [{:table "company" :parent true :pine "company"}]
+           (map #(select-keys % [:table :parent :pine])
+                (get-in (state "customer | unnest: data.companies as company | comp") [:hints :table]))))))
+
 (deftest test-join-from-a-name
   (testing "A column named `company_id` with `as` joins `company` on its `id`"
     (is (= {:from "c_0" :to "c_1" :columns [{:from "id" :to "id"}] :resolution "alias" :cast nil}

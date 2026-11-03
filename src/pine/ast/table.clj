@@ -323,7 +323,9 @@
   (when (and (not (:ast y)) (has-id-column? references y))
     (when-let [{:keys [alias column path]} (some #(named-value-target % (:table y)) (named-values state context))]
       (let [{s1 :schema t1 :table} (get aliases alias)]
-        {:from alias :to (:alias y) :parent "from"
+        ;; The value names a row of `y`, as a foreign key does: `y` is the
+        ;; parent.
+        {:from alias :to (:alias y) :parent "to"
          :columns [(cond-> {:from column :to "id"}
                      path (assoc :from-value-path path))]
          :resolution "alias"

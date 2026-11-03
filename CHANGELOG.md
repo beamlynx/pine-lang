@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Fixed
+- **A join on a name you give with `as` now treats the table it leads to as the parent.** In `dp | unnest: dp.companies as company | s: company.id as company_id | company`, each row names one company, as a foreign key does. The join and its suggestion said the opposite, so beamlynx listed `company` under "has" instead of "belongs to". The rows were always right.
 
 ## [0.53.0] - 2026-11-02
 ### Added
