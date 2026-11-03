@@ -308,6 +308,9 @@
    :not-ilike "NOT ILIKE" :greater-than ">" :less-than "<" :greater-than-equal ">="
    :less-than-equal "<="})
 
+(defn- column-node? [node]
+  (and (vector? node) (= :column (first node))))
+
 (defn- variable-operator [op]
   (or (variable-operators op)
       (throw (ex-info (str "A $variable can't follow `" (name op) "`.") {:operator op}))))
@@ -520,6 +523,15 @@
 
      [:condition column-pattern [:less-than-equal] [:date value]]
      (make-condition column-pattern "<=" (dt/date value))
+
+    ;; Column-to-column for the other comparisons: `created_at < updated_at`,
+    ;; `name like pattern`. `=` and `!=` are matched above. Not `is`/`is not`,
+    ;; which only take null.
+     [:condition column-pattern [op] (rhs :guard column-node?)]
+     (if-let [operator (variable-operators op)]
+       (make-condition column-pattern operator rhs)
+       (throw (ex-info (str "`" (s/replace (name op) "-" " ") "` takes null, not a column: `is null` or `is not null`.")
+                       {:_ condition})))
 
      :else                (throw (ex-info "Unknown condition in WHERE operation"      {:_ condition})))))
 

@@ -365,8 +365,6 @@
     (refuse at "A comparison needs a column on one side."))
   (when (and (= :null (:kind right)) (#{"=" "!="} operator))
     (refuse (:at right) (str "`" operator " NULL` is never true in SQL. Write IS NULL or IS NOT NULL.")))
-  (when (and (column-operand? right) (not (#{"=" "!="} operator)))
-    (refuse at (str "Comparing two columns with " operator " isn't in Pine. Two columns compare with = or != only.")))
   {:col (resolve-column tables (:column left))
    :operator operator
    :cast (column-cast left)

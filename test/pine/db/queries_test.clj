@@ -33,6 +33,11 @@
      (testing "ilike matches whatever the case"
        (is (= ["Ann"] (e/column db "person | where: name ilike 'a%' | select: name"))))
 
+     (testing "two columns compare with any operator, not only = and !="
+       (is (= ["Bob" "Cy"] (e/column db "person | where: id > company_id | select: name | order: id asc")))
+       (is (= ["Ann" "Bob" "Cy"] (e/column db "person | where: id >= company_id | select: name | order: id asc")))
+       (is (= ["Cy"] (e/column db "company as c | person | where: name < c.name | select: name"))))
+
      (testing "a boolean column"
        (is (= ["Ann" "Cy"] (e/column db "person | where: active = true | select: name | order: id asc"))))
 

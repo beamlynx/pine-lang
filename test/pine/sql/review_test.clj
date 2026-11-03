@@ -145,10 +145,13 @@
     (refuses "select company_id, min(salary) as m, max(salary) as m from employee group by company_id"
              "Two selected columns are both called `m`"))
 
-  (testing "Two columns compared with <, >, <= or >= are refused"
-    (refuses "select e.id from employee e join company c on c.id = e.company_id where e.salary > c.score" "with > isn't in Pine")
-    (refuses "select company_id from employee group by company_id having count(*) > min(salary)" "with > isn't in Pine")
-    (refuses "select * from t where a > b" "with > isn't in Pine")
+  (testing "Two columns compare with any operator"
+    (converts-to "select e.id from employee e join company c on c.id = e.company_id where e.salary > c.score"
+                 "employee as e | company as c .id = .company_id | where: e.salary > score | select: e.id | from: e")
+    (converts-to "select company_id from employee group by company_id having count(*) > min(salary)"
+                 "employee | group: company_id with count, salary => min as min_salary | where: count > min_salary | select: company_id")
+    (converts-to "select * from t where a > b" "t | where: a > b")
+    (converts-to "select * from t where 5 < a" "t | where: a > 5")
     (converts-to "select * from t where a != b" "t | where: a != b"))
 
   (testing "A string with a line break is refused"
