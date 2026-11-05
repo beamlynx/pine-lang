@@ -5,6 +5,8 @@
   (:require [clojure.java.io :as io]
             [instaparse.core :as insta]))
 
+(set! *warn-on-reflection* true)
+
 (defmacro defparser
   "Like instaparse's defparser, for the grammar in the classpath resource
   `path`. defparser compiles the grammar ahead of time only when it is given

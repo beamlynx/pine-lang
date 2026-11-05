@@ -3,6 +3,8 @@
             [pine.db.connections :as connections]
             [pine.db.exec :as exec]))
 
+(set! *warn-on-reflection* true)
+
 (defn- get-foreign-keys
   "Get the foreign keys from the database. MySQL's information_schema is
   server-global (unlike Postgres, where a connection is already scoped to
@@ -14,7 +16,7 @@
   group a composite key's column pairs back into one relation. MySQL
   returns one correctly paired row per column already, so the pairing
   itself needs no work here - only the constraint they belong to."
-  [pool]
+  [^javax.sql.DataSource pool]
   (prn (format "Loading all references..."))
   (let [opts {:as-arrays? true}
         sql "SELECT kcu.table_schema, kcu.table_name, kcu.column_name,
@@ -32,7 +34,7 @@ ORDER BY kcu.table_schema, kcu.table_name, kcu.constraint_name, kcu.ordinal_posi
   "Get the columns for all tables. Column names/order match Postgres's
   query exactly (both are ANSI information_schema), so references.clj
   needs no changes to consume either."
-  [pool]
+  [^javax.sql.DataSource pool]
   (prn (format "Loading all columns..."))
   (let [opts {:as-arrays? true}
         sql "SELECT table_schema, table_name, column_name, ordinal_position,
@@ -46,7 +48,7 @@ ORDER BY table_schema, table_name, ordinal_position"]
 (defn- get-primary-keys
   "Each table's primary key, one row per column, in key order. MySQL always
   names a primary key constraint PRIMARY."
-  [pool]
+  [^javax.sql.DataSource pool]
   (let [opts {:as-arrays? true}
         sql "SELECT table_schema, table_name, column_name, ordinal_position
 FROM information_schema.key_column_usage

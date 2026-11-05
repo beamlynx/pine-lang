@@ -4,6 +4,8 @@
             [pine.db.connections :as connections]
             [pine.db.exec :as exec]))
 
+(set! *warn-on-reflection* true)
+
 (def ^:private schema-name
   "A SQLite file has no schemas of its own; its one database is called
   `main`. It goes in the same :schema slot MySQL's database name does, so
@@ -60,7 +62,7 @@
   the same position is used. The parent table's name is taken from the
   schema, not the constraint, because SQLite matches names without regard
   to case."
-  [pool]
+  [^javax.sql.DataSource pool]
   (prn (format "Loading all references..."))
   (let [opts {:as-arrays? true}
         sql "SELECT 'main' AS table_schema,
@@ -85,7 +87,7 @@ ORDER BY m.name, f.id, f.seq"]
   and MySQL's queries, so references.clj consumes any of them. SQLite's own
   tables (`sqlite_%`) are skipped. The length is always NULL: a declared
   `VARCHAR(255)` is not enforced, so there is nothing to report."
-  [pool]
+  [^javax.sql.DataSource pool]
   (prn (format "Loading all columns..."))
   (let [opts {:as-arrays? true}
         sql "SELECT 'main' AS table_schema,
@@ -111,7 +113,7 @@ ORDER BY m.name, p.cid"]
   dialects: update! and delete! refuse to change it, since its rows can't be
   told apart. (Its hidden rowid could, but a table that is copied or rebuilt
   renumbers it.)"
-  [pool]
+  [^javax.sql.DataSource pool]
   (let [opts {:as-arrays? true}
         sql "SELECT 'main' AS table_schema,
        m.name AS table_name,

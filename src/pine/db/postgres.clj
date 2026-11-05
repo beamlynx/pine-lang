@@ -3,6 +3,8 @@
             [pine.db.connections :as connections]
             [pine.db.exec :as exec]))
 
+(set! *warn-on-reflection* true)
+
 (defn- get-foreign-keys
   "Get the foreign keys from the database.
 
@@ -27,7 +29,7 @@
   db/references.clj groups the rows back into one relation per
   constraint, so a composite key becomes a single join on all of its
   columns."
-  [pool]
+  [^javax.sql.DataSource pool]
   (prn (format "Loading all references..."))
   (let [opts {:as-arrays? true}
         sql "SELECT
@@ -77,7 +79,7 @@ WHERE con.contype = 'f'
   and NULL otherwise. With data_type (the enum's own name), it names the
   type a string is cast to before it is compared with the column: Postgres
   has no `=` between an enum and the varchar a string is bound as."
-  [pool]
+  [^javax.sql.DataSource pool]
   (prn (format "Loading all columns..."))
   (let [opts {:as-arrays? true}
         sql "SELECT
@@ -109,7 +111,7 @@ ORDER BY n.nspname, c.relname, a.attnum"]
   "Each table's primary key, one row per column, with its position in the
   key. `conkey` lists the key's columns in key order, which is the order a
   composite key is matched in."
-  [pool]
+  [^javax.sql.DataSource pool]
   (let [opts {:as-arrays? true}
         sql "SELECT
   n.nspname AS table_schema,

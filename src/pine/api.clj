@@ -34,7 +34,12 @@
    [ring.middleware.not-modified :refer [wrap-not-modified]]
    [ring.util.response :refer [response]])
   (:import
+   [com.fasterxml.jackson.core JsonGenerator]
    [java.util TimeZone]))
+
+(set! *warn-on-reflection* true)
+
+(set! *warn-on-reflection* true)
 
 ;; Set default timezone to UTC
 (TimeZone/setDefault (TimeZone/getTimeZone "UTC"))
@@ -61,9 +66,9 @@
 ;; `1990-07-22T00:00:00Z`. A timestamp is written as its instant instead,
 ;; with its fraction, in UTC since that's this JVM's zone (above). A whole
 ;; second reads as it did. A date and a time are written as themselves.
-(add-encoder java.sql.Timestamp (fn [^java.sql.Timestamp ts gen] (.writeString gen (str (.toInstant ts)))))
-(add-encoder java.sql.Date (fn [^java.sql.Date d gen] (.writeString gen (str (.toLocalDate d)))))
-(add-encoder java.sql.Time (fn [^java.sql.Time t gen] (.writeString gen (str (.toLocalTime t)))))
+(add-encoder java.sql.Timestamp (fn [^java.sql.Timestamp ts ^JsonGenerator gen] (.writeString gen (str (.toInstant ts)))))
+(add-encoder java.sql.Date (fn [^java.sql.Date d ^JsonGenerator gen] (.writeString gen (str (.toLocalDate d)))))
+(add-encoder java.sql.Time (fn [^java.sql.Time t ^JsonGenerator gen] (.writeString gen (str (.toLocalTime t)))))
 
 (def version v/version)
 
