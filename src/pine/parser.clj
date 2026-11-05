@@ -11,10 +11,10 @@
   can continue after it: 'company |= x | w: active = true' is valid."
   (:require
    [clojure.core.match :refer [match]]
-   [clojure.java.io :as io]
    [clojure.string :as s]
    [instaparse.core :as insta]
    [pine.computed :as computed]
+   [pine.grammar :refer [defparser]]
    [pine.data-types :as dt]))
 
 (defmulti -normalize-op
@@ -887,9 +887,7 @@
 
 ;; -----
 
-(def ^:private parser
-  (let [grammar (-> "pine/pine.bnf" io/resource slurp)]
-    (insta/parser grammar)))
+(defparser ^:private parser "pine/pine.bnf")
 
 (defn- normalize-ops [[_ & nodes]]
   (mapv (fn [[_ op]] (-normalize-op op))
