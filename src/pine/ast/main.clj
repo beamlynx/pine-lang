@@ -499,34 +499,54 @@
                           (path/path-text alias path)
                           (path/path-text column path))})))))
 
-(defn post-handle [state truncated-state]
-  (-> state
-      (hints/handle truncated-state)
+(defn post-handle
+  "Finishes a state after its ops. With query-only? true it skips the two
+  steps only the editor needs, the hints and the prettified text, and
+  leaves what build-query reads exactly as it would be. Hints can run a
+  path search (`? target`) that takes up to a few hundred milliseconds."
+  ([state truncated-state]
+   (post-handle state truncated-state false))
+  ([state truncated-state query-only?]
+   (-> state
+       (cond-> (not query-only?) (hints/handle truncated-state))
       ;; Each table's primary key, kept for update!, which is built after
       ;; :references is dropped below
-      select/add-record-keys
+       select/add-record-keys
       ;; Add auto-ID columns based on final operation type
-      select/add-auto-id-columns
+       select/add-auto-id-columns
       ;; After the key columns: only a table that has them is editable
-      select/add-element-index-columns
-      select/add-json-type-columns
-      (assoc :unnests (unnest-entries state))
+       select/add-element-index-columns
+       select/add-json-type-columns
+       (assoc :unnests (unnest-entries state))
       ;; A node is a table. The elements of unnest: are shown on the node
       ;; of the table they came from, as :unnests.
-      (assoc :selected-tables (let [tables (remove :elements (state :tables))
-                                    type (-> state :operation :type)]
-                                (if
-                                 (= type :table)
-                                  (-> tables reverse rest reverse)
-                                  tables)))
-      add-prettify
+       (assoc :selected-tables (let [tables (remove :elements (state :tables))
+                                     type (-> state :operation :type)]
+                                 (if
+                                  (= type :table)
+                                   (-> tables reverse rest reverse)
+                                   tables)))
+       (cond-> (not query-only?) add-prettify)
       ;; :references is normally internal-only scaffolding, dropped before the
       ;; state is used further - but when :access-policy is non-empty, eval.clj
       ;; needs it at SQL-render time to resolve each column's real DB type/table
       ;; (see pine.access-policy). Nested named result/CTE snapshots (taken earlier,
       ;; via assign/handle) already carry :references regardless, since this
       ;; dissoc only ever runs once, on the final top-level state.
-      (#(if (seq (:access-policy %)) % (dissoc % :references)))))
+       (#(if (seq (:access-policy %)) % (dissoc % :references))))))
+
+(defn generate-for-query
+  "The state build-query needs to write the SQL, built the same way as
+  generate's but without a cursor, hints or prettified text. Used where only
+  the SQL matters: the :query of a build, and the blocks before the last
+  one."
+  ([parse-tree connection-id expression named-results access-policy]
+   (-> state
+       (pre-handle connection-id (count parse-tree) expression nil named-results access-policy)
+       (handle-ops parse-tree)
+       add-pending-checkpoint
+       (post-handle nil true)
+       (assoc :operation-types (mapv :type parse-tree)))))
 
 (defn generate
   ([parse-tree]
