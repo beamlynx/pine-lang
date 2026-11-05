@@ -26,8 +26,12 @@
    [pine.variables :as variables]
    [pine.version :as v]
    [ring.middleware.cors :refer [wrap-cors]]
-   [ring.middleware.defaults :refer [api-defaults wrap-defaults]]
+   [ring.middleware.content-length :refer [wrap-content-length]]
+   [ring.middleware.content-type :refer [wrap-content-type]]
+   [ring.middleware.default-charset :refer [wrap-default-charset]]
    [ring.middleware.json :refer [wrap-json-params wrap-json-response]]
+   [ring.middleware.keyword-params :refer [wrap-keyword-params]]
+   [ring.middleware.not-modified :refer [wrap-not-modified]]
    [ring.util.response :refer [response]])
   (:import
    [java.util TimeZone]))
@@ -922,10 +926,19 @@
       wrap-json-response
       wrap-exception-logging
       wrap-logger
-;; Parameters come from the JSON body only. api-defaults also reads
-      ;; form-encoded bodies and the query string; a form POST is a CORS
-      ;; "simple request" that a web page can send without a preflight.
-      (wrap-defaults (assoc-in api-defaults [:params :urlencoded] false))
+      ;; Parameters come from the JSON body only. Nothing reads form-encoded
+      ;; bodies or the query string: a form POST is a CORS "simple request"
+      ;; that a web page can send without a preflight.
+      ;;
+      ;; These five are what ring-defaults' api-defaults installed, minus
+      ;; wrap-params, in its order. Loading ring.middleware.defaults itself
+      ;; cost about 100 ms at startup, for session, cookie, anti-forgery,
+      ;; multipart and SSL middleware this API never used.
+      wrap-keyword-params
+      wrap-content-type
+      (wrap-default-charset "utf-8")
+      wrap-not-modified
+      wrap-content-length
       wrap-body-limit
       wrap-auth
       wrap-host-check
