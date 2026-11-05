@@ -13,9 +13,12 @@
    [clojure.core.match :refer [match]]
    [clojure.string :as s]
    [instaparse.core :as insta]
+   [pine.cache :as cache]
    [pine.computed :as computed]
    [pine.grammar :refer [defparser]]
    [pine.data-types :as dt]))
+
+(set! *warn-on-reflection* true)
 
 (defmulti -normalize-op
   "Normalize the output of the parser. The first argument is the type of the
@@ -889,6 +892,19 @@
 
 (defparser ^:private parser "pine/pine.bnf")
 
+;; Each build reads the same text several times: the last block, the same
+;; block cut at the cursor, cut again without its trailing pipe, and every
+;; block before it, which mostly hasn't changed since the last keystroke.
+;; The tree depends on nothing but the text, so it is kept, keyed on the
+;; exact text, for the last 64 texts read.
+(def ^:private trees (cache/lru 64))
+
+(defn- parse-tree
+  "Instaparse's tree for expression, or its failure."
+  [expression]
+  (or (cache/lookup trees expression)
+      (cache/store! trees expression (parser expression))))
+
 (defn- normalize-ops [[_ & nodes]]
   (mapv (fn [[_ op]] (-normalize-op op))
         (filter #(= (first %) :OPERATION) nodes)))
@@ -961,7 +977,7 @@
 (defn parse
   "Parse an expression and return the normalized operations or failure as a string"
   [expression]
-  (let [result (parser expression)
+  (let [result (parse-tree expression)
         failure? (insta/failure? result)]
     (if failure?
       (let [failure (insta/get-failure result)
@@ -971,7 +987,7 @@
       {:result (normalize-ops result)})))
 
 (defn parse-or-fail [expression]
-  (-> expression parser normalize-ops))
+  (-> expression parse-tree normalize-ops))
 
 ;; ---------
 ;; DOC COMMENT
@@ -1073,7 +1089,7 @@
    the very next gesture. Comments between operations are still dropped,
    same as before."
   [expression]
-  (let [result (parser expression)]
+  (let [result (parse-tree expression)]
     (if (insta/failure? result)
       {:error (with-out-str (println (insta/get-failure result)))}
       (let [operations (rest result)

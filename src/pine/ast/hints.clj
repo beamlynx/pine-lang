@@ -2,7 +2,10 @@
   (:require [clojure.set :as set]
             [clojure.string :as str]
             [pine.ast.path :as path]
-            [pine.ast.table :as table]))
+            [pine.ast.table :as table]
+            [pine.cache :as cache]))
+
+(set! *warn-on-reflection* true)
 
 (defn- filter-relations
   "Given a partial token (which can be completed to a table) and all the
@@ -555,9 +558,7 @@
 ;; The last searches' results, most recently used last. A key holds the
 ;; schema index's identity, not its value: reindexing or switching
 ;; connection makes a new index, so an old entry can't match again.
-(def ^:private path-cache
-  (proxy [java.util.LinkedHashMap] [16 0.75 true]
-    (removeEldestEntry [_] (> (.size ^java.util.Map this) path-cache-size))))
+(def ^:private path-cache (cache/lru path-cache-size))
 
 (defn- cached-table-paths
   "find-table-paths, remembered for the same schema index and the same
@@ -572,14 +573,13 @@
   [state sources target-table target-schema excluded]
   (let [references (:references state)
         k [(System/identityHashCode references) sources target-table target-schema excluded]
-        hit (locking path-cache (.get ^java.util.Map path-cache k))
+        hit (cache/lookup path-cache k)
         hit (when (and hit (identical? (:references hit) references)) hit)]
     (if (and hit (or (:final hit) (not (:cut-short (meta (:paths hit))))))
       (:paths hit)
       (let [paths (find-table-paths state sources target-table target-schema excluded)
             paths (if (and hit (> (count (:paths hit)) (count paths))) (:paths hit) paths)]
-        (locking path-cache
-          (.put ^java.util.Map path-cache k {:references references :paths paths :final (some? hit)}))
+        (cache/store! path-cache k {:references references :paths paths :final (some? hit)})
         paths))))
 
 (defn- reachable-table-names

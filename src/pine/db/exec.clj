@@ -6,6 +6,8 @@
   (:require [clojure.java.jdbc :as jdbc]
             [pine.db.connections :as connections]))
 
+(set! *warn-on-reflection* true)
+
 (def ^:private log-queries?
   "Per-query logging, opt-in via PINE_LOG_QUERIES=1.
 
@@ -94,7 +96,7 @@
   (let [run-id *run-id*]
     (when (and run-id (contains? @stopped run-id))
       (throw (stopped-error)))
-    (with-open [stmt (jdbc/prepare-statement conn sql opts)]
+    (with-open [^java.lang.AutoCloseable stmt (jdbc/prepare-statement conn sql opts)]
       (when run-id (swap! statements assoc run-id stmt))
       (try
         ;; A stop that came in between the check above and the line above

@@ -4,6 +4,8 @@
   (:import
    (com.zaxxer.hikari HikariConfig HikariDataSource)))
 
+(set! *warn-on-reflection* true)
+
 (defn default-port [dbtype]
   (case dbtype
     "mysql" 3306
@@ -180,7 +182,7 @@
       (validate-sqlite-connection config)
       (validate-server-connection config dbtype))))
 
-(defn create-pool [config]
+(defn create-pool ^HikariDataSource [config]
   (HikariDataSource. (create-hikari-config (validate-connection config))))
 
 (def pools "Database connection pools" (atom {}))
@@ -219,7 +221,9 @@
               (s/starts-with? url "jdbc:sqlite:") :sqlite))))
       :postgres))
 
-(defn get-connection-pool [id]
+(defn get-connection-pool
+  "The pool for a connection id: a DataSource, opened on first use."
+  ^javax.sql.DataSource [id]
   (let [pool-or-fn (@pools id)]
     (if pool-or-fn
       (if (fn? pool-or-fn)
@@ -268,7 +272,7 @@
   key and a Compojure route segment (`/api/v1/connections/:id/...`) -- which
   is also why dbname is joined with `:` rather than `/`: a literal `/` would
   split into two path segments and 404."
-  [pool]
+  [^HikariDataSource pool]
   (let [url (.getJdbcUrl pool)]
     (if (sqlite-url? url)
       (sqlite-id (sqlite-path url))
@@ -282,7 +286,7 @@
     (let [{:keys [host-port dbname]} (parse-jdbc-url url)]
       (str host-port " · " dbname))))
 
-(defn make-connection-label [pool]
+(defn make-connection-label [^HikariDataSource pool]
   (jdbc-url->label (.getJdbcUrl pool)))
 
 (defn get-connection-name [id]
@@ -303,7 +307,7 @@
   port, and dbname all match (make-connection-id folds dbname in), so the
   one remaining case this distinguishes is the same database registered
   again under a different user."
-  [existing candidate]
+  [existing ^HikariDataSource candidate]
   (and (instance? HikariDataSource existing)
        (= (.getJdbcUrl ^HikariDataSource existing) (.getJdbcUrl candidate))
        (= (.getUsername ^HikariDataSource existing) (.getUsername candidate))))
@@ -362,5 +366,6 @@
                   {:id id}))))))
 
 (defn remove-connection-pool [id]
-  (.close (get-connection-pool id))
+  ;; Closeable, not DataSource: a pool is closed through Closeable.
+  (.close ^java.io.Closeable (get-connection-pool id))
   (swap! pools dissoc id))

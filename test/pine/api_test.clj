@@ -511,4 +511,21 @@
   (testing "A date is a date, not midnight"
     (is (= "\"1990-07-22\"" (json/generate-string (java.sql.Date/valueOf "1990-07-22")))))
   (testing "A time is a time"
-    (is (= "\"10:00:05\"" (json/generate-string (java.sql.Time/valueOf "10:00:05"))))))
+    (is (= "\"10:00:05\"" (json/generate-string (java.sql.Time/valueOf "10:00:05")))))
+  ;; Pins the whole wire format, byte for byte, so a faster encoder can't
+  ;; change what the client reads.
+  (testing "Every date and time type a driver returns, in a result row"
+    (is (= "UTC" (.getID (java.util.TimeZone/getDefault))))
+    (is (= (str "[{\"ms\":\"2024-01-31T10:00:00.123Z\",\"whole\":\"2024-01-31T10:00:00Z\","
+                "\"date\":\"1990-07-22\",\"time\":\"10:15:30\",\"util\":\"2024-01-31T10:00:00Z\","
+                "\"ldt\":\"2024-01-31T10:00:00.500\",\"ld\":\"2024-01-31\",\"lt\":\"10:15:30\"}]")
+           (json/generate-string
+            [(array-map :ms (java.sql.Timestamp/valueOf "2024-01-31 10:00:00.123")
+                        :whole (java.sql.Timestamp/valueOf "2024-01-31 10:00:00")
+                        :date (java.sql.Date/valueOf "1990-07-22")
+                        :time (java.sql.Time/valueOf "10:15:30")
+                        ;; Cheshire's own encoder: no fraction of a second
+                        :util (java.util.Date. 1706695200123)
+                        :ldt (java.time.LocalDateTime/parse "2024-01-31T10:00:00.5")
+                        :ld (java.time.LocalDate/parse "2024-01-31")
+                        :lt (java.time.LocalTime/parse "10:15:30"))])))))
