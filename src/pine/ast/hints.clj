@@ -536,7 +536,9 @@
       (let [deadline (+ (System/nanoTime) (* max-search-millis 1000000))]
         (loop [found []]
           (if (or (.isEmpty queue) (>= (count found) max-paths) (> (System/nanoTime) deadline))
-            found
+            ;; :cut-short says the deadline ended the search, not the
+            ;; search itself (cached-table-paths).
+            (with-meta found {:cut-short (and (not (.isEmpty queue)) (< (count found) max-paths))})
             (let [{:keys [visited hops table rename origin]} (.poll queue)]
               (if (and (seq hops) (target? (last hops)))
                 (recur (conj found hops))
@@ -547,6 +549,38 @@
                       (.add queue (make-entry (conj visited (:table hop)) (conj hops hop)
                                               (:table hop) {} origin))))
                   (recur found))))))))))
+
+(def ^:private path-cache-size 64)
+
+;; The last searches' results, most recently used last. A key holds the
+;; schema index's identity, not its value: reindexing or switching
+;; connection makes a new index, so an old entry can't match again.
+(def ^:private path-cache
+  (proxy [java.util.LinkedHashMap] [16 0.75 true]
+    (removeEldestEntry [_] (> (.size ^java.util.Map this) path-cache-size))))
+
+(defn- cached-table-paths
+  "find-table-paths, remembered for the same schema index and the same
+  question: the same sources, target and tables already joined. Typing
+  elsewhere in an expression that ends in `? target` asks the same
+  question again, and the search can take its whole time budget.
+
+  A search the deadline cut short runs once more when it is asked again,
+  and the result with more paths is kept. The first search after the
+  server starts runs on a cold JVM and finds less than a later one. After
+  that retry the answer stays the same between keystrokes."
+  [state sources target-table target-schema excluded]
+  (let [references (:references state)
+        k [(System/identityHashCode references) sources target-table target-schema excluded]
+        hit (locking path-cache (.get ^java.util.Map path-cache k))
+        hit (when (and hit (identical? (:references hit) references)) hit)]
+    (if (and hit (or (:final hit) (not (:cut-short (meta (:paths hit))))))
+      (:paths hit)
+      (let [paths (find-table-paths state sources target-table target-schema excluded)
+            paths (if (and hit (> (count (:paths hit)) (count paths))) (:paths hit) paths)]
+        (locking path-cache
+          (.put ^java.util.Map path-cache k {:references references :paths paths :final (some? hit)}))
+        paths))))
 
 (defn- reachable-table-names
   "Every real table name reachable from `sources` within max-path-depth hops
@@ -608,7 +642,7 @@
         sources (when current-entry (table/resolve-table current-entry))
         excluded (piped-table-names state)]
     (if (and (seq token) (contains? (-> state :references :table) token))
-      (let [paths (find-table-paths state sources token target-schema excluded)]
+      (let [paths (cached-table-paths state sources token target-schema excluded)]
         {:key :paths :hints (map path->hint paths)})
       (let [reachable (reachable-table-names state sources excluded)]
         {:key :table

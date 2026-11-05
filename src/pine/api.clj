@@ -157,6 +157,18 @@
        {:error-type "parse"
         :error error}))))
 
+(defn- generate-query-state
+  "Like generate-state, but builds only what the SQL needs: no hints and no
+  prettified text (ast/generate-for-query). For a `? target` step the hints
+  are a path search, so this is what keeps a build to one search."
+  [expression connection-id named-results access-policy]
+  (let [{:keys [result error]} (parser/parse expression)]
+    (if result
+      {:result (ast/generate-for-query (variables/bind result) (or connection-id @db/connection-id)
+                                       expression named-results access-policy)}
+      {:error-type "parse"
+       :error error})))
+
 (defn- evaluate-expressions
   "Evaluate a sequence of pine expressions, threading named results from |= assignments
   into subsequent expressions. Returns {:last-state <state> :error <msg>}.
@@ -169,7 +181,8 @@
    (evaluate-expressions expressions connection-id []))
   ([expressions connection-id access-policy]
    (reduce (fn [{:keys [named-results]} expression]
-             (let [{:keys [result error]} (generate-state expression nil connection-id named-results access-policy)]
+             ;; Only each block's named results are used, so no hints.
+             (let [{:keys [result error]} (generate-query-state expression connection-id named-results access-policy)]
                (if error
                  (reduced {:error error})
                  {:named-results (merge named-results (:pending-assignments result))
@@ -301,7 +314,10 @@
                   ;; keeps its hints. /eval is the one that refuses.
                    :variables (variables/report exprs variables/*bindings*)
                    :ast (prune-ast (update state :columns #(annotate-columns state conn-id policy-rules %)))}
-                  (-> last-expr trim-pipes (generate-state nil conn-id named-results access-policy) :result build-sql)))))))
+                  ;; The SQL is built again from the expression without
+                  ;; its trailing pipe: in `tenant | company | ` the state
+                  ;; above ends in an empty table step and has no SQL.
+                  (-> last-expr trim-pipes (generate-query-state conn-id named-results access-policy) :result build-sql)))))))
        (catch Exception e
          (log-exception "api-build" e)
          (if (unreachable? e)
