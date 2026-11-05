@@ -174,9 +174,8 @@
 ;; rather than a rule in pine.bnf: it's a different kind of expression from a
 ;; pipeline, and keeping it apart leaves the query grammar untouched.
 
-(def ^:private values-parser
-  (insta/parser
-   "VALUES      := <ws?> assignment (<ws> assignment)* <ws?>
+(insta/defparser ^:private values-parser
+  "VALUES      := <ws?> assignment (<ws> assignment)* <ws?>
     assignment  := <'$'> name <ws?> <'='> (<ws?> value)?
     name        := #'[A-Za-z_][A-Za-z0-9_]*'
     <value>     := string | number | boolean | list
@@ -185,7 +184,7 @@
     string      := <\"'\"> #\"(?:[^']|'')*+\" <\"'\">
     number      := #'-?[0-9]+(\\.[0-9]+)?'
     boolean     := 'true' | 'false'
-    ws          := (#'[ \\t\\r\\n]+' | #'--[^\\r\\n]*' | #'(?s)/\\*.*?\\*/')+"))
+    ws          := (#'[ \\t\\r\\n]+' | #'--[^\\r\\n]*' | #'(?s)/\\*.*?\\*/')+")
 
 (defn values-block?
   "Whether an expression is a values block: its first character after any

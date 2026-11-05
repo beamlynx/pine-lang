@@ -12,12 +12,11 @@
   A statement the grammar can't read comes back as {:error :error-type}.
   When the text stops at a word Pine has no equivalent for (OFFSET,
   DISTINCT, a function call), the message names it."
-  (:require [clojure.java.io :as io]
-            [clojure.string :as s]
-            [instaparse.core :as insta]))
+  (:require [clojure.string :as s]
+            [instaparse.core :as insta]
+            [pine.grammar :refer [defparser]]))
 
-(def ^:private grammar
-  (insta/parser (-> "pine/sql/sql.bnf" io/resource slurp)))
+(defparser ^:private grammar "pine/sql/sql.bnf")
 
 (defn line-of
   "The 1-based line `index` falls on in `text`."

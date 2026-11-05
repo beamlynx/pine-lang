@@ -9,7 +9,8 @@
         com.zaxxer/HikariCP {:mvn/version "5.0.1"}
         ;; api
         ring/ring-core {:mvn/version "1.15.5"}
-        ring/ring-defaults {:mvn/version "0.7.1"}
+        ;; wrap-default-charset (pine.api's app)
+        ring/ring-headers {:mvn/version "0.4.0"}
         ring/ring-jetty-adapter {:mvn/version "1.15.5"}
         compojure/compojure {:mvn/version "1.7.2"}
         ring/ring-json {:mvn/version "0.5.1"}

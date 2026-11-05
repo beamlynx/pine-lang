@@ -22,6 +22,7 @@ MODULES_LIST="$DESKTOP_DIR/jpackage/modules.list"
 BUILD_DIR="$DESKTOP_DIR/build"
 RUNTIME_DIR="$BUILD_DIR/runtime"
 APP_IMAGE_DIR="$BUILD_DIR/app-image"
+INPUT_DIR="$BUILD_DIR/input"
 
 echo "Pine version: $PINE_VERSION"
 
@@ -52,7 +53,12 @@ MODULES=$(grep -v '^#' "$MODULES_LIST" | grep -v '^\s*$' | tr '\n' ',' | sed 's/
   --module-path "$JAVA_HOME/jmods" \
   --add-modules "$MODULES" \
   --output "$RUNTIME_DIR" \
-  --strip-debug --no-header-files --no-man-pages
+  --strip-debug --no-header-files --no-man-pages \
+  --generate-cds-archive
+# --generate-cds-archive writes the JDK's own class-data-sharing archive
+# into the runtime (lib/server/classes.jsa), so the JVM maps its classes
+# instead of loading them one by one. beamlynx-desktop can then add an
+# archive for pine's classes on top; that needs this one to exist.
 
 echo "Building app-image via jpackage..."
 rm -rf "$APP_IMAGE_DIR"
@@ -66,9 +72,20 @@ APP_VERSION_ARGS=(--app-version "$PINE_VERSION")
 if [ "$(uname)" = "Darwin" ]; then
   APP_VERSION_ARGS=()
 fi
+# jpackage copies everything in --input into the image. target/ also holds
+# the AOT class files the jar was built from (thousands of files the image
+# never reads), so only the jar is staged.
+rm -rf "$INPUT_DIR"
+mkdir -p "$INPUT_DIR"
+cp target/pine-standalone.jar "$INPUT_DIR/"
+# A single-user server on loopback: the serial collector and a 1 GB heap
+# cap use fewer threads and less memory than the JVM's defaults (G1, and a
+# heap of a quarter of the machine's RAM).
 "$JAVA_HOME/bin/jpackage" --type app-image \
   --name pine-server \
-  --input target \
+  --input "$INPUT_DIR" \
+  --java-options '-XX:+UseSerialGC' \
+  --java-options '-Xmx1g' \
   --main-jar pine-standalone.jar \
   --main-class pine.core \
   --runtime-image "$RUNTIME_DIR" \

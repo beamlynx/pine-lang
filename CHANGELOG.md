@@ -4,6 +4,8 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 ### Changed
+- **The server starts faster.** It answers about 1.0 s after launch instead of 1.4 s, because its grammars are now prepared when it is built. The desktop app's server also uses less memory and fewer threads.
+### Changed
 - **Finding a route with `? table` is faster on a large schema.** Each keystroke searches once instead of twice, and asking the same question again reuses the answer: on a 403-table schema, about 390 ms per keystroke became 200 ms, and a repeat under 3 ms.
 
 ## [0.53.1] - 2026-11-04

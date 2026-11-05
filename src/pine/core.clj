@@ -1,7 +1,15 @@
 (ns pine.core
-  (:require [pine.api :refer [app server-config]]
+  (:require [pine.api :refer [app server-config version]]
             [ring.adapter.jetty :refer [run-jetty]])
   (:gen-class))
+
+(defn ready-line
+  "The line printed once the server is answering. beamlynx-desktop reads it
+  with /^pine-server ready (\\S+)/ and checks the version against the one
+  /api/v1/connections returns, so the two must be the same string. Keep
+  the format, and print nothing else that starts this way."
+  []
+  (str "pine-server ready " version))
 
 #_{:clj-kondo/ignore [:unused-binding]}
 (defn -main [& args]
@@ -27,7 +35,13 @@
     (println (if token
                "Launch token: required"
                "Launch token: not set (anyone on this machine can use this server)"))
-    (run-jetty app {:port (Integer/parseInt (or (System/getenv "PINE_PORT") "33333"))
-                    :host host
-                    :join? false})))
+    (let [server (run-jetty app {:port (Integer/parseInt (or (System/getenv "PINE_PORT") "33333"))
+                                 :host host
+                                 :join? false})]
+      ;; run-jetty returns once the port is open and answering. This line
+      ;; says so, and which version is running, so beamlynx-desktop can stop
+      ;; polling HTTP to find out.
+      (println (ready-line))
+      (flush)
+      server)))
 
