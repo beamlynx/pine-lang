@@ -422,6 +422,21 @@
             :params nil}
            (generate "company | l: 10 | employee | delete! .id"))))
 
+  (testing "a write on a named result changes its table's rows, the ones the named result holds"
+    (is (= {:queries [{:table "company"
+                       :query "UPDATE \"company\" SET \"name\" = ? WHERE \"id\" IN ( WITH \"x\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? ) SELECT \"x\".\"id\" FROM \"x\" AS \"x\" )"
+                       :params [(dt/string "a") (dt/number "1")]}]}
+           (generate-expressions ["company | where: id = 1 |= x" "x | update! name = 'a'"])))
+    (is (= {:query "DELETE FROM \"company\" WHERE \"id\" IN ( WITH \"x\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? ) SELECT \"x\".\"id\" FROM \"x\" AS \"x\" WHERE \"x\".\"id\" = ? )"
+            :params [(dt/number "1") (dt/number "2")]}
+           (generate-expressions ["company | where: id = 1 |= x" "x | where: id = 2 | delete! .id"])))
+    (testing "through a named result built on another"
+      (is (= "UPDATE \"company\" SET \"name\" = ? WHERE \"id\" IN ( WITH \"x\" AS ( SELECT \"c_0\".* FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? ), \"y\" AS ( SELECT \"x\".* FROM \"x\" AS \"x\" ) SELECT \"y\".\"id\" FROM \"y\" AS \"y\" )"
+             (-> (generate-expressions ["company | where: id = 1 |= x" "x |= y" "y | update! name = 'a'"]) :queries first :query))))
+    (testing "one that selects its columns, the key among them"
+      (is (= "UPDATE \"company\" SET \"name\" = ? WHERE \"id\" IN ( WITH \"x\" AS ( SELECT \"c_0\".\"id\", \"c_0\".\"name\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? ) SELECT \"x\".\"id\" FROM \"x\" AS \"x\" )"
+             (-> (generate-expressions ["company | where: id = 1 | s: id, name |= x" "x | update! name = 'a'"]) :queries first :query)))))
+
   (testing "writes that would act on more than can have been meant are refused"
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Refusing to change every row of `company`"
                           (generate "company | delete! .id")))
@@ -435,10 +450,13 @@
                           (generate-expressions ["company |= x" "x | employee | delete! .id"])))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"after group:"
                           (generate "company | where: id = 1 | g: name | delete! .id")))
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"can't change a named result"
-                          (generate-expressions ["company | where: id = 1 |= x" "x | where: id = 1 | u! name = 'a'"])))
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"can't change a named result"
-                          (generate-expressions ["company | where: id = 1 |= x" "x | where: id = 1 | delete! .id"])))
+    ;; A named result whose rows can't be found in its table.
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"update! can't change the named result `x`: it is grouped"
+                          (generate-expressions ["company | where: id = 1 | g: name |= x" "x | update! name = 'a'"])))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"update! can't change the named result `x`: it doesn't select id, which finds its rows in `company`"
+                          (generate-expressions ["company | where: id = 1 | s: name |= x" "x | update! name = 'a'"])))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Refusing to change every row of `x`"
+                          (generate-expressions ["company |= x" "x | update! name = 'a'"])))
     ;; Unresolved joins are refused for every operation, writes included.
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No relation between `company` and `company`"
                           (generate "company | where: id = 1 | company | delete! .id"))))

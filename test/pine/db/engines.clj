@@ -139,11 +139,13 @@
 
 (defn pine
   "The result of an expression, run the way the app runs it (pine.api's
-  /eval), as {:header :rows :columns :error}. `opts` may have :policy and
+  /eval), as {:header :rows :columns :error}. `expression` may also be the
+  blocks of a tab, a vector, run as the app runs them: the last one, with
+  the named results of those before it. `opts` may have :policy and
   :allow-writes."
   ([db expression] (pine db expression {}))
   ([{:keys [id]} expression {:keys [policy allow-writes] :or {policy [] allow-writes true}}]
-   (let [{:keys [result columns error]} (api/api-eval [expression] id policy allow-writes)]
+   (let [{:keys [result columns error]} (api/api-eval (if (string? expression) [expression] expression) id policy allow-writes)]
      {:header (mapv name (first result)) :rows (vec (rest result)) :columns columns :error error})))
 
 (defn- plain

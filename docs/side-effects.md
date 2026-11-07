@@ -103,7 +103,7 @@ to build them, whoever asks, with `error-type: "write-refused"`:
 | --- | --- |
 | `company \| delete! .id` | Nothing narrows the rows, so it changes the whole table. Add a `where:` or a `limit:` first. |
 | `company \| g: name \| delete! .id` | `group:` collapses rows into groups. The `GROUP BY` would stay in the subquery that picks the rows: an error on Postgres, and on MySQL one arbitrary row per group. |
-| `x \| where: id = 1 \| u! name = 'a'`, where `x` is a named result | A named result has no table of its own. The statement would target a real table that happens to share its name. |
+| `x \| update! name = 'a'`, where `x` is a grouped named result, or one whose `select:` leaves out its table's key | The write changes the named result's table, finding its rows by the table's key. A group isn't a row of the table, and without the key there is no way to find the rows. See [named-results.md](named-results.md#changing-its-rows-with-update-or-delete). |
 
 A `limit:` sealed into a checkpoint still counts as narrowing.
 `company | l: 10 | employee | delete! .id` deletes the employees of ten
