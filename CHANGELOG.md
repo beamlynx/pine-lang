@@ -3,6 +3,9 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Added
+- **`update!` and `delete!` work on a named result.** After `person | where: company_id = 1 |= acme`, `acme | update! note = 'x'` changes those people in `person`. It used to be refused. A grouped named result, or one whose `select:` leaves out the table's key, is still refused, with the reason.
+
 ### Changed
 - **Typing does less work per keystroke.** Pine reads each block of a tab once, and doesn't read a block again until it changes. With three blocks above the one being typed, a keystroke went from about 13.5 ms of server time to 2.5 ms.
 - **The server starts faster.** It answers about 1.0 s after launch instead of 1.4 s, because its grammars are now prepared when it is built. The desktop app's server also uses less memory and fewer threads.

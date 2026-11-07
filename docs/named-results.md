@@ -152,6 +152,26 @@ employee | where: id in acme_emps
 - **It can be defined earlier in the same expression,** and named results can use each other this way: each CTE is
   emitted after the ones it needs.
 
+### Changing its rows with `update!` or `delete!`
+
+A write on a named result changes its table's rows, the ones the named result holds:
+
+```
+person | where: company_id = 1 |= acme
+
+acme | where: active = false | update! note = 'left'
+```
+
+This updates `person`, finding the rows by its primary key:
+`UPDATE "person" SET "note" = ? WHERE "id" IN ( WITH "acme" AS ( ... ) SELECT "acme"."id" FROM "acme" AS "acme" WHERE ... )`.
+`delete!` works the same way. A named result built on another one changes the table under both.
+
+Pine refuses the write, and says why, when the rows can't be found in one table:
+
+- **The named result is grouped.** Its rows are groups, not rows of a table.
+- **Its `select:` leaves out the table's key.** Select it too, like `| s: id, name |= acme`.
+- **Nothing narrows it**, the same as for a table: `person |= everyone`, then `everyone | update! ...`.
+
 ## How it works
 
 - **Assignment** (`|= name`): saves the pipeline state at that point. The snapshot becomes the CTE body

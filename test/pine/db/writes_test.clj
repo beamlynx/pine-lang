@@ -235,6 +235,26 @@
        (is (= {:result [[0]] :changes {}}
               (changed-by db "person | where: id = 99 | delete! .id")))))))
 
+(deftest test-write-on-a-named-result
+  (scenario
+   (fn [db]
+     (testing "update! changes the table's rows the named result holds, and only those"
+       (is (= {:result [["person" 2]]
+               :changes {"person" {:changed {[1] {:note [nil "acme"]} [2] {:note [nil "acme"]}}}}}
+              (changed-by db ["person | where: company_id = 1 |= acme" "acme | update! note = 'acme'"]))))
+
+     (testing "narrowed again after the name"
+       (is (= {"person" {:changed {[1] {:name ["Ann" "Anna"]}}}}
+              (:changes (changed-by db ["person | where: company_id = 1 |= acme" "acme | where: id = 1 | update! name = 'Anna'"])))))
+
+     (testing "delete! removes them"
+       (is (= {:result [[1]] :changes {"person" {:deleted #{[4]}}}}
+              (changed-by db ["person | where: company_id = 3 |= gone" "gone | delete! .id"]))))
+
+     (testing "a grouped one is refused"
+       (is (re-find #"it is grouped"
+                    (unchanged-after-refusal db ["person | where: id = 1 | g: company_id |= g" "g | update! note = 'x'"])))))))
+
 ;; ---------------------------------------------------------------------------
 ;; What must not change anything
 ;; ---------------------------------------------------------------------------

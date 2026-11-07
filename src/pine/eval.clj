@@ -7,7 +7,8 @@
    [pine.computed :as computed]
    [pine.data-types :as dt]
    [pine.db.connections :as connections]
-   [pine.db.main :as db]))
+   [pine.db.main :as db]
+   [pine.db.references :as refs]))
 
 (def ^:dynamic *dialect*
   "Which SQL dialect build-query is rendering for - bound once at the top of
@@ -1158,12 +1159,61 @@
 (defn- refuse-write [message]
   (throw (ex-info message {:error-type "write-refused"})))
 
+(defn- exposed-columns
+  "The column names a named result's CTE gives, or :all when it selects
+  every column of its table (see build-cte-body)."
+  [{current :current columns :columns}]
+  (let [own (filter #(= (:alias %) current) columns)]
+    (if (some #(not (table/added-column? %)) own)
+      (set (keep (fn [col]
+                   (cond
+                     (:auto-id col) (:column col)
+                     (table/added-column? col) nil
+                     :else (or (:column-alias col) (:column col))))
+                 own))
+      :all)))
+
+(defn- named-result-source
+  "The real table behind a named result, which a write on the named result
+  changes: {:schema :table :key}. `:key` is its primary key, which the
+  named result has to give so its rows can be found in the table. Follows a
+  named result built on another one. Refuses one whose rows aren't rows of
+  one table."
+  [op-name references aliases alias]
+  (let [{:keys [ast table]} (get aliases alias)
+        current (:current ast)
+        base (get-in ast [:aliases current])
+        _ (when (or (seq (:group ast)) (#{:count :group} (get-in ast [:operation :type])))
+            (refuse-write (str op-name " can't change the named result `" table
+                               "`: it is grouped, so its rows aren't rows of one table.")))
+        source (if (:ast base)
+                 (named-result-source op-name references (:aliases ast) current)
+                 {:schema (:schema base) :table (:table base)
+                  :key (refs/primary-key (or (:references ast) references) (:schema base) (:table base))})
+        label (if (:schema source) (str (:schema source) "." (:table source)) (:table source))
+        _ (when-not (seq (:key source))
+            (refuse-write (str op-name " can't change `" label
+                               "`: it has no primary key, so there is no way to tell its rows apart.")))
+        exposed (exposed-columns ast)
+        missing (remove #(or (= :all exposed) (contains? exposed %)) (:key source))]
+    (when (seq missing)
+      (refuse-write (str op-name " can't change the named result `" table "`: it doesn't select "
+                         (s/join ", " missing) ", which finds its rows in `" label
+                         "`. Add it to the select: before `|= " table "`.")))
+    source))
+
+(defn- write-target
+  "The table a write on `alias` changes: {:schema :table}, plus :key for a
+  named result."
+  [op-name {:keys [references aliases]} alias]
+  (if (get-in aliases [alias :ast])
+    (named-result-source op-name references aliases alias)
+    (select-keys (get aliases alias) [:schema :table])))
+
 (defn- check-write-allowed
   "Refuses a delete!/update! that would act on more than the person can have
   meant. `target` is the alias of the table being changed."
   [{:keys [group aliases] :as state} op-name target]
-  (when (get-in aliases [target :ast])
-    (refuse-write (str op-name " can't change a named result. Pipe it onto the table itself.")))
   (when (seq group)
     (refuse-write (str op-name " after group: is not supported. Remove the group:, or select the rows with where:.")))
   (when-not (scoped? state)
@@ -1190,7 +1240,7 @@
   [state]
   (check-write-allowed state "delete!" (:current state))
   (let [{:keys [delete current aliases]} state
-        {table :table schema :schema}     (get aliases current)
+        {table :table schema :schema}     (write-target "delete!" state current)
         {:keys [columns]}                 delete
         state                             (assoc state :columns
                                                  (mapv (fn [column] {:column column :alias current}) columns))
@@ -1295,8 +1345,9 @@
 (defn- build-single-update-query [state update-alias assignments]
   (check-write-allowed state "update!" update-alias)
   (let [{:keys [aliases]}              state
-        {table :table schema :schema}  (get aliases update-alias)
-        key-columns                    (update-key state update-alias)
+        {table :table schema :schema
+         named-key :key}               (write-target "update!" state update-alias)
+        key-columns                    (or named-key (update-key state update-alias))
         set-entries                    (map #(set-column update-alias %) (group-by-column assignments))
         set-clause                     (s/join ", " (map first set-entries))
         holder-checks                  (distinct
