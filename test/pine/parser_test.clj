@@ -518,6 +518,20 @@
     (is (= {:type :assign :value "my_var"}
            (last (:result (parse "company | where: id = 1 | s: name |= my_var")))))))
 
+(deftest test-describe
+  (testing "`describe:` is an operation after a pipe"
+    (is (= [{:type :table :value {:table "user"}}
+            {:type :describe :value {}}]
+           (p "user | describe:")))
+    (is (= [{:type :table :value {:table "user"}}
+            {:type :table :value {:table "document"}}
+            {:type :describe :value {}}]
+           (p "user | document | describe: "))))
+
+  (testing "without the colon it is a table name"
+    (is (= [{:type :table :value {:table "describe"}}]
+           (p "describe")))))
+
 (deftest test-paths
   (testing "`? table` parses as a :paths op, composed after an ordinary pipe chain"
     (is (= [{:type :table :value {:table "company"}}

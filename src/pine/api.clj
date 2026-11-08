@@ -428,7 +428,9 @@
                        (try
                          (let [rows    (eval/run-query last-state)
                                op-type (get-in last-state [:operation :type])
-                               columns (if (effects/writes? op-type)
+                               ;; A write's counts and `describe:`'s rows name
+                               ;; their own columns: none is a column of a table.
+                               columns (if (or (effects/writes? op-type) (= :describe op-type))
                                          (get-columns rows)
                                          (annotate-columns last-state conn-id policy-rules
                                                            (get-columns last-state rows)))]

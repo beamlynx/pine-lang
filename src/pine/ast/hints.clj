@@ -62,7 +62,7 @@
 ;; Relation Hints
 ;; ---------------------------------------------------------------------------
 
-(defn- generate-expression [{:keys [schema table column related-column columns parent resolution alias]}]
+(defn generate-expression [{:keys [schema table column related-column columns parent resolution alias]}]
   ;; The `.hint_col` a user types to name a relation always names the
   ;; *child*'s columns (see docs/joins.md - the via map is keyed by them),
   ;; which is `column` when this table is the child (parent false) but
