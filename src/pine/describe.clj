@@ -1,14 +1,38 @@
 (ns pine.describe
-  "`describe:`: the table the pipe left off at, as rows. Its columns, the
-  tables it joins to and the tables that join to it, from the schema Pine
-  read when it connected. Nothing runs on the database. See docs/describe.md."
+  "Two operations that answer from the schema Pine read when it connected,
+  for the table the pipe left off at. Nothing runs on the database.
+
+  `describe:` lists the table's columns: one row each, with its type and
+  whether it is the key, may be empty or is masked. See docs/describe.md.
+
+  `references:` lists the relations that touch the table, both ways: one
+  row per relation, as Pine holds it. See docs/references.md."
   (:require [clojure.string :as str]
             [pine.access-policy :as access-policy]
             [pine.ast.hints :as hints]
             [pine.ast.table :as table]
             [pine.db.references :as refs]))
 
-(def header ["kind" "name" "type" "detail" "pine"])
+(def ^:private op-names {:describe "describe:" :references "references:"})
+
+(defn check-ends-query
+  "Refuses an operation after `describe:` or `references:`. Their rows come
+  from the schema, not from SQL, so nothing can build on them yet."
+  [operation-types]
+  (when-let [op (some op-names (butlast operation-types))]
+    (throw (ex-info (str op " ends a query for now: nothing can follow it. Remove what comes after it.")
+                    {:error-type op}))))
+
+(defn- current-entry
+  "The alias entry of the table the pipe left off at. Refuses a pipe with no
+  table, naming the operation."
+  [state op]
+  (or (get-in state [:aliases (:current state)])
+      (throw (ex-info (str op " needs a table before it, like `user | " op "`.") {:error-type op}))))
+
+;; describe:
+
+(def describe-header ["column" "type" "key" "nullable" "masked"])
 
 (defn- source-columns
   "{exposed-name {:type :nullable :key?}} for the columns of the real
@@ -28,66 +52,104 @@
                     :nullable (= "YES" (some-> nullable str str/upper-case))
                     :key? (contains? key column)}])))
 
-(defn- column-rows [state references]
-  (let [a (:current state)
-        entry (get-in state [:aliases a])
-        known (source-columns references entry)
-        rules (:access-policy state)
-        policy-state (assoc state :references references)]
-    (for [{:keys [column]} (hints/generate-all-column-hints state a)
-          :let [{:keys [type nullable key?]} (get known column)
-                masked (and (seq rules)
-                            (access-policy/sensitive-column? policy-state rules {:alias a :column column}))
-                detail (str/join ", " (cond-> []
-                                        key? (conj "primary key")
-                                        ;; SQLite reports an INTEGER PRIMARY KEY as
-                                        ;; nullable. A key never is.
-                                        (and nullable (not key?)) (conj "nullable")
-                                        masked (conj "masked")))]]
-      ["column" column (or type "") detail (str a "." column)])))
-
-(defn- resolution-label [resolution]
-  (case resolution
-    "fk" "foreign key"
-    "heuristic" "inferred"
-    "synthetic" "same rows"
-    "alias" "named with as"
-    (str resolution)))
-
-(defn- join-rows
-  "The joins Pine would suggest after `| `: each table this one joins to
-  (it holds the key, `joins to`) or that joins to it (`joined from`), with
-  the Pine to type. The same relations the hints offer, so what
-  `describe:` lists is what a pipe can do."
-  [state]
-  (let [from-alias (:current state)
-        {current-schema :schema current-name :table} (get-in state [:aliases from-alias])
-        current-table (str (when current-schema (str current-schema ".")) current-name)
-        state (assoc state :context from-alias)]
-    (for [{:keys [schema table column related-column parent resolution] :as h} (hints/relation-hints state "")
-          :let [target (str (when schema (str schema ".")) table)
-                [from to] (if parent
-                            [(str current-table "." related-column) (str target "." column)]
-                            [(str target "." column) (str current-table "." related-column)])]]
-      [(if parent "joins to" "joined from")
-       target
-       ""
-       (str (resolution-label resolution) ": " from " -> " to)
-       (str "| " (hints/generate-expression h))])))
-
-(defn rows
-  "The result of `describe:`, header first, like a query's rows. Refuses a
-  pipe with no table to describe."
+(defn describe-rows
+  "The result of `describe:`, header first, like a query's rows: one row per
+  column the current table exposes."
   [state references]
-  (when-not (get-in state [:aliases (:current state)])
-    (throw (ex-info "describe: needs a table before it, like `user | describe:`." {:error-type "describe"})))
-  (let [read-at (:read-at references)
-        state (assoc state :references references)]
-    (vec (concat [header]
-                 (column-rows state references)
-                 (join-rows state)
-                 (when read-at
-                   [["schema" "read" ""
-                     (str "Read at " (.truncatedTo ^java.time.Instant read-at java.time.temporal.ChronoUnit/SECONDS)
-                          ". Reindex the connection after the schema changes.")
-                     ""]])))))
+  (let [entry (current-entry state "describe:")
+        a (:current state)
+        state (assoc state :references references)
+        known (source-columns references entry)
+        rules (:access-policy state)]
+    (vec (cons describe-header
+               (for [{:keys [column]} (hints/generate-all-column-hints state a)
+                     :let [{:keys [type nullable key?]} (get known column)
+                           masked (and (seq rules)
+                                       (access-policy/sensitive-column? state rules {:alias a :column column}))]]
+                 [column
+                  (or type "")
+                  (if key? "primary" "")
+                  ;; SQLite reports an INTEGER PRIMARY KEY as nullable. A key never is.
+                  (if (and nullable (not key?)) "yes" "")
+                  (if masked "yes" "")])))))
+
+;; references:
+
+(def references-header ["from" "to" "how" "pine"])
+
+(def ^:private how-names
+  "A plain name for each kind of relation the index holds (the :resolution
+  pine.db.references writes)."
+  {:foreign-key "foreign key"
+   :heuristic   "naming"})
+
+(defn- how
+  "How Pine knows a relation. A kind not named in how-names shows as its own
+  name, so a new way of finding relations appears here with no change."
+  [resolution]
+  (or (how-names resolution) (some-> resolution name (str/replace "-" " ")) ""))
+
+(defn- side
+  "`table.column`, or `table.(a, b)` for a key of several columns, with the
+  schema in front when the relation has one."
+  [{:keys [schema table]} columns]
+  (str (when schema (str schema ".")) table "."
+       (if (next columns) (str "(" (str/join ", " columns) ")") (first columns))))
+
+(defn- touching
+  "Every relation that touches the real table `source` resolves to, with
+  :child? true where the table is the child (it holds the key). A relation
+  of a table with itself shows both ways."
+  [references {:keys [table schema]}]
+  (let [entries (fn [direction]
+                  (for [[_ {:keys [via]}] (get-in references [:table table direction])
+                        [_ rels] via
+                        rel rels
+                        :let [own (if (= direction :refers-to) (:child rel) (:parent rel))]
+                        :when (and (= table (:table own))
+                                   (or (nil? schema) (= schema (:schema own))))]
+                    [rel (= direction :refers-to)]))]
+    (distinct (concat (entries :refers-to) (entries :referred-by)))))
+
+(defn- pine-by-relation
+  "The Pine the hints offer after `| ` from the current table, keyed by the
+  table it goes to, the child's first key column, and whether that table is
+  the parent: the same three things a relation names."
+  [state]
+  (into {}
+        (for [{:keys [schema table column related-column parent] :as h}
+              (hints/relation-hints (assoc state :context (:current state)) "")]
+          [[schema table (if parent related-column column) (boolean parent)]
+           (str "| " (hints/generate-expression h))])))
+
+(defn references-rows
+  "The result of `references:`, header first: one row per relation that
+  touches the current table, in both directions.
+
+  Built straight from the relation records in the references map
+  (pine.db.references/relation), not from a list of kinds: each row is a
+  record's child side (`from`), parent side (`to`), and its :resolution
+  (`how`). A new way of finding relations that writes records with a new
+  :resolution shows up here as it is, with no change to this format.
+
+  `pine` is what to type after `| ` to follow the relation from the current
+  table, as the hints offer it. It is empty where no hint matches, such as
+  a named result that doesn't expose the key's column.
+
+  The access policy masks column contents, not names, so every relation is
+  listed. Nothing runs on the database."
+  [state references]
+  (let [entry (current-entry state "references:")
+        state (assoc state :references references)
+        offered (pine-by-relation state)]
+    (vec (cons references-header
+               (for [source (table/resolve-table entry)
+                     [{:keys [child parent columns resolution]} child?] (touching references source)
+                     :let [target (if child? parent child)
+                           first-child (:child (first columns))]]
+                 [(side child (map :child columns))
+                  (side parent (map :parent columns))
+                  (how resolution)
+                  (or (get offered [(:schema target) (:table target) first-child child?])
+                      (get offered [nil (:table target) first-child child?])
+                      "")])))))

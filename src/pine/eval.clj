@@ -1386,17 +1386,19 @@
 (defn row-cap
   "The most rows Pine lets a result have when the expression doesn't say:
   250 rows, or 10,000 for a group:. Nil when the expression's own limit:
-  decides, or when it returns no table rows (a count, a change, describe:).
+  decides, or when it returns no table rows (a count, a change, describe:,
+  references:).
   A result with exactly this many rows may have been cut off."
   [state]
   (let [type (get-in state [:operation :type])]
     (cond
-      (#{:delete-action :update-action :update-partial :count :paths :describe} type) nil
+      (#{:delete-action :update-action :update-partial :count :paths :describe :references} type) nil
       (= type :group) max-group-rows
       (:limit state) nil
       :else default-limit)))
 
 (defn build-query [state]
+  (describe/check-ends-query (:operation-types state))
   (binding [*dialect* (connections/get-dialect (:connection-id state))
             *element-aliases* (element-aliases state)]
     (let [{:keys [type]} (state :operation)]
@@ -1417,8 +1419,10 @@
         ;; :paths only generates candidate pine expressions (see hints.paths) -
         ;; it never builds a query of its own.
         (= type :paths) {:query " /* No SQL. Pick a path from hints.paths and build that expression instead */ "}
-        ;; `describe:` reads the schema Pine already holds (pine.describe).
-        (= type :describe) {:query " /* No SQL. describe: lists the table's columns and joins from the schema Pine read */ "}
+        ;; `describe:` and `references:` read the schema Pine already holds
+        ;; (pine.describe).
+        (= type :describe) {:query " /* No SQL. describe: lists the table's columns from the schema Pine read */ "}
+        (= type :references) {:query " /* No SQL. references: lists the table's relations from the schema Pine read */ "}
         :else (build-select-query (update state :limit #(or % default-limit)))))))
 
 (defn- param-preview [{v :value :as param}]
@@ -1466,7 +1470,10 @@
         ;; read when it connected. The state may have dropped :references
         ;; (ast/main.clj's post-handle), so they are looked up again.
         (= :describe operation-type)
-        (describe/rows state (or (:references state) (db/init-references connection-id)))
+        (describe/describe-rows state (or (:references state) (db/init-references connection-id)))
+
+        (= :references operation-type)
+        (describe/references-rows state (or (:references state) (db/init-references connection-id)))
 
         ;; Every write runs in a transaction, even a single statement: if it
         ;; fails part way, nothing is left half-applied. A multi-table

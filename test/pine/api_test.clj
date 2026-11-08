@@ -543,34 +543,63 @@
 
 (deftest test-describe
   ;; The :test connection has no pool: `describe:` never reaches a database.
-  (testing "a table's columns, the tables it joins to and from, and when the schema was read"
+  (testing "one row per column: its type, and whether it is the key, may be empty or is masked"
     (let [{:keys [result columns error]} (api/api-eval ["company | describe:"] :test)]
       (is (nil? error))
-      (is (= ["kind" "name" "type" "detail" "pine"] (first result)))
-      (is (= [{:column "kind"} {:column "name"} {:column "type"} {:column "detail"} {:column "pine"}] columns))
-      (is (= [["column" "id" "integer" "primary key" "c_0.id"]
-              ["column" "created_at" "timestamp" "" "c_0.created_at"]
-              ["joined from" "y.employee" "" "foreign key: y.employee.company_id -> company.id" "| y.employee .company_id"]
-              ["joined from" "z.document" "" "foreign key: z.document.company_id -> company.id" "| z.document .company_id"]]
-             (butlast (rest result))))
-      (is (re-find #"^Read at " (nth (last result) 3)))))
+      (is (= [{:column "column"} {:column "type"} {:column "key"} {:column "nullable"} {:column "masked"}] columns))
+      (is (= [["column" "type" "key" "nullable" "masked"]
+              ["id" "integer" "primary" "" ""]
+              ["created_at" "timestamp" "" "" ""]]
+             result))))
 
   (testing "after a join, the table joined last"
-    (let [{:keys [result]} (api/api-eval ["x.company | y.employee | describe:"] :test)]
-      (is (= ["column" "company_id" "integer" "" "e_1.company_id"] (nth result 2)))
-      (is (some #{["joins to" "x.company" "" "foreign key: y.employee.company_id -> x.company.id" "| x.company .company_id :parent"]}
-                result))))
+    (is (= [["id" "integer" "primary" "" ""]
+            ["company_id" "integer" "" "" ""]
+            ["reports_to" "integer" "" "" ""]]
+           (rest (:result (api/api-eval ["x.company | y.employee | describe:"] :test))))))
 
   (testing "a named result: only the columns it exposes"
-    (is (= [["column" "id" "integer" "primary key" "x.id"]]
-           (filter #(= "column" (first %)) (:result (api/api-eval ["company | s: id |= x" "x | describe:"] :test))))))
+    (is (= [["id" "integer" "primary" "" ""]]
+           (rest (:result (api/api-eval ["company | s: id |= x" "x | describe:"] :test))))))
 
   (testing "a column the policy masks says so"
     (let [rules [{:type "column-name" :equals "id"}]
           {:keys [result]} (api/api-eval ["company | describe:"] :test rules)]
-      (is (= [["column" "id" "integer" "primary key" "c_0.id"]
-              ["column" "created_at" "timestamp" "masked" "c_0.created_at"]]
-             (filter #(= "column" (first %)) result)))))
+      (is (= [["id" "integer" "primary" "" ""]
+              ["created_at" "timestamp" "" "" "yes"]]
+             (rest result)))))
 
   (testing "with nothing before it"
-    (is (re-find #"needs a table" (:error (api/api-eval ["describe:"] :test))))))
+    (is (re-find #"needs a table" (:error (api/api-eval ["describe:"] :test)))))
+
+  (testing "nothing can follow it"
+    (is (re-find #"describe: ends a query" (:error (api/api-eval ["company | describe: | where: id = 1"] :test))))))
+
+(deftest test-references
+  ;; The :test connection has no pool: `references:` never reaches a database.
+  (testing "every relation touching the table, both ways, with the Pine to follow it"
+    (let [{:keys [result columns error]} (api/api-eval ["company | references:"] :test)]
+      (is (nil? error))
+      (is (= [{:column "from"} {:column "to"} {:column "how"} {:column "pine"}] columns))
+      (is (= [["from" "to" "how" "pine"]
+              ["y.employee.company_id" "x.company.id" "foreign key" "| y.employee .company_id"]
+              ["z.document.company_id" "x.company.id" "foreign key" "| z.document .company_id"]]
+             result))))
+
+  (testing "a table that holds keys, and one that refers to itself, which shows both ways"
+    (is (= [["y.employee.company_id" "x.company.id" "foreign key" "| x.company .company_id :parent"]
+            ["y.employee.reports_to" "y.employee.id" "foreign key" "| y.employee .reports_to :parent"]
+            ["z.document.employee_id" "y.employee.id" "foreign key" "| z.document .employee_id"]
+            ["z.document.created_by" "y.employee.id" "foreign key" "| z.document .created_by"]
+            ["y.employee.reports_to" "y.employee.id" "foreign key" "| y.employee .reports_to"]]
+           (rest (:result (api/api-eval ["x.company | y.employee | references:"] :test))))))
+
+  (testing "a named result: the relations of the table behind it"
+    (is (= ["y.employee.company_id" "x.company.id" "foreign key" "| y.employee .company_id"]
+           (second (:result (api/api-eval ["company | s: id |= x" "x | references:"] :test))))))
+
+  (testing "with nothing before it"
+    (is (re-find #"needs a table" (:error (api/api-eval ["references:"] :test)))))
+
+  (testing "nothing can follow it"
+    (is (re-find #"references: ends a query" (:error (api/api-eval ["company | references: | l: 1"] :test))))))

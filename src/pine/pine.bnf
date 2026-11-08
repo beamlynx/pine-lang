@@ -1,7 +1,7 @@
 OPERATIONS := <ws*> OPERATION <ws*> (<"|"> <ws*> OPERATION <ws*>)*
 ASSIGN     := <"="> <ws*> symbol
 
-OPERATION    := SELECT-PARTIAL | SELECT | WHERE-PARTIAL | WHERE | LIMIT-PARTIAL | LIMIT | FROM | ORDER-PARTIAL | ORDER | COUNT | DESCRIBE | DELETE-ACTION | UPDATE-PARTIAL | UPDATE-ACTION | GROUP | ASSIGN | PATHS | UNNEST-PARTIAL | UNNEST | TABLE
+OPERATION    := SELECT-PARTIAL | SELECT | WHERE-PARTIAL | WHERE | LIMIT-PARTIAL | LIMIT | FROM | ORDER-PARTIAL | ORDER | COUNT | DESCRIBE | REFERENCES | DELETE-ACTION | UPDATE-PARTIAL | UPDATE-ACTION | GROUP | ASSIGN | PATHS | UNNEST-PARTIAL | UNNEST | TABLE
 
 
 TABLE             := table table-mods
@@ -36,8 +36,10 @@ DELETE-ACTION     := <delete-action-op> delete-columns
 UPDATE-PARTIAL    := <update-action-op> update-assignments <","> <ws*> partial-update-column  |  <update-action-op> partial-update-column  |  <update-action-op> (update-assignments <",">)?
 UPDATE-ACTION     := <update-action-op> update-assignments
 COUNT             := <count-op>
-(* `describe:`: the current table's columns and joins, from the schema Pine read. *)
+(* `describe:`: the current table's columns, from the schema Pine read. *)
 DESCRIBE          := <describe-op>
+(* `references:`: the relations that touch the current table, both ways. *)
+REFERENCES        := <references-op>
 
 GROUP             := <group-op>         (total-args / group-args / legacy-group-args)
 
@@ -51,6 +53,7 @@ delete-action-op  := (<"delete!"> | <"d!">) <ws*>
 update-action-op  := (<"update!"> | <"u!">) <ws*>
 count-op          := <"count:">
 describe-op       := <"describe:">
+references-op     := <"references:">
 unnest-op         := <"unnest:"> <ws*>
 per-op            := <ws+> <"per"> <ws+>
 

@@ -449,3 +449,11 @@
 
   (testing "it builds no query"
     (is (= [] (generate :joins "x.company | describe:")))))
+
+(deftest test-references
+  (testing "`references:` keeps the table the pipe left off at as current, and adds nothing"
+    (is (= [{:type :references :value {}} "e_1" 2]
+           (generate [:operation :current :table-count] "x.company | y.employee | references:"))))
+
+  (testing "it builds no query"
+    (is (= [] (generate :joins "x.company | references:")))))
