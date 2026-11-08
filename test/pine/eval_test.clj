@@ -1801,4 +1801,5 @@
     (is (nil? (row-cap "company | l: 10")))
     (is (nil? (row-cap "company | count:")))
     (is (nil? (row-cap "company | describe:")))
+    (is (nil? (row-cap "company | references:")))
     (is (nil? (row-cap "company | where: id = 1 | delete! .id")))))

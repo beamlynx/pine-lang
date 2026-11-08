@@ -868,6 +868,13 @@
 (defmethod -normalize-op :DESCRIBE [_]
   {:type :describe :value {}})
 
+;; ----------
+;; REFERENCES
+;; ----------
+
+(defmethod -normalize-op :REFERENCES [_]
+  {:type :references :value {}})
+
 ;; -----
 ;; PATHS
 ;; -----
@@ -928,7 +935,7 @@
 ;; in words instead of regexes (describe-failure).
 
 (def ^:private operation-names
-  ["select" "where" "limit" "from" "order" "group" "count" "describe" "delete!" "update!"])
+  ["select" "where" "limit" "from" "order" "group" "count" "describe" "references" "delete!" "update!"])
 
 (defn- edit-distance [a b]
   (let [n (count b)]
@@ -1020,7 +1027,7 @@
   {"select" "select" "s" "select" "where" "where" "w" "where"
    "limit" "limit" "l" "limit" "order" "order" "o" "order"
    "group" "group" "g" "group" "from" "from" "f" "from"
-   "count" "count" "unnest" "unnest" "describe" "describe"
+   "count" "count" "unnest" "unnest" "describe" "describe" "references" "references"
    "update!" "update" "u!" "update" "delete!" "delete" "d!" "delete"})
 
 (defn doc-topic

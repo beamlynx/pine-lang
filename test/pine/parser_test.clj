@@ -532,6 +532,16 @@
     (is (= [{:type :table :value {:table "describe"}}]
            (p "describe")))))
 
+(deftest test-references
+  (testing "`references:` is an operation after a pipe"
+    (is (= [{:type :table :value {:table "user"}}
+            {:type :references :value {}}]
+           (p "user | references:"))))
+
+  (testing "without the colon it is a table name"
+    (is (= [{:type :table :value {:table "references"}}]
+           (p "references")))))
+
 (deftest test-paths
   (testing "`? table` parses as a :paths op, composed after an ordinary pipe chain"
     (is (= [{:type :table :value {:table "company"}}

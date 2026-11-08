@@ -1,10 +1,12 @@
 # Describe
 
-`describe:` lists a table's columns, the tables it joins to and the tables that join to it. It reads the schema Pine already holds for the connected database. Nothing runs on the database.
+`describe:` lists a table's columns: one row each, with its type and whether it is the key, may be empty or is masked. It reads the schema Pine already holds for the connected database. Nothing runs on the database.
+
+To see how the table connects to others, use [`references:`](references.md).
 
 ## Why
 
-To write a query, you need to know a table's columns and how it connects to other tables. Hints give that one step at a time, while typing. `describe:` gives it all at once, as a result you can read, sort and copy.
+To write a query, you need to know a table's columns. Hints give them one step at a time, while typing. `describe:` gives them all at once, as a result you can read, sort and copy.
 
 It is also how an AI agent learns a table. An agent connected through Beamlynx's MCP server runs `user | describe:` the way it runs any other query, instead of asking for one hint after another.
 
@@ -16,35 +18,31 @@ table | other_table | describe:
 named_result | describe:
 ```
 
-`describe:` always follows a `|`, like other operations. It describes the table the pipe left off at: after joins, the table joined last. Nothing meaningful follows it.
+`describe:` always follows a `|`, like other operations. It describes the table the pipe left off at: after joins, the table joined last.
+
+It ends the query for now. Its rows come from the schema, not from SQL, so nothing can follow it: `user | describe: | where: key = 'primary'` is refused with "describe: ends a query for now".
 
 ## The result
 
-One row per column, then one per join, then when the schema was read. The result has five columns:
+One row per column, with five columns:
 
 | Column | What it holds |
 |---|---|
-| `kind` | `column`, `joins to`, `joined from` or `schema` |
-| `name` | The column's name, or the other table's |
-| `type` | The column's type as the database reports it. Empty for a join. |
-| `detail` | For a column: `primary key`, `nullable`, `masked`. For a join: how Pine knows it, and the columns it joins on. |
-| `pine` | What to type: the column under its alias, or the join to pipe in next |
+| `column` | The column's name |
+| `type` | Its type, as the database reports it |
+| `key` | `primary` for a column of the primary key, otherwise empty. Each column of a key of several columns says `primary`. |
+| `nullable` | `yes` when it may be empty. A key column never is. |
+| `masked` | `yes` when the masking policy masks it |
 
 ```
 company | describe:
 ```
 
-| kind | name | type | detail | pine |
+| column | type | key | nullable | masked |
 |---|---|---|---|---|
-| column | id | integer | primary key | `c_0.id` |
-| column | name | text | | `c_0.name` |
-| joined from | person | | foreign key: person.company_id -> company.id | `\| person .company_id` |
-| schema | read | | Read at 2026-11-08T22:04:26Z. Reindex the connection after the schema changes. | |
-
-- **`joins to`** is a table this one holds a key of: `person | describe:` lists `company`.
-- **`joined from`** is a table that holds a key of this one.
-- **How Pine knows a join:** `foreign key` (declared in the database), `inferred` (from a column's name, see [joins](joins.md)), `same rows` (a named result and its own table) or `named with as`.
-- **The joins are the ones hints offer after `| `.** So what `describe:` lists is what a pipe can do.
+| id | integer | primary | | |
+| name | text | | | |
+| email | text | | yes | yes |
 
 ### Named results
 
@@ -56,15 +54,15 @@ company | select: id |= x
 x | describe:
 ```
 
-lists only `x.id`. No database can say this: a named result exists only in Pine.
+lists only `id`. No database can say this: a named result exists only in Pine.
 
 ### The masking policy
 
-A column the masking policy masks says `masked` in `detail`. Its name still shows: the policy masks values, not names. See [access-policy.md](access-policy.md).
+A masked column says `yes` under `masked`. Its name still shows: the policy masks values, not names. See [access-policy.md](access-policy.md).
 
-### When the schema was read
+### When the schema is out of date
 
-Pine reads a database's schema when it connects, and keeps it in memory. After a migration, what it knows is out of date until the connection is reindexed. The last row says when it was read.
+Pine reads a database's schema when it connects, and keeps it in memory. After a migration, what it knows is out of date until the connection is reindexed.
 
 ## Implementation
 
@@ -73,6 +71,5 @@ Pine reads a database's schema when it connects, and keeps it in memory. After a
 | `src/pine/pine.bnf` | `DESCRIBE`, the `describe:` operation |
 | `src/pine/parser.clj` | Parses it to `{:type :describe}` |
 | `src/pine/ast/main.clj` | Adds nothing to the state: `:current` stays the table to describe |
-| `src/pine/describe.clj` | Builds the rows from the references map and the relation hints |
+| `src/pine/describe.clj` | `describe-rows` builds the rows from the references map; `check-ends-query` refuses anything after it |
 | `src/pine/eval.clj` | `run-query` returns those rows without touching the database |
-| `src/pine/db/main.clj` | Records `:read-at` when a schema is read |
