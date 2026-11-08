@@ -915,9 +915,10 @@
 ;;
 ;; Instaparse reports a position and every token the grammar would have
 ;; accepted there, regex literals included. Correct, but it rarely says what
-;; went wrong. For the common mistakes a sentence that does is put in front;
-;; the raw report stays after it (beamlynx-desktop's MCP formatter reads its
-;; "Parse error at line" and "Expected one of" lines).
+;; went wrong. For the common mistakes a sentence that does is put in front.
+;; The report after it keeps instaparse's position lines (beamlynx-desktop's
+;; MCP formatter reads "Parse error at line"), and names what was expected
+;; in words instead of regexes (describe-failure).
 
 (def ^:private operation-names
   ["select" "where" "limit" "from" "order" "group" "count" "delete!" "update!"])
@@ -951,6 +952,10 @@
       (re-find #"(?is)^\s*select\b.*\bfrom\b" expression)
       "This looks like SQL. Paste it in the SQL panel, and it converts to Pine as you type."
 
+      ;; `company ? document`: `?` is an operation, so it follows a pipe.
+      (re-find #"^\s*\?" after)
+      (str "`?` follows a pipe: `" (s/trimr before) " | " (s/triml after) "`.")
+
       (odd? (count (re-seq #"'" (s/replace expression "''" ""))))
       "A string is missing its closing quote. To put an apostrophe inside a string, write it twice: 'O''Brien'."
 
@@ -974,16 +979,92 @@
            (re-find #"^\s*[^:\s|]" after))
       (str "`" word "` needs a colon: `" (s/lower-case word) ":`."))))
 
+(defn- expected-item
+  "One thing the grammar would have accepted, as a reader would name it, or
+  nil for what nobody types on purpose (whitespace, comments). A regex
+  terminal is named by what it matches."
+  [{:keys [tag expecting]}]
+  (if (= tag :string)
+    (str "`" expecting "`")
+    (let [matches? #(re-matches expecting %)]
+      (cond
+        (matches? " ")     nil
+        (matches? "'x'")   "a string"
+        (matches? "12")    "a number"
+        (matches? "name")  "a name"
+        :else              nil))))
+
+(def ^:private max-expected 12)
+
+(defn expects-name?
+  "Whether a name (a table, column or alias) could go where the parse
+  failed. Only then do the hints there say what fits: after `id = 1 `, the
+  hints still list columns, but none can go there."
+  [failure]
+  (some #(= "a name" (expected-item %)) (:reason failure)))
+
+(defn- expected-line [failure]
+  (let [items (distinct (keep expected-item (:reason failure)))]
+    (when (seq items)
+      (str "Expected: " (s/join ", " (take max-expected items))
+           (when (> (count items) max-expected) ", …")))))
+
+(def ^:private operation-topics
+  {"select" "select" "s" "select" "where" "where" "w" "where"
+   "limit" "limit" "l" "limit" "order" "order" "o" "order"
+   "group" "group" "g" "group" "from" "from" "f" "from"
+   "count" "count" "unnest" "unnest"
+   "update!" "update" "u!" "update" "delete!" "delete" "d!" "delete"})
+
+(defn doc-topic
+  "The Pine docs topic for the operation a parse failure is in: the one the
+  pipe step before the failure starts with, or the operation a misspelled
+  one is closest to. Nil when the step names none."
+  [expression {:keys [index]}]
+  (let [index  (min (or index 0) (count expression))
+        before (subs expression 0 index)
+        step   (last (s/split before #"\|" -1))
+        op     (some-> (re-find #"^\s*([A-Za-z]+!?)(?::|\s|$)" (or step "")) second s/lower-case)]
+    (when op
+      (or (operation-topics op)
+          ;; `wher: …` fails on its colon: a misspelled operation, not a table.
+          (when (and (re-find #"^\s*[A-Za-z]+\s*$" step) (s/starts-with? (subs expression index) ":"))
+            (some-> (closest-operation op) operation-topics))))))
+
+(defn describe-failure
+  "A parse failure, for a person or an agent to act on:
+
+    a sentence naming the likely mistake, when one is known
+    Parse error at line L, column C:   (the line, and a caret under the spot)
+    Expected: what the grammar takes there, in words
+    What fits here: what the hints offer there, when given
+    Pine docs: the topic for the operation the failure is in
+
+  `fits` comes from the API, which can build the text before the failure
+  against the connection (pine.api)."
+  ([expression failure] (describe-failure expression failure nil))
+  ([expression failure fits]
+   (let [{:keys [line column text]} failure
+         hint  (parse-error-hint expression failure)
+         topic (doc-topic expression failure)
+         report (s/join "\n" (remove nil?
+                                     [(str "Parse error at line " line ", column " column ":")
+                                      text
+                                      (str (apply str (repeat (dec column) " ")) "^")
+                                      (expected-line failure)
+                                      (when (seq fits) (str "What fits here: " (s/join ", " (map #(str "`" % "`") fits))))
+                                      (when topic (str "Pine docs: " topic))]))]
+     (if hint (str hint "\n\n" report) report))))
+
 (defn parse
-  "Parse an expression and return the normalized operations or failure as a string"
+  "Parse an expression and return the normalized operations, or the failure
+  described for a reader (describe-failure) with the failure itself."
   [expression]
   (let [result (parse-tree expression)
         failure? (insta/failure? result)]
     (if failure?
-      (let [failure (insta/get-failure result)
-            raw (with-out-str (println failure))
-            hint (parse-error-hint expression failure)]
-        {:error (if hint (str hint "\n\n" raw) raw) :failure failure})
+      (let [failure (insta/get-failure result)]
+        {:error (describe-failure expression failure) :failure failure})
       {:result (normalize-ops result)})))
 
 (defn parse-or-fail [expression]

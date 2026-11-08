@@ -67,6 +67,31 @@ merged into the map passed to the next expression.
 If any expression fails — parse error or generate error — evaluation stops immediately and the error is
 returned. The last expression is never run.
 
+### What a parse error says
+
+A parse error is written for a person or an agent to act on (`pine.parser/describe-failure`):
+
+```
+Join conditions in one where: with `or`. To require several, add a where: for each: ...
+
+Parse error at line 1, column 25:
+company | where: id = 1 and name = 'x'
+                        ^
+Expected: `|`, `or`, `::`
+Pine docs: where
+```
+
+- **A sentence first**, when the mistake is a common one: a misspelled operation, a missing colon, SQL
+  pasted in, `?` without a pipe.
+- **The line and a caret** under where parsing stopped.
+- **Expected** names what the grammar takes there in words: `a name`, `a number`, `a string`, or the
+  token itself. Whitespace and comment rules are left out.
+- **What fits here**, when a name could go at that spot and there is a connection. The text before the
+  failure is built the way a completion build is, and its joins and columns are listed
+  (`pine.api/fits-at`), up to eight.
+- **Pine docs** names the topic for the operation the failure is in. The topics are the agents' Pine
+  reference and the site's docs pages.
+
 ## Constraints
 
 - Only the last expression's SQL is built or executed. Earlier expressions are only evaluated to collect
