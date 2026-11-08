@@ -67,6 +67,16 @@
     (is (s/starts-with? (error "company as c | employee .company_id | group: e_1.name | o: c.id")
                         "`c.id` isn't a column of `result_1`. The group: before")))
 
+  (testing "A bare name the checkpoint didn't keep says so, instead of failing in the database"
+    (is (= (str "`created_at` isn't a column of `result_1`. The group: before keeps name, count. "
+                "`created_at` is a column of `c`. To use it after the group:, select it there first: "
+                "`s: c.created_at, ...` before the group:")
+           (error "company as c | employee .company_id | group: e_1.name with count | where: created_at = 'x'"))))
+
+  (testing "A bare name the checkpoint kept, or a computed name after it, still works"
+    (is (some? (sql "company as c | employee .company_id | o: created_at desc | l: 1 per c.id | s: reports_to")))
+    (is (some? (sql "company as c | employee .company_id | l: 10 | s: reports_to as r | o: r"))))
+
   (testing "A name that is two columns of the checkpoint can't pick one"
     (let [message "`result_1` has two columns named `id`, so `%s` can't pick one. Name them apart with `as` before the limit:, like `s: c.id as c_id, id`."]
       (is (= (format message "id")

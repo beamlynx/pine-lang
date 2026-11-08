@@ -133,7 +133,9 @@ Two cases are errors:
 
 - The checkpoint didn't keep the column. In `company as c | employee .company_id | l: 10 | s: c.id`,
   the limit keeps `employee`'s columns only. The error lists what it keeps, and says to select the
-  column before the checkpoint.
+  column before the checkpoint. A bare name that the schema shows is a column of a sealed table,
+  such as `s: name` for `c.name`, gets the same error, naming the table it belongs to. A bare name
+  the schema doesn't know is left for the database to judge.
 - The name is two columns of the checkpoint. After `s: c.id, id | l: 10`, `result_1` has two `id`
   columns, so `id` or `c.id` can't pick one. The error says to name them apart with `as`. The same
   applies to a named result.

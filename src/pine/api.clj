@@ -438,6 +438,10 @@
                             :version version
                             :result rows
                             :columns columns
+                            ;; The cap Pine put on the rows because the
+                            ;; expression set no limit: of its own, or nil.
+                            ;; As many rows as this may mean there were more.
+                            :row-cap (eval/row-cap last-state)
                             ;; Whether this expression changes data. Reported on
                             ;; every eval, not only a refused one, so a caller
                             ;; can tell what it just ran.
