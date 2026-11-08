@@ -13,9 +13,11 @@ expression you can drop straight into the pipe.
 ## Syntax
 
 ```
-table_a ? table_b
+table_a | ? table_b
 table_a | table_b | ? table_c
 ```
+
+`?` always follows a `|`. `table_a ? table_b`, without the pipe, is a parse error.
 
 `?` is its own operation (`PATHS` in the grammar), composed with `|` exactly like any other operation — so it
 can follow an arbitrary Pine expression, not just a bare table name. It has no table-mods of its own (no
