@@ -1380,6 +1380,22 @@
 ;; The same ceiling as limit: (pine.parser/max-limit).
 (def ^:private max-group-rows 10000)
 
+;; The rows a query returns when it has no limit: of its own.
+(def ^:private default-limit 250)
+
+(defn row-cap
+  "The most rows Pine lets a result have when the expression doesn't say:
+  250 rows, or 10,000 for a group:. Nil when the expression's own limit:
+  decides, or when it returns no table rows (a count, a change, describe:).
+  A result with exactly this many rows may have been cut off."
+  [state]
+  (let [type (get-in state [:operation :type])]
+    (cond
+      (#{:delete-action :update-action :update-partial :count :paths :describe} type) nil
+      (= type :group) max-group-rows
+      (:limit state) nil
+      :else default-limit)))
+
 (defn build-query [state]
   (binding [*dialect* (connections/get-dialect (:connection-id state))
             *element-aliases* (element-aliases state)]
@@ -1403,7 +1419,7 @@
         (= type :paths) {:query " /* No SQL. Pick a path from hints.paths and build that expression instead */ "}
         ;; `describe:` reads the schema Pine already holds (pine.describe).
         (= type :describe) {:query " /* No SQL. describe: lists the table's columns and joins from the schema Pine read */ "}
-        :else (build-select-query (update state :limit #(or % 250)))))))
+        :else (build-select-query (update state :limit #(or % default-limit)))))))
 
 (defn- param-preview [{v :value :as param}]
   (case (:type param)

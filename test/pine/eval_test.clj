@@ -1786,3 +1786,19 @@
     (testing "SQLite has no enums"
       (is (= "SELECT \"a_0\".\"id\" AS \"__a_0__id\", \"a_0\".* FROM \"attachment\" AS \"a_0\" WHERE \"a_0\".\"type\" IN (?, ?) LIMIT 250"
              (:query (generate-sqlite "attachment | where: type in ('sharepoint', 'upload')")))))))
+
+(defn- row-cap [expression]
+  (-> expression parser/parse :result (ast/generate :test nil nil {} []) eval/row-cap))
+
+(deftest test-row-cap
+  (testing "Pine caps a result with no limit: of its own, and says by how much"
+    (is (= 250 (row-cap "company")))
+    (is (= 250 (row-cap "company | where: id = 1 | s: id")))
+    (is (= 250 (row-cap "employee | o: created_at desc | l: 1 per company_id")))
+    (is (= 10000 (row-cap "company | g: name with count"))))
+
+  (testing "No cap when the expression's own limit: decides, or no table rows come back"
+    (is (nil? (row-cap "company | l: 10")))
+    (is (nil? (row-cap "company | count:")))
+    (is (nil? (row-cap "company | describe:")))
+    (is (nil? (row-cap "company | where: id = 1 | delete! .id")))))

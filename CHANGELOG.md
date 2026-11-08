@@ -4,6 +4,8 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 ### Added
+- **A result says when it may have been cut off.** With no `limit:` of its own, a query returns at most 250 rows, and a `group:` at most 10,000 groups. The eval response now gives that cap as `row-cap`, so a caller can say when a result reached it.
+- **A column of an earlier table after `limit: … per` or `group:` gets a clear error.** `… | limit: 1 per c.id | select: name`, where `name` belongs to `c`, used to fail in the database with "no such column: result_1.name". It now says which columns the step kept, which table `name` belongs to, and to select it before the step.
 - **`describe:` lists a table's columns and joins.** `user | describe:` shows each column with its type, its key and whether it may be empty, then the tables it joins to and from, each with the Pine to type. It reads the schema Pine already holds, so nothing runs on the database. Masked columns say so, and the last row says when the schema was read.
 - **Parse errors say what fits.** Where an expression stops parsing, the error names what could come next in words, not grammar rules, and the docs topic for the operation it is in. Where a name could go, it lists the tables or columns that fit there. `company ? document` now says that `?` follows a pipe.
 - **`update!` and `delete!` work on a named result.** After `person | where: company_id = 1 |= acme`, `acme | update! note = 'x'` changes those people in `person`. It used to be refused. A grouped named result, or one whose `select:` leaves out the table's key, is still refused, with the reason.

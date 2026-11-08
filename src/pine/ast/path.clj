@@ -282,6 +282,30 @@
                                written " as " alias "_" column ", ...`.")
                           {:error-type "sealed-column" :alias alias :column column :checkpoint cte})))))))
 
+(defn- refuse-missing-bare
+  "A bare name after a group: or limit: sealed the pipe into a checkpoint
+  has to be a column the checkpoint kept. Anything else, often a column of
+  an earlier table, would reach the database as `result_1.name` and fail
+  there with a message about SQL nobody wrote."
+  [state {:keys [alias column]}]
+  (when (and (nil? alias) (not (s/blank? column)))
+    (let [current (:current state)
+          {:keys [columns tables] :as checkpoint} (some #(when (and (:sealed %) (= current (:name %))) %) (:checkpoints state))
+          snapshot (snapshot-of state current)
+          ;; Refused only when the schema shows the name is a column of a
+          ;; table the checkpoint sealed. A name the schema doesn't know is
+          ;; left for the database to judge, as before.
+          owner (when (and checkpoint snapshot (seq columns) (not (some #{column} columns)))
+                  (some #(when (dt/get-column-type (:references state) % column (get-in snapshot [:aliases %])) %)
+                        tables))]
+      (when owner
+        (let [step (checkpoint-step state current)]
+          (throw (ex-info (str "`" column "` isn't a column of `" current "`. " (s/capitalize step)
+                               " before keeps " (s/join ", " columns) ". "
+                               "`" column "` is a column of `" owner "`. To use it after " step
+                               ", select it there first: `s: " owner "." column ", ...` before " step)
+                          {:error-type "sealed-column" :column column :checkpoint current})))))))
+
 (defn unseal-column
   "A column of a sealed table, as the checkpoint column that kept it;
   any other column unchanged. For a column that doesn't go through
@@ -291,7 +315,7 @@
     (unseal state col)
     col))
 
-(declare resolve-column*)
+(declare resolve-column* computed-column)
 
 (defn resolve-column
   "Resolve the alias of a column descriptor ({:alias :column :path}) and,
@@ -319,6 +343,7 @@
   (let [{:keys [alias column path] :as col} (unseal-column state col)
         current (:current state)
         _ (when (nil? alias) (refuse-ambiguous state current column column))
+        _ (when-not (computed-column state column) (refuse-missing-bare state col))
         resolved (cond
                    (nil? alias)
                    (assoc col :alias current)
