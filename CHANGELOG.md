@@ -4,6 +4,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 ### Added
+- **`describe:` lists a table's columns and joins.** `user | describe:` shows each column with its type, its key and whether it may be empty, then the tables it joins to and from, each with the Pine to type. It reads the schema Pine already holds, so nothing runs on the database. Masked columns say so, and the last row says when the schema was read.
 - **Parse errors say what fits.** Where an expression stops parsing, the error names what could come next in words, not grammar rules, and the docs topic for the operation it is in. Where a name could go, it lists the tables or columns that fit there. `company ? document` now says that `?` follows a pipe.
 - **`update!` and `delete!` work on a named result.** After `person | where: company_id = 1 |= acme`, `acme | update! note = 'x'` changes those people in `person`. It used to be refused. A grouped named result, or one whose `select:` leaves out the table's key, is still refused, with the reason.
 

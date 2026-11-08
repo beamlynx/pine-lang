@@ -27,12 +27,16 @@
   "The one seam both init-references and reindex-references call through -
   the :test/:test-mysql fixture short-circuit lives here, checked once
   before any dialect-specific namespace is ever entered, rather than
-  duplicated inside postgres.clj and mysql.clj."
+  duplicated inside postgres.clj and mysql.clj.
+
+  :read-at is when the schema was read, which `describe:` reports: after a
+  migration, what Pine knows is out of date until the next reindex."
   [id]
-  (refs/index-references
-   (if (connections/test-connection? id)
-     fixtures/references
-     (get-references-helper id))))
+  (assoc (refs/index-references
+          (if (connections/test-connection? id)
+            fixtures/references
+            (get-references-helper id)))
+         :read-at (java.time.Instant/now)))
 
 (defn init-references
   "Get the references for a given key"

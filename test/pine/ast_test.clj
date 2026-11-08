@@ -442,3 +442,10 @@
          (generate :where "/* filter by name */ name = 'Acme'")))
   (is (= 10
          (generate :limit "limit: 10 -- max results"))))
+(deftest test-describe
+  (testing "`describe:` keeps the table the pipe left off at as current, and adds nothing"
+    (is (= [{:type :describe :value {}} "e_1" 2]
+           (generate [:operation :current :table-count] "x.company | y.employee | describe:"))))
+
+  (testing "it builds no query"
+    (is (= [] (generate :joins "x.company | describe:")))))

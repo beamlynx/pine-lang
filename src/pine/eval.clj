@@ -8,7 +8,8 @@
    [pine.data-types :as dt]
    [pine.db.connections :as connections]
    [pine.db.main :as db]
-   [pine.db.references :as refs]))
+   [pine.db.references :as refs]
+   [pine.describe :as describe]))
 
 (def ^:dynamic *dialect*
   "Which SQL dialect build-query is rendering for - bound once at the top of
@@ -1400,6 +1401,8 @@
         ;; :paths only generates candidate pine expressions (see hints.paths) -
         ;; it never builds a query of its own.
         (= type :paths) {:query " /* No SQL. Pick a path from hints.paths and build that expression instead */ "}
+        ;; `describe:` reads the schema Pine already holds (pine.describe).
+        (= type :describe) {:query " /* No SQL. describe: lists the table's columns and joins from the schema Pine read */ "}
         :else (build-select-query (update state :limit #(or % 250)))))))
 
 (defn- param-preview [{v :value :as param}]
@@ -1443,6 +1446,12 @@
                               {:error-type "incomplete"})))
           build-result  (build-query state)]
       (cond
+        ;; Nothing runs on the database: the rows come from the schema Pine
+        ;; read when it connected. The state may have dropped :references
+        ;; (ast/main.clj's post-handle), so they are looked up again.
+        (= :describe operation-type)
+        (describe/rows state (or (:references state) (db/init-references connection-id)))
+
         ;; Every write runs in a transaction, even a single statement: if it
         ;; fails part way, nothing is left half-applied. A multi-table
         ;; update! rolls back all of its tables together.

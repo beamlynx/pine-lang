@@ -361,6 +361,9 @@
     ;; untouched, so it still points at whatever real table/named result the
     ;; pipe left off at - that's the path search's starting point.
     :paths state
+    ;; `describe:` changes nothing: it describes the table the pipe left off
+    ;; at, :current, which eval reads (pine.describe).
+    :describe state
     ;; No operations
     :no-op state
     (update state :errors conj [type "Unknown operation type in parse tree"])))

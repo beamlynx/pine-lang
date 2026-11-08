@@ -540,3 +540,37 @@
                         :ldt (java.time.LocalDateTime/parse "2024-01-31T10:00:00.5")
                         :ld (java.time.LocalDate/parse "2024-01-31")
                         :lt (java.time.LocalTime/parse "10:15:30"))])))))
+
+(deftest test-describe
+  ;; The :test connection has no pool: `describe:` never reaches a database.
+  (testing "a table's columns, the tables it joins to and from, and when the schema was read"
+    (let [{:keys [result columns error]} (api/api-eval ["company | describe:"] :test)]
+      (is (nil? error))
+      (is (= ["kind" "name" "type" "detail" "pine"] (first result)))
+      (is (= [{:column "kind"} {:column "name"} {:column "type"} {:column "detail"} {:column "pine"}] columns))
+      (is (= [["column" "id" "integer" "primary key" "c_0.id"]
+              ["column" "created_at" "timestamp" "" "c_0.created_at"]
+              ["joined from" "y.employee" "" "foreign key: y.employee.company_id -> company.id" "| y.employee .company_id"]
+              ["joined from" "z.document" "" "foreign key: z.document.company_id -> company.id" "| z.document .company_id"]]
+             (butlast (rest result))))
+      (is (re-find #"^Read at " (nth (last result) 3)))))
+
+  (testing "after a join, the table joined last"
+    (let [{:keys [result]} (api/api-eval ["x.company | y.employee | describe:"] :test)]
+      (is (= ["column" "company_id" "integer" "" "e_1.company_id"] (nth result 2)))
+      (is (some #{["joins to" "x.company" "" "foreign key: y.employee.company_id -> x.company.id" "| x.company .company_id :parent"]}
+                result))))
+
+  (testing "a named result: only the columns it exposes"
+    (is (= [["column" "id" "integer" "primary key" "x.id"]]
+           (filter #(= "column" (first %)) (:result (api/api-eval ["company | s: id |= x" "x | describe:"] :test))))))
+
+  (testing "a column the policy masks says so"
+    (let [rules [{:type "column-name" :equals "id"}]
+          {:keys [result]} (api/api-eval ["company | describe:"] :test rules)]
+      (is (= [["column" "id" "integer" "primary key" "c_0.id"]
+              ["column" "created_at" "timestamp" "masked" "c_0.created_at"]]
+             (filter #(= "column" (first %)) result)))))
+
+  (testing "with nothing before it"
+    (is (re-find #"needs a table" (:error (api/api-eval ["describe:"] :test))))))

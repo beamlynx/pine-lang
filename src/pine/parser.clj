@@ -861,6 +861,13 @@
     :variable {:kind :literal :value (dt/variable (first children))}
     (throw (ex-info "Unknown computed value" {:_ node}))))
 
+;; --------
+;; DESCRIBE
+;; --------
+
+(defmethod -normalize-op :DESCRIBE [_]
+  {:type :describe :value {}})
+
 ;; -----
 ;; PATHS
 ;; -----
@@ -921,7 +928,7 @@
 ;; in words instead of regexes (describe-failure).
 
 (def ^:private operation-names
-  ["select" "where" "limit" "from" "order" "group" "count" "delete!" "update!"])
+  ["select" "where" "limit" "from" "order" "group" "count" "describe" "delete!" "update!"])
 
 (defn- edit-distance [a b]
   (let [n (count b)]
@@ -1013,7 +1020,7 @@
   {"select" "select" "s" "select" "where" "where" "w" "where"
    "limit" "limit" "l" "limit" "order" "order" "o" "order"
    "group" "group" "g" "group" "from" "from" "f" "from"
-   "count" "count" "unnest" "unnest"
+   "count" "count" "unnest" "unnest" "describe" "describe"
    "update!" "update" "u!" "update" "delete!" "delete" "d!" "delete"})
 
 (defn doc-topic
