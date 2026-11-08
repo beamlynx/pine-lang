@@ -413,6 +413,17 @@
     (is (re-find #"SELECT\s+\"c_0\"\.\*\s+FROM"
                  (:query-without-hidden (api/api-build ["customer"] nil :test))))))
 
+(deftest test-api-build-parse-error-says-what-fits
+  (testing "where a name could go, the columns there are listed"
+    (is (re-find #"\nWhat fits here: `c_0\.id`, `c_0\.created_at`\nPine docs: select$"
+                 (:error (api/api-build ["company | select: \"name\""] nil :test)))))
+  (testing "where no name could go, nothing is listed"
+    (is (not (re-find #"What fits here"
+                      (:error (api/api-build ["company | where: id = 1 and name = 'x'"] nil :test))))))
+  (testing "eval says the same"
+    (is (re-find #"What fits here: `c_0\.id`"
+                 (:error (api/api-eval ["company | select: \"name\""] :test))))))
+
 (deftest test-sql-to-pine
   (let [post (fn [body]
                (let [r (api/app {:request-method :post

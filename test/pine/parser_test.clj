@@ -724,9 +724,21 @@
 
 (deftest test-readable-parse-errors
   (let [error #(:error (parse %))]
-    (testing "a hint comes first; Instaparse's own report follows it unchanged"
+    (testing "a hint comes first; the position report follows it"
       (is (re-find #"(?s)^Unknown operation `wher:`\. Did you mean `where:`\?\n\nParse error at line 1"
                    (error "user | wher: id = 1"))))
+    (testing "the report names what was expected in words, and the docs topic"
+      (is (= (str "Parse error at line 1, column 36:\n"
+                  "company_officer | group: officerId is null as x with count\n"
+                  "                                   ^\n"
+                  "Expected: `|`, `with`, `=>`\n"
+                  "Pine docs: group")
+             (error "company_officer | group: officerId is null as x with count")))
+      (is (re-find #"\nExpected: a name, `\|`" (error "user | select: \"tenantId\"")))
+      (is (not (re-find #"#\"|Expected one of" (error "user | select: \"tenantId\""))) "no regexes")
+      (is (re-find #"\nPine docs: where$" (error "user | wher: id = 1")) "a misspelled operation's topic")
+      (is (not (re-find #"Pine docs" (error "user ? document"))) "no operation, no topic"))
+    (is (re-find #"^`\?` follows a pipe: `user \| \? document`\." (error "user ? document")))
     (is (re-find #"^`where` needs a colon" (error "user | where id = 1")))
     (is (re-find #"^A string is missing its closing quote" (error "user | where: name = 'abc")))
     (is (re-find #"^Join conditions in one where: with `or`" (error "user | where: a = 1, b = 2")))

@@ -147,6 +147,28 @@
                  :query-error error}
           error-type (assoc :query-error-type error-type))))))
 
+(def ^:private max-fits 8)
+
+(defn- fits-at
+  "What the hints offer where a parse failed: the text before the failure is
+  built against the connection, the way a build for completion is, and its
+  joins and columns are named. Nil without a connection, where no name could
+  go (parser/expects-name?), or when that text doesn't parse either. A failed parse must still say what failed, so any
+  error here is dropped."
+  [expression {:keys [index] :as failure} conn-id named-results access-policy]
+  (when (and conn-id (parser/expects-name? failure))
+    (try
+      (let [prefix (subs expression 0 (min (or index 0) (count expression)))
+            {:keys [result]} (parser/parse prefix)]
+        (when result
+          (let [{:keys [hints]} (ast/generate (variables/bind result) conn-id prefix nil named-results access-policy)
+                tables  (keep :pine (:table hints))
+                columns (keep (fn [{:keys [alias column]}]
+                                (when column (if alias (str alias "." column) column)))
+                              (concat (:select hints) (:where hints) (:order hints) (:update hints)))]
+            (seq (take max-fits (distinct (concat tables columns)))))))
+      (catch Exception _ nil))))
+
 (defn- generate-state
   ([expression]
    (generate-state expression nil nil {}))
@@ -157,14 +179,16 @@
   ([expression cursor connection-id named-results]
    (generate-state expression cursor connection-id named-results []))
   ([expression cursor connection-id named-results access-policy]
-   (let [{:keys [result error]} (->> expression parser/parse)
+   (let [{:keys [result error failure]} (->> expression parser/parse)
          conn-id (or connection-id @db/connection-id)]
      (if result
        ;; `$name`s with a value in this request become ordinary literals here,
        ;; before the AST sees them (pine.variables).
        {:result (ast/generate (variables/bind result) conn-id expression cursor named-results access-policy)}
        {:error-type "parse"
-        :error error}))))
+        :error (if-let [fits (and failure (fits-at expression failure conn-id named-results access-policy))]
+                 (parser/describe-failure expression failure fits)
+                 error)}))))
 
 (defn- generate-query-state
   "Like generate-state, but builds only what the SQL needs: no hints and no
