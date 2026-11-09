@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [0.54.0] - 2026-11-09
 ### Added
 - **A result says when it may have been cut off.** With no `limit:` of its own, a query returns at most 250 rows, and a `group:` at most 10,000 groups. The eval response now gives that cap as `row-cap`, so a caller can say when a result reached it.
 - **A column of an earlier table after `limit: … per` or `group:` gets a clear error.** `… | limit: 1 per c.id | select: name`, where `name` belongs to `c`, used to fail in the database with "no such column: result_1.name". It now says which columns the step kept, which table `name` belongs to, and to select it before the step.
