@@ -134,6 +134,53 @@
               "minute" (str "strftime('%Y-%m-%d %H:%M', " col-ref ")"))
     (str "TO_CHAR(DATE_TRUNC('" col-fn "', " col-ref "), '" (col-fn-format col-fn) "')")))
 
+(defn period-bounds
+  "[start end] SQL for a period of days: the first day in it, and the first
+  day after it. A comparison with a period compares with this range (see
+  pine.eval's render-period-condition), so `created_at = today()` holds all
+  day, whatever the time. The day is the database's: its session time zone
+  on Postgres and MySQL, UTC on SQLite. A week starts on Monday, as
+  `week` does in bucket-sql.
+
+  SQLite has no date type. Its dates are text, `2024-01-31 10:00:00`, and
+  compare in order with a day's `2024-01-31`."
+  [dialect period]
+  (case dialect
+    :mysql
+    (let [week (str "(CURDATE() - INTERVAL WEEKDAY(CURDATE()) DAY)")
+          month (str "(CURDATE() - INTERVAL (DAYOFMONTH(CURDATE()) - 1) DAY)")]
+      (case period
+        "today"      ["CURDATE()" "(CURDATE() + INTERVAL 1 DAY)"]
+        "yesterday"  ["(CURDATE() - INTERVAL 1 DAY)" "CURDATE()"]
+        "tomorrow"   ["(CURDATE() + INTERVAL 1 DAY)" "(CURDATE() + INTERVAL 2 DAY)"]
+        "this_week"  [week (str "(" week " + INTERVAL 7 DAY)")]
+        "this_month" [month (str "(" month " + INTERVAL 1 MONTH)")]))
+
+    :sqlite
+    (let [monday "'-' || ((CAST(strftime('%w', 'now') AS INTEGER) + 6) % 7) || ' days'"]
+      (case period
+        "today"      ["date('now')" "date('now', '+1 day')"]
+        "yesterday"  ["date('now', '-1 day')" "date('now')"]
+        "tomorrow"   ["date('now', '+1 day')" "date('now', '+2 days')"]
+        "this_week"  [(str "date('now', " monday ")") (str "date('now', " monday ", '+7 days')")]
+        "this_month" ["date('now', 'start of month')" "date('now', 'start of month', '+1 month')"]))
+
+    (case period
+      "today"      ["CURRENT_DATE" "(CURRENT_DATE + 1)"]
+      "yesterday"  ["(CURRENT_DATE - 1)" "CURRENT_DATE"]
+      "tomorrow"   ["(CURRENT_DATE + 1)" "(CURRENT_DATE + 2)"]
+      "this_week"  ["CAST(DATE_TRUNC('week', CURRENT_DATE) AS DATE)" "(CAST(DATE_TRUNC('week', CURRENT_DATE) AS DATE) + 7)"]
+      "this_month" ["CAST(DATE_TRUNC('month', CURRENT_DATE) AS DATE)"
+                    "CAST(DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month' AS DATE)"])))
+
+(defn- period
+  "A period of days, `today()`. Compared with, it is its whole range; as a
+  value anywhere else, such as `update! due = tomorrow()`, its first day."
+  [name]
+  {:arity [0 0]
+   :period true
+   :render (fn [dialect _] (first (period-bounds dialect name)))})
+
 (defn- bucket [unit]
   {:arity [1 1]
    :render (fn [dialect [arg]] (bucket-sql dialect unit arg))})
@@ -145,6 +192,12 @@
    ;; SQLite has no NOW().
    "now"      {:arity [0 0]
                :render (fn [dialect _] (if (= dialect :sqlite) "CURRENT_TIMESTAMP" "NOW()"))}
+   ;; Periods of days: `where: created_at = today()` holds all day.
+   "today"      (period "today")
+   "yesterday"  (period "yesterday")
+   "tomorrow"   (period "tomorrow")
+   "this_week"  (period "this_week")
+   "this_month" (period "this_month")
    ;; Named after Postgres's own: SQL written for Postgres converts as it is.
    "jsonb_typeof"       {:arity [1 1] :json-args true :render json-typeof-sql}
    "jsonb_array_length" {:arity [1 1] :json-args true :render json-array-length-sql}
@@ -174,6 +227,11 @@
    "all"      {:arity [1 1] :aggregate true
                :render (fn [dialect arg filter]
                          (filtered dialect (if (= dialect :postgres) "BOOL_AND" "MIN") arg filter))}})
+
+(defn period?
+  "Whether a resolved computed value is a call to a period, `today()`."
+  [node]
+  (boolean (and (= :call (:kind node)) (:period (get functions (:fn node))))))
 
 (defn function-names
   "The names of the functions, aggregates or not, for messages."

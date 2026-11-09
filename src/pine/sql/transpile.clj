@@ -216,7 +216,7 @@
 
 (defn- special-value [{:keys [name at]}]
   (refuse at (case name
-               ("CURRENT_DATE" "CURRENT_TIME" "LOCALTIME") (str name " isn't in Pine. now() is the time now, with the date.")
+               ("CURRENT_DATE" "CURRENT_TIME" "LOCALTIME") (str name " isn't in Pine. now() is the time now, with the date, and today() is all of today.")
                (str name " isn't in Pine."))))
 
 (def ^:private json-key-here

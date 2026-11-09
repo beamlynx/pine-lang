@@ -97,7 +97,7 @@
            (-> (parser/parse "g | t .x::uuid = .id") :result second :value :join-column-pairs))))
 
   (testing "Refused"
-    (is (s/includes? (parse-error "t | s: lower(name) as n") "`lower()` isn't a Pine function. There are coalesce(), concat(), day(), hour(), jsonb_array_length(), jsonb_typeof(), minute(), month(), now(), week(), year(), and in group: all, any, avg, count, max, min, sum."))
+    (is (s/includes? (parse-error "t | s: lower(name) as n") "`lower()` isn't a Pine function. There are coalesce(), concat(), day(), hour(), jsonb_array_length(), jsonb_typeof(), minute(), month(), now(), this_month(), this_week(), today(), tomorrow(), week(), year(), yesterday(), and in group: all, any, avg, count, max, min, sum."))
     (is (s/includes? (parse-error "t | s: coalesce(a) as n") "`coalesce()` takes 2 or more arguments, not 1."))
     (is (s/includes? (parse-error "t | s: now(a) as n") "`now()` takes 0 arguments, not 1."))
     (is (s/includes? (parse-error "t | s: min(a) as n") "`min()` is an aggregate. Use it after `with` in group:"))
@@ -125,6 +125,40 @@
     (is (s/includes? (sql "company | where: created_at > now()") "WHERE \"c_0\".\"created_at\" > NOW()"))
     (is (s/includes? (sql :test-mysql "company | where: created_at > now()") "WHERE `c_0`.`created_at` > NOW()"))
     (is (s/includes? (sql :test-sqlite "company | where: created_at > now()") "WHERE \"c_0\".\"created_at\" > CURRENT_TIMESTAMP")))
+
+  ;; See test/pine/db/dates_test.clj for these on real databases.
+  (testing "A period of days compares with its range, on the bare column"
+    (let [c "\"c_0\".\"created_at\""]
+      (is (s/includes? (sql "company | where: created_at = today()")
+                       (str "WHERE (" c " >= CURRENT_DATE AND " c " < (CURRENT_DATE + 1))")))
+      (is (s/includes? (sql "company | where: created_at != yesterday()")
+                       (str "WHERE (" c " < (CURRENT_DATE - 1) OR " c " >= CURRENT_DATE)")))
+      (is (s/includes? (sql "company | where: created_at > tomorrow()") (str "WHERE " c " >= (CURRENT_DATE + 2)")))
+      (is (s/includes? (sql "company | where: created_at >= this_week()")
+                       (str "WHERE " c " >= CAST(DATE_TRUNC('week', CURRENT_DATE) AS DATE)")))
+      (is (s/includes? (sql "company | where: created_at < this_month()")
+                       (str "WHERE " c " < CAST(DATE_TRUNC('month', CURRENT_DATE) AS DATE)")))
+      (is (s/includes? (sql "company | where: created_at <= this_month()")
+                       (str "WHERE " c " < CAST(DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month' AS DATE)")))))
+
+  (testing "On MySQL and SQLite"
+    (is (s/includes? (sql :test-mysql "company | where: created_at = today()")
+                     "WHERE (`c_0`.`created_at` >= CURDATE() AND `c_0`.`created_at` < (CURDATE() + INTERVAL 1 DAY))"))
+    (is (s/includes? (sql :test-mysql "company | where: created_at = this_week()")
+                     "`c_0`.`created_at` >= (CURDATE() - INTERVAL WEEKDAY(CURDATE()) DAY)"))
+    (is (s/includes? (sql :test-sqlite "company | where: created_at = today()")
+                     "WHERE (\"c_0\".\"created_at\" >= date('now') AND \"c_0\".\"created_at\" < date('now', '+1 day'))"))
+    (is (s/includes? (sql :test-sqlite "company | where: created_at = this_month()")
+                     "\"c_0\".\"created_at\" < date('now', 'start of month', '+1 month')")))
+
+  (testing "As a value, a period is its first day"
+    (is (s/includes? (sql "company | s: today() as d") "CURRENT_DATE AS \"d\""))
+    (is (s/includes? (:query (first (:queries (build "company | where: id = 1 | update! created_at = tomorrow()"))))
+                     "SET \"created_at\" = (CURRENT_DATE + 1)")))
+
+  (testing "A period compares only by order"
+    (is (= "`today()` is a period of days. Compare it with =, !=, <, <=, > or >=."
+           (error "company | where: created_at like today()"))))
 
   (testing "Casts inside a value"
     (is (s/includes? (sql "report | s: coalesce(id::text, title) as k") "COALESCE(\"r_0\".\"id\"::text, \"r_0\".\"title\")"))
