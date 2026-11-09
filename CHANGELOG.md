@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Changed
+- **A misspelt column suggests the real one.** Under a masking policy, `company | select: tenant_id` on a table whose column is `tenantId` now ends with "Did you mean `tenantId`?". Case and underscores are ignored when looking for a match, and small typos are caught too. The error mentions re-indexing the connection only when no column is close.
 
 ## [0.54.0] - 2026-11-09
 ### Added
