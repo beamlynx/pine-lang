@@ -8,6 +8,9 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - **A misspelt column suggests the real one.** Under a masking policy, `company | select: tenant_id` on a table whose column is `tenantId` now ends with "Did you mean `tenantId`?". Case and underscores are ignored when looking for a match, and small typos are caught too. The error mentions re-indexing the connection only when no column is close.
 - **`? table` lists up to 20 routes instead of 10.** On a schema where many tables connect, the route you wanted was often cut off. The search still stops after 150 ms.
 
+### Fixed
+- **`describe:` marks masked columns in your own tabs too.** Its `masked` column was always empty there, and said `yes` only for an AI agent's query. Your own tab reports what the masking policy would hide without hiding it, and `describe:` didn't read the policy that way.
+
 ## [0.54.0] - 2026-11-09
 ### Added
 - **A result says when it may have been cut off.** With no `limit:` of its own, a query returns at most 250 rows, and a `group:` at most 10,000 groups. The eval response now gives that cap as `row-cap`, so a caller can say when a result reached it.

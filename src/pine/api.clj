@@ -426,8 +426,14 @@
                                     ". This caller asked for read-only evaluation.")
                         :writes true}
                        (try
-                         (let [rows    (eval/run-query last-state)
-                               op-type (get-in last-state [:operation :type])
+                         (let [op-type (get-in last-state [:operation :type])
+                               ;; `describe:` reports which columns the policy
+                               ;; masks. It hides nothing, so on the owner's
+                               ;; own tab, which only annotates, it gets the
+                               ;; rules too.
+                               rows    (eval/run-query
+                                        (cond-> last-state
+                                          (and annotate? (= :describe op-type)) (assoc :access-policy policy-rules)))
                                ;; A write's counts and the rows of `describe:`
                                ;; and `references:` name their own columns:
                                ;; none is a column of a table.
