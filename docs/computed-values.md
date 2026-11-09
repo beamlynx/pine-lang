@@ -100,6 +100,7 @@ columns.
 | `coalesce(a, b, ...)` | The first argument that isn't NULL. Two or more arguments. |
 | `concat(a, b, ...)` | The arguments as text, one after another. NULL when any of them is NULL, like SQL's `\|\|`. Two or more arguments. |
 | `now()` | The current date and time. |
+| `today()`, `yesterday()`, `tomorrow()`, `this_week()`, `this_month()` | A period of days. Compared with in `where:`, the whole period: see [Periods of days](#periods-of-days). As any other value, its first day. |
 | `minute(x)`, `hour(x)`, `day(x)`, `week(x)`, `month(x)`, `year(x)` | A date as text, cut to that unit: `month` gives `'2024-05'`. A week starts on Monday. |
 | `jsonb_typeof(x)` | The type of a JSON value: `object`, `array`, `string`, `number`, `boolean` or `null`. NULL when there is no value, such as a missing key. |
 | `jsonb_array_length(x)` | The number of items in a JSON array. See [JSON values](#json-values). |
@@ -220,6 +221,38 @@ session | where: expires_at < now() | update! closed_at = now()
 
 There is no date arithmetic yet, such as `now() - interval '1 day'`.
 
+### Periods of days
+
+`today()`, `yesterday()`, `tomorrow()`, `this_week()` and `this_month()` are periods of days, not moments.
+Compared with a column in `where:`, they stand for the whole period, whatever the time of day:
+
+```
+order | where: created_at = today()
+```
+
+finds every order made today, from midnight to midnight. `now()` is a moment: `created_at = now()` would
+find only orders made at this very instant.
+
+| Pine | Means |
+|---|---|
+| `x = today()` | During today |
+| `x != today()` | On any other day |
+| `x > today()` | After today ends |
+| `x >= today()` | Today or later |
+| `x < today()` | Before today starts |
+| `x <= today()` | Today or earlier |
+
+A week starts on Monday, as `week(x)` does. Other operators, such as `like`, are refused.
+
+The comparison is a range on the column itself: `created_at = today()` is `created_at >= <today> AND
+created_at < <tomorrow>`. So it works on a date, a timestamp or a timestamp with a time zone, and an index on
+the column still serves it. Wrapping the column in a function, such as `DATE(created_at)`, would stop that.
+
+The day is the database's: today in its session's time zone on Postgres and MySQL, and in UTC on SQLite.
+Near midnight that may differ from yours.
+
+Anywhere else, such as `select:` or `update! due_on = tomorrow()`, a period is its first day.
+
 ### A cast in a join
 
 Either column of an explicit join pair can take a cast:
@@ -260,6 +293,9 @@ couldn't end in `update!`.
 |---|---|---|---|
 | `concat(a, b)` | `((a)::text \|\| (b)::text)` | `CONCAT(a, b)` | `(a \|\| b)` |
 | `now()` | `NOW()` | `NOW()` | `CURRENT_TIMESTAMP` |
+| `today()` | `CURRENT_DATE` | `CURDATE()` | `date('now')` |
+| `this_week()` | `CAST(DATE_TRUNC('week', CURRENT_DATE) AS DATE)` | `CURDATE() - INTERVAL WEEKDAY(CURDATE()) DAY` | `date('now', '-' \|\| <days since Monday> \|\| ' days')` |
+| `this_month()` | `CAST(DATE_TRUNC('month', CURRENT_DATE) AS DATE)` | `CURDATE() - INTERVAL (DAYOFMONTH(CURDATE()) - 1) DAY` | `date('now', 'start of month')` |
 | `any(c)` | `BOOL_OR(c)` | `MAX(c)` | `MAX(c)` |
 | `all(c)` | `BOOL_AND(c)` | `MIN(c)` | `MIN(c)` |
 | `min(x) where c` | `MIN(x) FILTER (WHERE c)` | `MIN(CASE WHEN c THEN x END)` | `MIN(x) FILTER (WHERE c)` |

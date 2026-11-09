@@ -676,11 +676,37 @@
       [(render-comparison (if cast (render-cast text-x cast) text-x) cast operator value)
        (concat text-params (value-params value))])))
 
+(defn- render-period-condition
+  "[sql params] for a comparison with a period of days, `created_at =
+  today()`: with its range, from its first day up to the first day after it
+  (pine.computed/period-bounds). Equal means within it, and greater means
+  after it ends. The column is left bare, so an index on it still serves."
+  [left left-params operator period]
+  (let [[start end] (computed/period-bounds *dialect* period)
+        sql (case operator
+              "="  (str "(" left " >= " start " AND " left " < " end ")")
+              "!=" (str "(" left " < " start " OR " left " >= " end ")")
+              ">"  (str left " >= " end)
+              ">=" (str left " >= " start)
+              "<"  (str left " < " start)
+              "<=" (str left " < " end)
+              (throw (ex-info (str "`" period "()` is a period of days. Compare it with =, !=, <, <=, > or >=.")
+                              {:error-type "period-operator"})))]
+    [sql left-params]))
+
 (defn- render-condition
   "[sql params] for one condition. The column may be a computed column's
-  value (:computed), and the value a computed value, `> now()`."
+  value (:computed), and the value a computed value, `> now()`, or a
+  period, `= today()`."
   [{alias :alias col :column :keys [cast operator value path computed] :as condition}]
   (cond
+    (and (= :computed (:type value)) (computed/period? (:node value)))
+    (let [[left left-params] (cond
+                               computed (let [[x ps] (render-value computed)] [(if cast (render-cast x cast) x) ps])
+                               path (json-extract :text (col-ref alias col) path)
+                               :else [(column-ref-with-cast alias col cast) []])]
+      (render-period-condition left left-params operator (:fn (:node value))))
+
     (= :computed (:type value))
     (let [[left left-params] (if computed
                                (let [[x ps] (render-value computed)] [(if cast (render-cast x cast) x) ps])

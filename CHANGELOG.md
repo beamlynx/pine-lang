@@ -3,6 +3,9 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Added
+- **`today()`, `yesterday()`, `tomorrow()`, `this_week()` and `this_month()` in `where:`.** Each is a period of days, so `where: created_at = today()` finds everything from today, whatever the time. `> today()` is after today ends, and `<= today()` is today or earlier. A week starts on Monday. The day is the database's own. An index on the column still serves the query. `now()` stays the exact moment. See `docs/computed-values.md`, "Periods of days".
+
 ### Changed
 - **A join that finds no relation lists the joins that exist.** `employee | company .id` now ends with "Joins that exist: `| company .company_id :parent` (foreign key)", the same Pine `references:` shows. A join column that isn't a column of either table is named, with the closest columns. One that exists but holds no key between the tables is said to be so.
 - **A misspelt column suggests the real one.** Under a masking policy, `company | select: tenant_id` on a table whose column is `tenantId` now ends with "Did you mean `tenantId`?". Case and underscores are ignored when looking for a match, and small typos are caught too. The error mentions re-indexing the connection only when no column is close.
