@@ -1811,3 +1811,27 @@
     (is (nil? (row-cap "company | describe:")))
     (is (nil? (row-cap "company | references:")))
     (is (nil? (row-cap "company | where: id = 1 | delete! .id")))))
+
+(deftest test-unresolved-join-errors
+  (testing "a join column that isn't a column of either table is named, with the closest ones"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"^No relation between `employee` and `company`\. `compnyId` isn't a column of `employee` or `company`\. Did you mean `company_id`\? "
+                          (generate "employee | company .compnyId :parent"))))
+
+  (testing "a join column that exists but holds no key between the tables says so"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"`id` is a column, but no key between the two tables uses it\."
+                          (generate "employee | company .id"))))
+
+  (testing "the joins that do exist are listed, with the Pine to type after the pipe"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Joins that exist: `\| x\.company \.company_id :parent` \(foreign key\)\.$"
+                          (generate "employee | company .id")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Joins that exist: `\| z\.document \.employee_id` \(foreign key\), `\| z\.document \.created_by` \(foreign key\)\.$"
+                          (generate "employee | document .id"))))
+
+  (testing "tables nothing connects say how to name a column of each"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Nothing in the schema connects them\. Name a column of each table: `company \.x = \.y`"
+                          (generate "report | company")))))
