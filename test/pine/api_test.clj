@@ -569,6 +569,13 @@
               ["created_at" "timestamp" "" "" "yes"]]
              (rest result)))))
 
+  (testing "on the owner's own tab, which only annotates, a masked column says so too"
+    (let [rules [{:type "column-name" :equals "id"}]
+          {:keys [result]} (api/api-eval ["company | describe:"] :test rules true true)]
+      (is (= [["id" "integer" "primary" "" ""]
+              ["created_at" "timestamp" "" "" "yes"]]
+             (rest result)))))
+
   (testing "with nothing before it"
     (is (re-find #"needs a table" (:error (api/api-eval ["describe:"] :test)))))
 
