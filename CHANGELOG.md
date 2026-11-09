@@ -4,6 +4,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 ### Changed
+- **A join that finds no relation lists the joins that exist.** `employee | company .id` now ends with "Joins that exist: `| company .company_id :parent` (foreign key)", the same Pine `references:` shows. A join column that isn't a column of either table is named, with the closest columns. One that exists but holds no key between the tables is said to be so.
 - **A misspelt column suggests the real one.** Under a masking policy, `company | select: tenant_id` on a table whose column is `tenantId` now ends with "Did you mean `tenantId`?". Case and underscores are ignored when looking for a match, and small typos are caught too. The error mentions re-indexing the connection only when no column is close.
 
 ## [0.54.0] - 2026-11-09

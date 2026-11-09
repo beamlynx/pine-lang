@@ -386,14 +386,17 @@
 (defn- check-joins-resolved
   "Throws when a join has nothing connecting its two tables. Such a join
   would render with no ON clause: a syntax error on Postgres, and on MySQL a
-  cross join of every row with every row, which a delete! would then act on."
-  [{:keys [joins aliases]}]
-  (doseq [{:keys [from to columns]} joins
+  cross join of every row with every row, which a delete! would then act on.
+  The error lists the joins that do exist between the two tables."
+  [{:keys [joins connection-id] :as state}]
+  (doseq [{:keys [from to columns] :as join} joins
           :when (empty? columns)]
-    (throw (ex-info (str "No relation between `" (table-label aliases from) "` and `" (table-label aliases to)
-                         "`. Name the join column with `.column`, for example `"
-                         (table-label aliases to) " .some_id`.")
-                    {:error-type "unresolved-join" :from from :to to}))))
+    ;; Without the index, the error still says which tables; it just can't
+    ;; list the joins.
+    (let [references (or (:references state)
+                         (try (db/init-references connection-id) (catch Exception _ {})))]
+      (throw (ex-info (describe/unresolved-join-message state references join)
+                      {:error-type "unresolved-join" :from from :to to})))))
 
 (defn- element-index-sql
   "An element's position in its array, from 0. Postgres and MySQL number the

@@ -11,7 +11,8 @@
             [pine.access-policy :as access-policy]
             [pine.ast.hints :as hints]
             [pine.ast.table :as table]
-            [pine.db.references :as refs]))
+            [pine.db.references :as refs]
+            [pine.similar :as similar]))
 
 (def ^:private op-names {:describe "describe:" :references "references:"})
 
@@ -153,3 +154,73 @@
                   (or (get offered [(:schema target) (:table target) first-child child?])
                       (get offered [nil (:table target) first-child child?])
                       "")])))))
+
+;; A join that found no relation
+
+(defn- entry-label
+  "schema.table, or the table, or the alias of a named result."
+  [{:keys [schema table]} a]
+  (if schema (str schema "." table) (or table a)))
+
+(defn- same-table? [a b]
+  (and (= (:table a) (:table b))
+       (or (nil? (:schema a)) (nil? (:schema b)) (= (:schema a) (:schema b)))))
+
+(defn- joins-between
+  "[pine how] for each relation from the table behind alias `from` to the
+  table behind alias `to`: what to type after `| `, as `references:` shows
+  it. A relation with no Pine, such as one a named result can't reach, is
+  left out."
+  [state references from to]
+  (let [state   (assoc state :references references :current from)
+        offered (pine-by-relation state)
+        targets (table/resolve-table (get-in state [:aliases to]))]
+    (distinct
+     (for [source (table/resolve-table (get-in state [:aliases from]))
+           [{:keys [child parent columns resolution]} child?] (touching references source)
+           :let [target (if child? parent child)
+                 first-child (:child (first columns))
+                 pine (or (get offered [(:schema target) (:table target) first-child child?])
+                          (get offered [nil (:table target) first-child child?]))]
+           :when (and pine (some #(same-table? target %) targets))]
+       [pine (how resolution)]))))
+
+(defn- quoted [names]
+  (str/join ", " (map #(str "`" % "`") names)))
+
+(defn unresolved-join-message
+  "Why `join` found no relation between its two tables, and the joins that
+  do exist between them, with the Pine for each.
+
+  `named` is the columns written after the table, `.user_id`. One that is a
+  column of neither table is named, with the closest columns. One that is a
+  column but holds no key between the two tables is said to be so."
+  [state references {:keys [from to named]}]
+  (let [aliases    (:aliases state)
+        from-entry (get aliases from)
+        to-entry   (get aliases to)
+        from-label (entry-label from-entry from)
+        to-label   (entry-label to-entry to)
+        columns    (concat (keys (source-columns references from-entry))
+                           (keys (source-columns references to-entry)))
+        missing    (remove (set columns) named)
+        joins      (joins-between state references from to)]
+    (str/join
+     " "
+     (remove nil?
+             [(str "No relation between `" from-label "` and `" to-label "`.")
+              (cond
+                (seq missing)
+                (str/join " " (for [c missing]
+                                (str "`" c "` isn't a column of `" from-label "` or `" to-label "`."
+                                     (some->> (similar/did-you-mean c columns) (str " ")))))
+                (seq named)
+                (str (quoted named) (if (next named) " are columns" " is a column")
+                     ", but no key between the two tables uses " (if (next named) "them" "it")
+                     ". After a table, `.column` names the column that holds the key, on whichever table has it."))
+              (if (seq joins)
+                (str "Joins that exist: "
+                     (str/join ", " (for [[pine how] joins] (str "`" pine "` (" how ")")))
+                     ".")
+                (str "Nothing in the schema connects them. Name a column of each table: `" to-label
+                     " .x = .y` joins `" from-label "`'s x to `" to-label "`'s y."))]))))

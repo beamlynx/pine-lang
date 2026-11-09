@@ -189,8 +189,9 @@
     (is (= [{:from "a_0" :to "b_1" :parent "from" :columns []
              :resolution nil :cast nil :type nil}]
            (generate :joins "a | b")))
+    ;; It keeps the columns written after the table, for its error.
     (is (= [{:from "a_0" :to "b_1" :parent "from" :columns []
-             :resolution nil :cast nil :type nil}]
+             :resolution nil :cast nil :named ["a_id"] :type nil}]
            (generate :joins "a | b .a_id")))
 
     ;; Explicit join columns
@@ -211,7 +212,7 @@
     ;; Trying with an incorrect id: no relation matches that column, so this
     ;; is unresolved in exactly the same way as two unrelated tables above.
     (is (= [{:from "c_0" :to "e_1" :parent "from" :columns []
-             :resolution nil :cast nil :type nil}]
+             :resolution nil :cast nil :named ["employee_id"] :type nil}]
            (generate :joins "company | employee .employee_id"))))
 
   (testing "Generate ast for `join` where there is ambiguity"

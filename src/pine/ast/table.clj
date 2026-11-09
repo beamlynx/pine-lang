@@ -402,7 +402,12 @@
                                     (named-value-join state from-alias current))
                                   (join-tables state x current join-columns parent)
                                   {:from (x :alias) :to (current :alias) :parent "from"
-                                   :columns [] :resolution nil :cast nil})]
+                                   :columns [] :resolution nil :cast nil})
+                  ;; An unresolved join keeps the columns written after the
+                  ;; table, `.user_id`, for its error (describe.clj).
+                  join-result (cond-> join-result
+                                (and (empty? (:columns join-result)) (seq join-columns))
+                                (assoc :named (vec join-columns)))]
               (update state :joins conj (assoc join-result :type join))))))
 (defn make-alias [s]
   (let [words (if (not-empty s) (s/split s #"_") ["x"])
