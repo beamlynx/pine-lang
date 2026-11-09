@@ -1283,7 +1283,7 @@
 
     (testing "Postgres matches a quoted name exactly: another spelling isn't the column, and is refused"
       (doseq [e ["order | s: CUSTOMER_ID" "order | where: CUSTOMER_ID = 'x' | s: id" "order | o: Customer_Id"]]
-        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`o_0.(CUSTOMER_ID|Customer_Id)` isn't a column of `order` in the schema index"
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`o_0.(CUSTOMER_ID|Customer_Id)` isn't a column of `order`, .* Did you mean `customer_id`\?$"
                               (generate e rules))
             e))
       (is (re-find #"'xxxxx' AS \"customer_id\"" (:query (generate "order | s: customer_id" rules)))))
@@ -1293,6 +1293,14 @@
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`r_0.nickname` isn't a column of `report`" (generate e [column-type-rule])) e))
       (is (= "policy" (try (generate "report | s: nickname" [column-type-rule]) nil
                            (catch clojure.lang.ExceptionInfo e (:error-type (ex-data e)))))))
+
+    (testing "a mistyped column suggests the closest ones, and offers re-indexing only when none is close"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Did you mean `customer_id`\?$"
+                            (generate "order | s: customerId" rules)))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Did you mean `customer_id`\?$"
+                            (generate "order | s: custmer_id" rules)))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"re-index the connection if the column is new\.$"
+                            (generate "report | s: nickname" [column-type-rule]))))
 
     (testing "without a policy, nothing changes"
       (is (re-find #"\"o_0\".\"CUSTOMER_ID\"" (:query (generate "order | s: CUSTOMER_ID")))))))

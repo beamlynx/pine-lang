@@ -27,7 +27,8 @@
    [pine.computed :as computed]
    [pine.data-types :as dt]
    [pine.db.connections :as connections]
-   [pine.db.references :as refs]))
+   [pine.db.references :as refs]
+   [pine.similar :as similar]))
 
 (def redacted-value "xxxxx")
 (def redacted-sql-literal (str "'" redacted-value "'"))
@@ -488,14 +489,21 @@
 (defn- check-known!
   "Throws when `alias.column` names a column the schema index doesn't have,
   on a table it does. There is nothing to decide on: a different spelling
-  could be how MySQL or SQLite reach a column a rule hides."
+  could be how MySQL or SQLite reach a column a rule hides.
+
+  The error suggests the table's columns closest to the name. Re-indexing
+  is offered only when none is close: a mistyped name is far more likely
+  than a new column."
   [state alias column source]
   (when-let [{resolved :column :keys [table-info]} (resolve-column state alias column source)]
     (when-not resolved
-      (throw (ex-info (str "`" alias "." column "` isn't a column of `" (table-name table-info)
-                           "` in the schema index, so the access policy can't check it. "
-                           "Check the spelling, or re-index the connection if the column is new.")
-                      {:error-type "policy" :alias alias :column column})))))
+      (let [columns    (map :column (table-columns (:references state) table-info))
+            suggestion (similar/did-you-mean column columns)]
+        (throw (ex-info (str "`" alias "." column "` isn't a column of `" (table-name table-info)
+                             "`, so the access policy can't check it. "
+                             (or suggestion
+                                 "Check the spelling, or re-index the connection if the column is new."))
+                        {:error-type "policy" :alias alias :column column}))))))
 
 (defn- row-key?
   "Whether `column` is part of the primary key of the real table behind

@@ -16,7 +16,8 @@
    [pine.cache :as cache]
    [pine.computed :as computed]
    [pine.grammar :refer [defparser]]
-   [pine.data-types :as dt]))
+   [pine.data-types :as dt]
+   [pine.similar :as similar]))
 
 (set! *warn-on-reflection* true)
 
@@ -937,22 +938,9 @@
 (def ^:private operation-names
   ["select" "where" "limit" "from" "order" "group" "count" "describe" "references" "delete!" "update!"])
 
-(defn- edit-distance [a b]
-  (let [n (count b)]
-    (peek
-     (reduce (fn [prev [i ca]]
-               (reduce (fn [row [j cb]]
-                         (conj row (min (inc (peek row))
-                                        (inc (nth prev (inc j)))
-                                        (+ (nth prev j) (if (= ca cb) 0 1)))))
-                       [(inc i)]
-                       (map-indexed vector b)))
-             (vec (range (inc n)))
-             (map-indexed vector a)))))
-
 (defn- closest-operation [word]
   (let [word (s/lower-case word)
-        [best distance] (apply min-key second (map (juxt identity #(edit-distance word %)) operation-names))]
+        [best distance] (apply min-key second (map (juxt identity #(similar/edit-distance word %)) operation-names))]
     (when (<= distance 2) best)))
 
 (defn- parse-error-hint
