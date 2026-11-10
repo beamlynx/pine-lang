@@ -14,6 +14,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ### Fixed
 - **`describe:` marks masked columns in your own tabs too.** Its `masked` column was always empty there, and said `yes` only for an AI agent's query. Your own tab reports what the masking policy would hide without hiding it, and `describe:` didn't read the policy that way.
+- **`count` is no longer masked.** Under a masking policy, the count from `group: … with count` came back as `xxxxx`, and `| where: count >= 10` failed on Postgres with "operator does not exist: text >= bigint". A count reads no column, so it is now always shown, and a filter on it compares numbers. A filter or sort on an aggregate that is masked, such as `min(email) as m`, now says why it can't run instead of failing in the database.
 
 ## [0.54.0] - 2026-11-09
 ### Added

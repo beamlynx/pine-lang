@@ -326,6 +326,10 @@
   column it comes from, `a.data`."
   [state rules {:keys [alias] :as col}]
   (cond
+    ;; A bare `count` after `with` is the SQL COUNT(1), not a computed
+    ;; value (ast/group.clj). It reads no column.
+    (and (= "COUNT(1)" (:symbol col)) (s/blank? (:column col))) {:hidden false}
+
     (:computed col) (decide-computed state rules col)
 
     (get-in state [:aliases alias :elements])
@@ -530,6 +534,17 @@
                   {:error-type "policy" :alias alias :column column
                    :hidden (:policy (annotate-column state rules (reference state alias column)))})))
 
+(defn- masked-in-checkpoint?
+  "Whether `column` of the named result or checkpoint `alias` holds the
+  masked literal: the query that built it masked the value. A column passed
+  through from a checkpoint before it is asked of that one."
+  [state rules alias column]
+  (when-let [inner (get-in state [:aliases alias :ast])]
+    (when-let [col (some #(when (= column (or (:column-alias %) (:column %))) %) (:columns inner))]
+      (if (get-in inner [:aliases (:alias col) :ast])
+        (masked-in-checkpoint? inner rules (:alias col) (:column col))
+        (sensitive-column? inner rules col)))))
+
 (defn- uuid-cast-columns
   "[alias column] for every column a query casts to uuid, outside the
   SELECT list: in a where: condition, a join pair, or inside a computed
@@ -594,6 +609,15 @@
       (doseq [[alias column :as side] (map (fn [[a c]] (element-source aliases a c)) (mapcat entry-columns group))
               :when (hidden? side)]
         (refuse-hidden! state rules alias column "a `group:` key: the key is a column of the result."))
+      ;; A masked value is `xxxxx` in the checkpoint's rows, so a condition
+      ;; on it can't match, and comparing it with a number is a type error
+      ;; in Postgres. The aggregates of a group: are where this happens.
+      (doseq [[alias column] named
+              :when (and (not (s/blank? column)) (masked-in-checkpoint? state rules alias column))]
+        (throw (ex-info (str "`" column "` is masked in `" alias "`: it reads a masked column, so its values are `"
+                             redacted-value "` there. It can't be used in where:, order: or group: after the step "
+                             "that made it. Filter on the columns it reads before that step instead.")
+                        {:error-type "policy" :alias alias :column column})))
       (doseq [[alias column :as side] (map (fn [[a c]] (element-source aliases a c)) (uuid-cast-columns state current))
               :when (hidden? side)]
         (refuse-hidden! state rules alias column

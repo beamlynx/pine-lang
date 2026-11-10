@@ -36,4 +36,20 @@
               (masked db "customer | where: email = 'bob@example.com' | s: name"))))
 
      (testing "but not group on it, which would return its values"
-       (is (re-find #"masked column" (str (:error (masked db "customer | group: email with count")))))))))
+       (is (re-find #"masked column" (str (:error (masked db "customer | group: email with count"))))))
+
+     (testing "a count reads no column, so it is shown, and a filter on it compares numbers"
+       (is (= {:error nil :rows [["Ann" 1] ["Bob" 1]]}
+              (masked db "customer | group: name with count | o: name asc")))
+       (is (= {:error nil :rows [["Ann" 1] ["Bob" 1]]}
+              (masked db "customer | group: name with count | where: count >= 1 | o: name asc")))
+       (is (= {:error nil :rows []}
+              (masked db "customer | group: name with count as n | where: n >= 2"))))
+
+     (testing "an aggregate of a masked column is masked, and refused in a later where: or order:"
+       (is (= {:error nil :rows [["Ann" "xxxxx"] ["Bob" "xxxxx"]]}
+              (masked db "customer | group: name with min(email) as m | o: name asc")))
+       (doseq [e ["customer | group: name with min(email) as m | where: m = 'x'"
+                  "customer | group: name with min(email) as m | where: m >= 1"
+                  "customer | group: name with min(email) as m | o: m asc"]]
+         (is (re-find #"^`m` is masked in `result_1`" (str (:error (masked db e)))) e))))))

@@ -13,10 +13,11 @@ beamlynx lets an AI agent query a database. The owner decides what the agent may
 The policy is **output masking**. It stops the contents of a masked column from reaching whoever sent the query. It does not stop that query from *using* the column.
 
 - **Allowed:** a masked column in `where:`, `order:`, `limit: N per` and joins. The value it is compared with comes from the query, not from the database. An agent that already knows an email may ask which rows hold it, even though `email` is masked.
-- **Masked:** a masked column in `select:`, and any computed value that reads one.
+- **Masked:** a masked column in `select:`, and any computed value or aggregate that reads one. A `count` reads no column, so it is always shown.
 - **Refused:** the two other places a masked value would come back.
   - A `group:` key, because the key is a column of the result.
   - A `::uuid` cast of a masked column, because Postgres's error for a value that isn't a uuid prints that value.
+- **Also refused:** a `where:`, `order:` or `group:` on a value that a `group:` or `limit: … per` before it masked, such as `group: name with min(email) as m | where: m = 'x'`. Its rows hold `xxxxx` there, so the condition can't match, and Postgres would fail comparing it with a number. Filter on the column before that step instead.
 
 This is a deliberate choice, and not an oversight to fix. The other approach is **inference control**, which is what Postgres's row-level security and its leakproof functions aim for. It closes every way a value could be worked out: through filters, row counts or joins. A masking policy doesn't. An agent could rebuild a masked email by asking `where: email like 'a%'`, then `'ab%'`, and so on. Each of those queries opens in the owner's tab. SQL Server's *Dynamic Data Masking* draws the line in the same place.
 
