@@ -1426,6 +1426,19 @@
       (:limit state) nil
       :else default-limit)))
 
+(defn table-aliases
+  "[{:alias :schema :table}] for each table the query reads, in order. An
+  agent reads it to qualify columns: auto-aliases are hard to guess when
+  several tables start with the same letter. A named result or checkpoint
+  has its own name as :table."
+  [state]
+  (->> (:tables state)
+       (map :alias)
+       (distinct)
+       (mapv (fn [a]
+               (let [{:keys [schema table]} (get-in state [:aliases a])]
+                 {:alias a :schema schema :table (or table a)})))))
+
 (defn build-query [state]
   (describe/check-ends-query (:operation-types state))
   (binding [*dialect* (connections/get-dialect (:connection-id state))

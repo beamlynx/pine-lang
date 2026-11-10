@@ -1812,6 +1812,32 @@
     (is (nil? (row-cap "company | references:")))
     (is (nil? (row-cap "company | where: id = 1 | delete! .id")))))
 
+(defn- table-aliases [expression]
+  (-> expression parser/parse :result (ast/generate :test nil nil {} []) eval/table-aliases))
+
+(deftest test-table-aliases
+  (testing "each table the query reads, with its alias, in order"
+    (is (= [{:alias "c_0" :schema nil :table "company"}
+            {:alias "e_1" :schema nil :table "employee"}
+            {:alias "d_2" :schema nil :table "document"}]
+           (table-aliases "company | employee .company_id | document .employee_id")))
+    (is (= [{:alias "c" :schema "x" :table "company"}]
+           (table-aliases "x.company as c"))))
+
+  (testing "after a group: that something follows, the checkpoint by its own name"
+    (is (= [{:alias "c_0" :schema nil :table "company"}]
+           (table-aliases "company | group: id with count")))
+    (is (= [{:alias "result_1" :schema nil :table "result_1"}]
+           (table-aliases "company | group: id with count | where: count > 1")))))
+
+(deftest test-alias-errors-list-the-aliases
+  (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                        #"^`e_2` is neither an alias nor a column of `document`\. Aliases: c_0 = company, e_1 = employee, d_2 = document\.$"
+                        (generate "company | employee .company_id | document .employee_id | select: e_2.id")))
+  (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                        #"Aliases: c_0 = company, e_1 = employee\.$"
+                        (generate "company | employee .company_id | select: company.id"))))
+
 (deftest test-unresolved-join-errors
   (testing "a join column that isn't a column of either table is named, with the closest ones"
     (is (thrown-with-msg? clojure.lang.ExceptionInfo

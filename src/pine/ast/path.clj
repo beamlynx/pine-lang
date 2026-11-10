@@ -163,12 +163,26 @@
       (-> col (assoc :column named) (dissoc :path :column-alias))
       col)))
 
+(defn alias-map
+  "\"c_0 = company, e_1 = employee\": the aliases of the tables the pipe is
+  on, in order, with the table each stands for. Auto-aliases are hard to
+  guess when several tables start with the same letter."
+  [state]
+  (->> (:tables state)
+       (map :alias)
+       (distinct)
+       (map #(str % " = " (let [{:keys [schema table]} (get-in state [:aliases %])]
+                            (if (and schema table) (str schema "." table) (or table %)))))
+       (s/join ", ")))
+
 (defn- unknown-name [state alias]
   (let [current (:current state)
-        table-alias (some (fn [[a {:keys [table]}]] (when (= table alias) a)) (:aliases state))]
-    (ex-info (if table-alias
-               (str "`" alias "` is a table. Name it by its alias, `" table-alias "`, like `" table-alias ".id`.")
-               (str "`" alias "` is neither an alias nor a column of `" (table-label state current) "`."))
+        table-alias (some (fn [[a {:keys [table]}]] (when (= table alias) a)) (:aliases state))
+        aliases (alias-map state)]
+    (ex-info (str (if table-alias
+                    (str "`" alias "` is a table. Name it by its alias, `" table-alias "`, like `" table-alias ".id`.")
+                    (str "`" alias "` is neither an alias nor a column of `" (table-label state current) "`."))
+                  (when (seq aliases) (str " Aliases: " aliases ".")))
              {})))
 
 ;; ---------------------------------------------------------------------------
