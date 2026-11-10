@@ -449,6 +449,8 @@
                             ;; expression set no limit: of its own, or nil.
                             ;; As many rows as this may mean there were more.
                             :row-cap (eval/row-cap last-state)
+                            ;; Which table each alias stands for, in order.
+                            :aliases (eval/table-aliases last-state)
                             ;; Whether this expression changes data. Reported on
                             ;; every eval, not only a refused one, so a caller
                             ;; can tell what it just ran.
