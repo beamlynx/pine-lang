@@ -265,19 +265,22 @@
     (str "sqlite:" clean ":" hex)))
 
 (defn make-connection-id
-  "host:port alone can't identify a connection -- two different databases on
-  the same server need distinct ids so both can be registered at once, so
-  dbname is folded in too. Never parsed back apart (checked: nothing in this
-  codebase splits an id), only ever compared for equality or used as a `@pools`
-  key and a Compojure route segment (`/api/v1/connections/:id/...`) -- which
-  is also why dbname is joined with `:` rather than `/`: a literal `/` would
-  split into two path segments and 404."
+  "`user@host:port:dbname`, or `host:port:dbname` when the pool has no user.
+
+  Each part lets two connections be open at once that would otherwise
+  collide: two databases on one server, or one database as two users. The id
+  is never parsed back apart, only compared for equality and used as a
+  `@pools` key and a route segment (`/api/v1/connections/:id/...`). That is
+  why dbname is joined with `:` rather than `/`: a literal `/` would split the
+  route into two segments and 404. Clients encode the id in the URL, so a
+  user name with unusual characters is fine."
   [^HikariDataSource pool]
   (let [url (.getJdbcUrl pool)]
     (if (sqlite-url? url)
       (sqlite-id (sqlite-path url))
-      (let [{:keys [host-port dbname]} (parse-jdbc-url url)]
-        (str host-port ":" dbname)))))
+      (let [{:keys [host-port dbname]} (parse-jdbc-url url)
+            user (.getUsername pool)]
+        (str (when-not (s/blank? user) (str user "@")) host-port ":" dbname)))))
 
 (defn jdbc-url->label [url]
   (if (sqlite-url? url)
@@ -302,11 +305,9 @@
 
 (defn- same-target?
   "Whether an already-registered pool points at the same database, as the
-  same user, as a newly built one. Compared on the JDBC URL and username
-  rather than just the connection id: two ids only collide here when host,
-  port, and dbname all match (make-connection-id folds dbname in), so the
-  one remaining case this distinguishes is the same database registered
-  again under a different user."
+  same user, as a newly built one. The id already holds the user, host, port
+  and dbname (make-connection-id), so this only tells apart two pools whose
+  JDBC URLs differ in their options."
   [existing ^HikariDataSource candidate]
   (and (instance? HikariDataSource existing)
        (= (.getJdbcUrl ^HikariDataSource existing) (.getJdbcUrl candidate))
@@ -316,12 +317,13 @@
   "Registers a pool for `connection` and returns its id.
 
   Never disturbs a pool that is already registered. Registering the same
-  database as the same user reuses the existing pool; registering it again
-  as a *different* user is rejected.
+  database as the same user reuses the existing pool. The same database as a
+  different user gets an id of its own, so both stay open side by side. Only
+  a pool with the same id but a different JDBC URL is rejected.
 
   Both halves fix real problems. A connection id is derived from the pool's
-  own `host:port:dbname`, so re-registering the same database always lands
-  on the same key. This used to be a bare `swap! pools assoc`, which
+  own `user@host:port:dbname`, so re-registering the same database as the
+  same user always lands on the same key. This used to be a bare `swap! pools assoc`, which
   overwrote the entry and left the displaced HikariDataSource open with
   nothing referencing it. The pool config sets `minimumIdle 1`, so every
   orphan held a real Postgres connection for the life of the process -- 32
@@ -331,8 +333,8 @@
 
   Rejecting rather than replacing is deliberate. Closing the displaced pool
   would fix the leak, but it would also abort queries still running on it.
-  Replacing silently pointed an existing connection id at a different user's
-  session, which is a correctness hazard on top of the leak. An explicit
+  Replacing silently pointed an existing connection id at a differently
+  configured session, which is a correctness hazard on top of the leak. An explicit
   error is the honest version of that limitation. Callers that genuinely
   want to swap targets can `remove-connection-pool` first, which closes the
   pool properly.
@@ -360,7 +362,7 @@
       :else
       (do (.close candidate)
           (throw (ex-info
-                  (format (str "Connection id \"%s\" is already registered under a different user. "
+                  (format (str "Connection id \"%s\" is already connected with different settings. "
                                "Disconnect \"%s\" first.")
                           id id)
                   {:id id}))))))

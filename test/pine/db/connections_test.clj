@@ -69,15 +69,15 @@
           url "jdbc:postgresql://leak-test:5432/app"]
       (try
         (with-redefs [connections/create-pool (fn [_] (fake-hikari url "app_user" first-closed?))]
-          (is (= "leak-test:5432:app" (connections/add-connection-pool {:host "leak-test"}))))
+          (is (= "app_user@leak-test:5432:app" (connections/add-connection-pool {:host "leak-test"}))))
         (with-redefs [connections/create-pool (fn [_] (fake-hikari url "app_user" second-closed?))]
-          (is (= "leak-test:5432:app" (connections/add-connection-pool {:host "leak-test"}))))
+          (is (= "app_user@leak-test:5432:app" (connections/add-connection-pool {:host "leak-test"}))))
 
         (is (not @first-closed?) "the pool still in the registry must stay open")
         (is @second-closed? "the redundant second pool must be closed, not leaked")
-        (is (= 1 (count (filter #(= "leak-test:5432:app" %) (keys @connections/pools)))))
+        (is (= 1 (count (filter #(= "app_user@leak-test:5432:app" %) (keys @connections/pools)))))
         (finally
-          (swap! connections/pools dissoc "leak-test:5432:app")))))
+          (swap! connections/pools dissoc "app_user@leak-test:5432:app")))))
 
   (testing "a different database on the same host:port registers as a separate pool"
     ;; The id now folds dbname in (host:port:dbname), so two databases on one
@@ -89,35 +89,62 @@
       (try
         (with-redefs [connections/create-pool
                       (fn [_] (fake-hikari "jdbc:postgresql://swap-test:5432/one" "u1" one-closed?))]
-          (is (= "swap-test:5432:one" (connections/add-connection-pool {:host "swap-test"}))))
+          (is (= "u1@swap-test:5432:one" (connections/add-connection-pool {:host "swap-test"}))))
         (with-redefs [connections/create-pool
                       (fn [_] (fake-hikari "jdbc:postgresql://swap-test:5432/two" "u1" two-closed?))]
-          (is (= "swap-test:5432:two" (connections/add-connection-pool {:host "swap-test"}))))
+          (is (= "u1@swap-test:5432:two" (connections/add-connection-pool {:host "swap-test"}))))
 
         (is (not @one-closed?) "the first database's pool must stay open")
         (is (not @two-closed?) "the second database's pool must stay open too")
         (is (= "jdbc:postgresql://swap-test:5432/one"
-               (.getJdbcUrl (@connections/pools "swap-test:5432:one"))))
+               (.getJdbcUrl (@connections/pools "u1@swap-test:5432:one"))))
         (is (= "jdbc:postgresql://swap-test:5432/two"
-               (.getJdbcUrl (@connections/pools "swap-test:5432:two"))))
+               (.getJdbcUrl (@connections/pools "u1@swap-test:5432:two"))))
         (finally
-          (swap! connections/pools dissoc "swap-test:5432:one" "swap-test:5432:two")))))
+          (swap! connections/pools dissoc "u1@swap-test:5432:one" "u1@swap-test:5432:two")))))
 
-  (testing "a different user on the same database is rejected"
-    (let [old-closed? (atom false)
-          new-closed? (atom false)
+  (testing "the same database as a different user registers as a separate pool"
+    (let [reader-closed? (atom false)
+          writer-closed? (atom false)
           url "jdbc:postgresql://user-test:5432/app"]
       (try
-        (with-redefs [connections/create-pool (fn [_] (fake-hikari url "reader" old-closed?))]
-          (connections/add-connection-pool {:host "user-test"}))
-        (with-redefs [connections/create-pool (fn [_] (fake-hikari url "writer" new-closed?))]
-          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"already registered"
-                                (connections/add-connection-pool {:host "user-test"}))))
+        (with-redefs [connections/create-pool (fn [_] (fake-hikari url "reader" reader-closed?))]
+          (is (= "reader@user-test:5432:app" (connections/add-connection-pool {:host "user-test"}))))
+        (with-redefs [connections/create-pool (fn [_] (fake-hikari url "writer" writer-closed?))]
+          (is (= "writer@user-test:5432:app" (connections/add-connection-pool {:host "user-test"}))))
 
-        (is (not @old-closed?) "credentials differing must not silently take over the existing pool")
+        (is (not @reader-closed?) "the first user's pool must stay open")
+        (is (not @writer-closed?) "the second user's pool must stay open too")
+        (is (= "reader" (.getUsername (@connections/pools "reader@user-test:5432:app"))))
+        (is (= "writer" (.getUsername (@connections/pools "writer@user-test:5432:app"))))
+        (finally
+          (swap! connections/pools dissoc "reader@user-test:5432:app" "writer@user-test:5432:app")))))
+
+  (testing "a pool without a user keeps the id without one"
+    (let [closed? (atom false)]
+      (try
+        (with-redefs [connections/create-pool
+                      (fn [_] (fake-hikari "jdbc:postgresql://nouser-test:5432/app" nil closed?))]
+          (is (= "nouser-test:5432:app" (connections/add-connection-pool {:host "nouser-test"}))))
+        (finally
+          (swap! connections/pools dissoc "nouser-test:5432:app")))))
+
+  (testing "the same id with different connection options is rejected"
+    (let [old-closed? (atom false)
+          new-closed? (atom false)]
+      (try
+        (with-redefs [connections/create-pool
+                      (fn [_] (fake-hikari "jdbc:postgresql://opts-test:5432/app" "u" old-closed?))]
+          (connections/add-connection-pool {:host "opts-test"}))
+        (with-redefs [connections/create-pool
+                      (fn [_] (fake-hikari "jdbc:postgresql://opts-test:5432/app?ssl=true" "u" new-closed?))]
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"different settings"
+                                (connections/add-connection-pool {:host "opts-test"}))))
+
+        (is (not @old-closed?) "different settings must not silently take over the existing pool")
         (is @new-closed? "the rejected pool must be closed, not leaked")
         (finally
-          (swap! connections/pools dissoc "user-test:5432:app"))))))
+          (swap! connections/pools dissoc "u@opts-test:5432:app"))))))
 
 (deftest test-jdbc-url
   (testing "Postgres: dbtype defaults, port defaults to 5432"
@@ -238,10 +265,10 @@
         (let [futures (doall (for [_ (range n)]
                                (future (.await start) (connections/add-connection-pool {:host "race-test"}))))]
           (.countDown start)
-          (is (every? #(= "race-test:5432:app" @%) futures))))
+          (is (every? #(= "u@race-test:5432:app" @%) futures))))
       (is (= 1 (count (remove deref closed))) "exactly one pool stays open; every other one is closed")
       (finally
-        (swap! connections/pools dissoc "race-test:5432:app")))))
+        (swap! connections/pools dissoc "u@race-test:5432:app")))))
 
 (deftest test-unqualified-table-uses-one-schema
   ;; [schema table column position type length nullable default]
