@@ -180,7 +180,7 @@
    (generate-state expression cursor connection-id named-results []))
   ([expression cursor connection-id named-results access-policy]
    (let [{:keys [result error failure]} (->> expression parser/parse)
-         conn-id (or connection-id @db/connection-id)]
+         conn-id connection-id]
      (if result
        ;; `$name`s with a value in this request become ordinary literals here,
        ;; before the AST sees them (pine.variables).
@@ -197,7 +197,7 @@
   [expression connection-id named-results access-policy]
   (let [{:keys [result error]} (parser/parse expression)]
     (if result
-      {:result (ast/generate-for-query (variables/bind result) (or connection-id @db/connection-id)
+      {:result (ast/generate-for-query (variables/bind result) connection-id
                                        expression named-results access-policy)}
       {:error-type "parse"
        :error error})))
@@ -307,7 +307,7 @@
   ;; column how the policy would treat it (see /api/v1/build's
   ;; access-policy-mode).
   ([expressions cursor connection-id policy-rules annotate?]
-   (let [conn-id (or connection-id @db/connection-id)
+   (let [conn-id connection-id
          connection-name (connections/get-connection-name conn-id)
          access-policy (if annotate? [] policy-rules)]
      (try
@@ -400,7 +400,7 @@
   ;; annotate? true runs with no policy applied, and only reports on each
   ;; column how the policy would treat it. Never sent for an agent's query.
   ([expressions connection-id policy-rules allow-writes annotate?]
-   (let [conn-id (or connection-id @db/connection-id)
+   (let [conn-id connection-id
          connection-name (connections/get-connection-name conn-id)
          access-policy (if annotate? [] policy-rules)]
      (try
@@ -475,31 +475,20 @@
          (log-exception "api-eval" e)
          (assoc (error-body e) :connection-id connection-name))))))
 
-(defn get-connection []
-  (let [connection-id   @db/connection-id]
-    (if connection-id
-      (let [connection-name (connections/get-connection-name connection-id)
-            _               (db/init-references @db/connection-id)]
-        {:result
-         {:connection-id connection-name
-          :version version}})
-      {:result
-       {:connection-id ""
-        :version version}})))
+(defn get-connection
+  "The server's version. Kept as its own route because the app checks it to
+  know the server is up. There is no selected connection to report."
+  []
+  {:result {:version version}})
 
 (defn get-connections []
   {:result
    {:version version
-    :selected-connection-id @db/connection-id
     :connections (connections/list-connections)}})
 
 (defn test-connection [id]
   (let [result (db/run-query id {:query "SELECT CURRENT_TIMESTAMP;"})]
     {:connection-id id :time result}))
-
-(defn set-connection-pool [id]
-  {:version version
-   :connection-id (db/set-connection id)})
 
 (defn create-connection [connection]
   (try
@@ -508,9 +497,14 @@
       (log-exception "create-connection" e)
       (error-body e))))
 
-(defn connect [id]
+(defn connect
+  "Checks a connection works and indexes its schema. It selects nothing:
+  every later request names the connection it runs on."
+  [id]
   (try
-    (-> id test-connection :connection-id set-connection-pool)
+    (-> id test-connection :connection-id db/index-connection)
+    {:version version
+     :connection-id id}
     (catch Exception e
       (log-exception "connect" e)
       (error-body e))))
@@ -518,7 +512,7 @@
 (defn disconnect [id]
   (try
     (connections/remove-connection-pool id)
-    (db/clear-connection-if id)
+    (db/forget-connection id)
     (get-connections)
     (catch Exception e
       (log-exception "disconnect" e)
@@ -535,7 +529,7 @@
   ([sql-query]
    (api-sql sql-query nil))
   ([sql-query connection-id]
-   (let [conn-id (or connection-id @db/connection-id)
+   (let [conn-id connection-id
          connection-name (connections/get-connection-name conn-id)]
      (cond
        (nil? sql-query)
@@ -791,10 +785,10 @@
 (defn- connection-problem
   "An error response when there is no connection to use, or nil."
   [connection-id]
-  (let [conn-id (or connection-id @db/connection-id)]
+  (let [conn-id connection-id]
     (cond
       (nil? conn-id)
-      {:error-type "no-connection" :error "No connection selected. Connect to a database first."}
+      {:error-type "no-connection" :error "No connection given. Pick a database first."}
 
       (not (try (connections/get-connection-name conn-id) true
                 (catch clojure.lang.ExceptionInfo _ false)))
@@ -807,7 +801,7 @@
   Converting needs no connection, so one that isn't there or can't be read
   means converting without it, never an error."
   [connection-id]
-  (let [conn-id (or connection-id @db/connection-id)]
+  (let [conn-id connection-id]
     (when (and conn-id (nil? (connection-problem conn-id)))
       (try (db/init-references conn-id)
            (catch Exception _ nil)))))
@@ -817,7 +811,7 @@
   spelling, its dialect decides what `||` means, and the converted Pine is
   built against it as a check. Nothing runs."
   [query connection-id]
-  (let [conn-id (or connection-id @db/connection-id)
+  (let [conn-id connection-id
         references (sql-to-pine-schema conn-id)]
     (if references
       (sql-transpile/sql->pine query references {:connection-id conn-id
@@ -837,10 +831,10 @@
     (-> id reindex-connection response))
   (DELETE "/api/v1/connections/:id" [id]
     (-> id disconnect response))
-  (GET "/api/v1/connection/stats" []
+  (GET "/api/v1/connections/:id/stats" [id]
     (response
-     (or (connection-problem nil)
-         {:connection-count (db/get-connection-count @db/connection-id)
+     (or (connection-problem id)
+         {:connection-count (db/get-connection-count id)
           :version version
           :time (str (java.time.LocalDateTime/now))})))
 
@@ -898,8 +892,8 @@
 
   ;; One SQL SELECT as a Pine expression: {:expression :warnings}, or an
   ;; error with error-type sql-parse-error, sql-unsupported or internal.
-  ;; Nothing runs, so it needs no connection. With `connection-id`, or the
-  ;; selected connection, names take the database's spelling (see
+  ;; Nothing runs, so it needs no connection. With `connection-id`, names
+  ;; take that database's spelling (see
   ;; docs/sql-to-pine.md). An agent's SQL comes here too (MCP run_sql_as_pine),
   ;; and then runs as the Pine, through /eval and its access policy.
   (POST "/api/v1/sql-to-pine" {params :params}
@@ -916,7 +910,7 @@
     (let [{:keys [connection-id]} params]
       (or (param-problem params)
           (response
-           (let [conn-id (or connection-id @db/connection-id)]
+           (let [conn-id connection-id]
              (if-let [references (sql-to-pine-schema conn-id)]
                (sql-hints/schema (connections/get-dialect conn-id) references)
                {:tables []}))))))
@@ -933,7 +927,7 @@
             (bad-request "`cursor` must be an offset into `query`."))
           (response
            (or (too-long-response query)
-               (let [conn-id (or connection-id @db/connection-id)]
+               (let [conn-id connection-id]
                  (if-let [references (sql-to-pine-schema conn-id)]
                    (sql-hints/join-hints
                     {:query query

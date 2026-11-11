@@ -292,10 +292,16 @@
 (defn make-connection-label [^HikariDataSource pool]
   (jdbc-url->label (.getJdbcUrl pool)))
 
-(defn get-connection-name [id]
-  (if (test-connection? id)
-    (name id)
-    (-> id get-connection-pool make-connection-id)))
+(defn get-connection-name
+  "The id a response names its connection by: the id the request gave, once
+  it is known to have a pool. Throws for an id with none. Never derived from
+  the pool's address, so a client always gets back the id it sent and can
+  check its answer came from the connection it asked for."
+  [id]
+  (cond
+    (test-connection? id) (name id)
+    (contains? @pools id) id
+    :else (throw (ex-info "Connection not found" {:id id}))))
 
 (defn list-connections []
   (mapv (fn [[id _]]
@@ -313,8 +319,27 @@
        (= (.getJdbcUrl ^HikariDataSource existing) (.getJdbcUrl candidate))
        (= (.getUsername ^HikariDataSource existing) (.getUsername candidate))))
 
+(def ^:private client-id-pattern
+  "What an id a client chooses may hold. It is a route segment
+  (`/api/v1/connections/:id/...`), so no `/`, and nothing that needs escaping
+  to read. The desktop app's saved connections have UUIDs."
+  #"^[A-Za-z0-9._-]{1,100}$")
+
+(defn- check-client-id
+  "Throws for an id a client chose that can't be one. Checked before the
+  pool opens, so a bad id never costs a database connection."
+  [{:keys [id]}]
+  (when-not (or (nil? id) (and (string? id) (re-matches client-id-pattern id)))
+    (bad-connection "The connection id may contain only letters, digits, and _ . -")))
+
 (defn add-connection-pool
   "Registers a pool for `connection` and returns its id.
+
+  With an `:id`, the pool is registered under it. The desktop app sends its
+  saved connection's id, so the app, its tabs and this server all name a
+  connection the same way, and two saved connections to the same address
+  get a pool each. Without one, the id is made from the address
+  (make-connection-id), as the web build uses it.
 
   Never disturbs a pool that is already registered. Registering the same
   database as the same user reuses the existing pool. The same database as a
@@ -343,8 +368,9 @@
   the existing pool rather than rebuilding it. If credentials were rotated
   server-side, disconnect and reconnect to pick them up."
   [connection]
+  (check-client-id connection)
   (let [candidate (create-pool connection)
-        id (make-connection-id candidate)
+        id (or (:id connection) (make-connection-id candidate))
         ;; Decided inside the atom: two registrations of the same database at
         ;; once (a double click, a retry) used to both read nil here, and the
         ;; second assoc orphaned the first pool, open, for good.

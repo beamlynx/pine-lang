@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Changed
+- **A connection can be opened under the client's own id.** `POST /api/v1/connections` takes an optional `id`, such as the desktop app's saved connection id. Two ids for one address get a pool each. Without `id`, the id is made from the address, as before. A response's `connection-id` is now always the id the request sent.
+- **Connection stats are per connection.** `GET /api/v1/connection/stats` is now `GET /api/v1/connections/:id/stats`.
+
+### Fixed
+- **A request without a connection is refused instead of running on another one.** The server kept one "selected" connection, the last one any client connected to, and used it for any build, run or SQL that named none. A tab with no connection of its own then ran its queries on another tab's database. There is no selected connection now. Build, eval and SQL without `connection-id` answer with error type `no-connection`. `POST /api/v1/connections/:id/connect` only checks the connection and reads its schema. `GET /api/v1/connection` returns just the version. The legacy `build-with-params` route needs `connection-id` too.
 
 ## [0.55.0] - 2026-11-11
 ### Added

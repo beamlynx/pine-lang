@@ -88,7 +88,7 @@
     (try (f id)
          (finally
            (connections/remove-connection-pool id)
-           (db/clear-connection-if id)))))
+           (db/forget-connection id)))))
 
 (defn- on-sqlite [statements f]
   (let [file (File/createTempFile "pine-test" ".db")]

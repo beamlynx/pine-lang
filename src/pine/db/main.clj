@@ -7,7 +7,12 @@
             [pine.db.sqlite :as sqlite]))
 
 ;; Application state
-(def connection-id "Currently selected connection" (atom nil))
+;;
+;; There is no "selected" connection. Every request names the connection it
+;; runs on. A server-wide default used to fill in for a request that named
+;; none, and that default was whichever connection any client had last
+;; picked: a tab with no connection of its own then ran its queries on
+;; another tab's database.
 (def references "References indexed by the connection id" (atom {}))
 
 ;; Memoization
@@ -47,20 +52,16 @@
 
 ;; Connections
 ;;
-(defn set-connection
-  "Selects a connection once its schema is indexed. Indexing first: if it
-  fails (the database is down, or the user can't read the catalog), the
-  previous selection stays, rather than one every later request fails on."
+(defn index-connection
+  "Indexes a connection's schema, so its first query doesn't wait for it.
+  Throws when the database is down or the user can't read the catalog."
   [id]
   (init-references id)
-  (reset! connection-id id)
   id)
 
-(defn clear-connection-if
-  "Clears the selected connection and its cached references when it matches id
-  (a no-op when a different connection is selected)."
+(defn forget-connection
+  "Drops a connection's cached schema, once its pool is closed."
   [id]
-  (swap! connection-id (fn [current] (if (= current id) nil current)))
   (swap! references dissoc id))
 
 (defn reindex-references
