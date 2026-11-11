@@ -566,17 +566,40 @@
                        columns))
              joins))))
 
+(defn- json-cast-columns
+  "[alias column] for every column a query passes straight to a JSON
+  function (`jsonb_typeof`, `jsonb_array_length`) outside the SELECT list.
+  On Postgres the column is cast to jsonb, and for a text column that isn't
+  JSON the database's error prints the value: `Token \"alice\" is invalid`."
+  [{:keys [where group order limit-per]}]
+  (let [conditions (mapcat #(if-let [cs (:or %)] cs [%]) where)
+        ;; The values eval.clj's render-json casts: a bare column, and the
+        ;; branches of an `if`, which it renders the same way, nested too.
+        cast-columns (fn cast-columns [node]
+                       (case (:kind node)
+                         :column (when (and (empty? (:path node)) (nil? (:cast node))) [node])
+                         :if (concat (cast-columns (:then node)) (some-> (:else node) cast-columns))
+                         nil))]
+    (->> (concat conditions group order (:columns limit-per))
+         (tree-seq coll? seq)
+         (filter #(and (map? %) (= :call (:kind %)) (:json-args (get computed/functions (:fn %)))))
+         (mapcat :args)
+         (mapcat cast-columns)
+         (map (juxt :alias :column)))))
+
 (defn check-references
   "Throws when a query would return a hidden column's value anywhere but
   the SELECT list, where it is masked. The policy masks output only: a
   query may filter, sort or join on a hidden column, because the value it
   compares with comes from the query itself. See docs/access-policy.md.
 
-  Two places still return the value, so they are refused:
+  Three places still return the value, so they are refused:
 
   - a `group:` key, which is a column of the result;
   - a `::uuid` cast of a hidden column, because Postgres's error prints the
-    value that isn't a uuid.
+    value that isn't a uuid;
+  - on Postgres, a hidden column passed straight to a JSON function, which
+    casts it to jsonb: the error prints a value that isn't JSON.
 
   Also throws, first, when any column of a table the schema index has
   isn't one of that table's columns (see check-known!).
@@ -621,4 +644,9 @@
       (doseq [[alias column :as side] (map (fn [[a c]] (element-source aliases a c)) (uuid-cast-columns state current))
               :when (hidden? side)]
         (refuse-hidden! state rules alias column
-                        "cast with `::uuid`: the database's error would print a value that isn't a uuid.")))))
+                        "cast with `::uuid`: the database's error would print a value that isn't a uuid."))
+      (when (= :postgres (connections/get-dialect (:connection-id state)))
+        (doseq [[alias column :as side] (map (fn [[a c]] (element-source aliases a c)) (json-cast-columns state))
+                :when (hidden? side)]
+          (refuse-hidden! state rules alias column
+                          "passed to a JSON function: the database's error would print a value that isn't JSON."))))))

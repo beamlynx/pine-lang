@@ -39,16 +39,48 @@
      fixtures/references
      (get-references-helper id))))
 
+(def ^:private indexed-through
+  "The pool each cached schema in `references` was read through. A schema
+  counts only while that pool is still the one registered under its id.
+  Without this, a connection removed and opened again under the same id,
+  on another database, could be given the first database's schema: by a
+  read that started before the swap and finished after it."
+  (atom {}))
+
+(defn- current-pool
+  "The pool registered under id now, opened if it was lazy, so the one an
+  index reads through is the one compared afterwards. Nil for the test
+  sentinels and for an id with no pool."
+  [id]
+  (when (and (not (connections/test-connection? id)) (contains? @connections/pools id))
+    (connections/get-connection-pool id)))
+
+(defn- index-through!
+  "Reads id's schema and caches it, unless the pool changed while it was
+  read: then the schema is another database's, and reading again is up to
+  the caller."
+  [id]
+  (let [pool (current-pool id)
+        indexed (get-indexed-references id)]
+    (when-not (identical? pool (current-pool id))
+      (throw (ex-info (str "Connection `" id "` changed while its schema was read. Try again.")
+                      {:error-type "no-connection" :id id})))
+    (swap! references assoc id indexed)
+    (swap! indexed-through assoc id pool)
+    indexed))
+
 (defn init-references
-  "Get the references for a given key"
+  "The schema for a connection: cached while its pool is the one it was
+  read through, read again otherwise."
   [id]
   (or
    (and memoize-references?
+        (contains? @references id)
+        (identical? (get @indexed-through id) (current-pool id))
         (@references id))
    (do
      (prn (format "Indexing schema for connection: %s" id))
-     (swap! references assoc id (get-indexed-references id))
-     (@references id))))
+     (index-through! id))))
 
 ;; Connections
 ;;
@@ -62,7 +94,8 @@
 (defn forget-connection
   "Drops a connection's cached schema, once its pool is closed."
   [id]
-  (swap! references dissoc id))
+  (swap! references dissoc id)
+  (swap! indexed-through dissoc id))
 
 (defn reindex-references
   "Re-index the schema for a connection, bypassing the memoized cache -
@@ -70,7 +103,7 @@
   connection was first indexed."
   [id]
   (prn (format "Reindexing schema for connection: %s" id))
-  (swap! references assoc id (get-indexed-references id))
+  (index-through! id)
   id)
 
 ;; Query
