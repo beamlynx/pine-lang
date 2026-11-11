@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [0.56.0] - 2026-11-12
 ### Breaking
 - **Without a launch token, only pages served from this machine can call the server.** Before, any web page in your browser could send it requests and read the answers. Now, without `PINE_TOKEN`, a request from a web page is refused unless the page comes from `localhost`, `127.0.0.1` or `[::1]`, or is listed in `PINE_ALLOWED_ORIGINS` (comma-separated, such as `https://app.example.com`). A web UI served from elsewhere needs one of the two. Programs that aren't browsers are unaffected, and so is the desktop app, which always sets a token.
 
