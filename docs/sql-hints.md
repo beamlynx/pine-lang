@@ -16,8 +16,8 @@ POST /api/v1/sql-schema
  "tables": [{"schema": "public", "table": "company", "columns": ["id", "name"]}]}
 ```
 
-`connection-id` is optional. Without it, the selected connection is used. With no connection, or one
-whose schema can't be read, `tables` is empty. That isn't an error, because the editor asks as soon
+`connection-id` names the connection to read. With no `connection-id`, or one whose schema can't be
+read, `tables` is empty. That isn't an error, because the editor asks as soon
 as it opens.
 
 - `dialect` is `postgres`, `mysql` or `sqlite`. The editor uses it to quote names: a name like

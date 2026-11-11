@@ -57,7 +57,7 @@
             (f))
           (finally
             (connections/remove-connection-pool id)
-            (db/clear-connection-if id))))
+            (db/forget-connection id))))
       (finally
         (.delete file)))))
 

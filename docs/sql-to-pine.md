@@ -46,7 +46,7 @@ On failure, `error` says what and where, and `error-type` says which kind:
 | `internal` | The converter produced Pine that doesn't parse, or doesn't build. That is a bug here; the message includes the Pine and Pine's reason. |
 
 Nothing runs, so no connection is needed and no access policy applies. The request may carry
-`connection-id`; without it, the selected connection is used. A connection that can't be read is
+`connection-id`; without it, the SQL is converted with no schema. A connection that can't be read is
 skipped, never an error. With a connection:
 
 - Names take the database's spelling (see [Names and case](#names-and-case)).

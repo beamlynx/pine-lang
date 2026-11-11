@@ -553,8 +553,6 @@
        (assoc :operation-types (mapv :type parse-tree)))))
 
 (defn generate
-  ([parse-tree]
-   (generate parse-tree @db/connection-id nil nil {}))
   ([parse-tree connection-id]
    (generate parse-tree connection-id nil nil {}))
   ([parse-tree connection-id expression cursor]

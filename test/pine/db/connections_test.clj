@@ -21,20 +21,14 @@
   (testing "throws for an unknown id"
     (is (thrown? Exception (connections/remove-connection-pool "conn-does-not-exist")))))
 
-(deftest test-clear-connection-if
-  (let [original @db/connection-id]
+(deftest test-forget-connection
+  (let [original @db/references]
     (try
-      (testing "clears the selected connection when it matches the removed id"
-        (reset! db/connection-id "conn-a")
-        (db/clear-connection-if "conn-a")
-        (is (nil? @db/connection-id)))
-
-      (testing "leaves a different selected connection untouched"
-        (reset! db/connection-id "conn-b")
-        (db/clear-connection-if "conn-a")
-        (is (= "conn-b" @db/connection-id)))
+      (reset! db/references {"conn-a" {:a 1} "conn-b" {:b 1}})
+      (db/forget-connection "conn-a")
+      (is (= {"conn-b" {:b 1}} @db/references) "drops only that connection's schema")
       (finally
-        (reset! db/connection-id original)))))
+        (reset! db/references original)))))
 
 (deftest test-reindex-references
   (testing "re-runs the indexer even when a value is already cached"
@@ -145,6 +139,64 @@
         (is @new-closed? "the rejected pool must be closed, not leaked")
         (finally
           (swap! connections/pools dissoc "u@opts-test:5432:app"))))))
+
+(deftest test-add-connection-pool-with-the-clients-id
+  (testing "two ids for one address get a pool each"
+    ;; The desktop app sends each saved connection's own id. Two saved
+    ;; connections to localhost:5432 (local Docker, and a tunnel to another
+    ;; server) must never share a pool, or a tab of one runs on the other.
+    (let [url "jdbc:postgresql://localhost:5432/app"
+          local-closed? (atom false)
+          tunnel-closed? (atom false)]
+      (try
+        (with-redefs [connections/create-pool (fn [_] (fake-hikari url "u" local-closed?))]
+          (is (= "local-id" (connections/add-connection-pool {:id "local-id"}))))
+        (with-redefs [connections/create-pool (fn [_] (fake-hikari url "u" tunnel-closed?))]
+          (is (= "tunnel-id" (connections/add-connection-pool {:id "tunnel-id"}))))
+        (is (not @local-closed?))
+        (is (not @tunnel-closed?))
+        (is (not (identical? (@connections/pools "local-id") (@connections/pools "tunnel-id"))))
+        (testing "and a response names each by its own id"
+          (is (= "local-id" (connections/get-connection-name "local-id")))
+          (is (= "tunnel-id" (connections/get-connection-name "tunnel-id"))))
+        (finally
+          (swap! connections/pools dissoc "local-id" "tunnel-id")))))
+
+  (testing "the same id again reuses its pool"
+    (let [url "jdbc:postgresql://again:5432/app"
+          second-closed? (atom false)]
+      (try
+        (with-redefs [connections/create-pool (fn [_] (fake-hikari url "u" (atom false)))]
+          (connections/add-connection-pool {:id "again-id"}))
+        (with-redefs [connections/create-pool (fn [_] (fake-hikari url "u" second-closed?))]
+          (is (= "again-id" (connections/add-connection-pool {:id "again-id"}))))
+        (is @second-closed?)
+        (finally
+          (swap! connections/pools dissoc "again-id")))))
+
+  (testing "the same id for a different database is refused"
+    (try
+      (with-redefs [connections/create-pool
+                    (fn [_] (fake-hikari "jdbc:postgresql://one:5432/app" "u" (atom false)))]
+        (connections/add-connection-pool {:id "moved-id"}))
+      (with-redefs [connections/create-pool
+                    (fn [_] (fake-hikari "jdbc:postgresql://two:5432/app" "u" (atom false)))]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"different settings"
+                              (connections/add-connection-pool {:id "moved-id"}))))
+      (finally
+        (swap! connections/pools dissoc "moved-id"))))
+
+  (testing "an id that isn't a plain name is refused before any pool opens"
+    (let [opened? (atom false)]
+      (with-redefs [connections/create-pool (fn [_] (reset! opened? true))]
+        (doseq [id ["a/b" "" "a b" 5 (apply str (repeat 101 "a"))]]
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"connection id"
+                                (connections/add-connection-pool {:id id}))
+              (pr-str id))))
+      (is (not @opened?))))
+
+  (testing "an id with no pool has no name"
+    (is (thrown? clojure.lang.ExceptionInfo (connections/get-connection-name "no-such-id")))))
 
 (deftest test-jdbc-url
   (testing "Postgres: dbtype defaults, port defaults to 5432"

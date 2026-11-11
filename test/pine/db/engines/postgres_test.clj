@@ -253,7 +253,7 @@ WHERE d.id = g.id AND kf.id IS NULL AND g.archived_at IS NULL")
                   (is (= from-sql (set (map (comp str :id) (jdbc/query db ["SELECT id FROM company_document WHERE deleted_at IS NOT NULL AND id <> ?::uuid" (doc-id "07")]))))))))
             (finally
               (connections/remove-connection-pool id)
-              (db/clear-connection-if id))))))))
+              (db/forget-connection id))))))))
 
 ;; EXISTS and NOT EXISTS become `in` and `not in`, which differ from them on
 ;; NULLs. Users: 1 has a counterparty role, all archived. 2 has one that is
@@ -307,7 +307,7 @@ WHERE d.id = g.id AND kf.id IS NULL AND g.archived_at IS NULL")
                     (is (= (set (map :id (jdbc/query db [sql]))) (pine-ids expression)) expression)))))
             (finally
               (connections/remove-connection-pool id)
-              (db/clear-connection-if id))))))))
+              (db/forget-connection id))))))))
 
 ;; A JSON value read two ways, and NULLs sorted first. Templates of tenant
 ;; 'a': 1 and 2 have no company, 1 is an array, 2 has nodes, 3 has no nodes
@@ -376,7 +376,7 @@ ORDER BY t.company_id NULLS FIRST, t.is_primary DESC, t.created_at;")
                     expression)))
             (finally
               (connections/remove-connection-pool id)
-              (db/clear-connection-if id))))))))
+              (db/forget-connection id))))))))
 
 ;; The elements of a JSON array, one row each. Each activity is an edit of
 ;; a company, its data the list of fields changed. Company 1's legalTypes
@@ -469,7 +469,7 @@ ORDER BY c.name, ed.field;")
                     (is (= from-sql pine) expression)))))
             (finally
               (connections/remove-connection-pool id)
-              (db/clear-connection-if id))))))))
+              (db/forget-connection id))))))))
 
 ;; A ->> key in WHERE, with a string, a JSON null, a missing key, a number
 ;; and a non-JSON-looking string. And the elements of a text array, one of
@@ -520,4 +520,4 @@ ORDER BY c.name, ed.field;")
                       expression))))
             (finally
               (connections/remove-connection-pool id)
-              (db/clear-connection-if id))))))))
+              (db/forget-connection id))))))))

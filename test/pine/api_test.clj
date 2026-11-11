@@ -3,6 +3,7 @@
             [clojure.test :refer [deftest is testing]]
             [pine.access-policy :as access-policy]
             [pine.api :as api]
+            [pine.db.connections :as connections]
             [pine.db.main :as db]
             [pine.db.references :as refs]))
 
@@ -312,7 +313,7 @@
   ;; string.
   (let [seen (atom ::not-called)]
     (with-redefs [api/api-sql (fn [query _] (reset! seen query) {})
-                  pine.db.main/connection-id (atom :test)]
+                  api/connection-problem (constantly nil)]
       (testing "a form-encoded body is not read as parameters"
         (api/app {:request-method :post
                   :uri "/api/v1/sql"
@@ -345,7 +346,7 @@
     (assoc r :json (try (json/parse-string (:body r) true) (catch Exception _ nil)))))
 
 (deftest test-ordinary-mistakes-are-not-500s
-  (with-redefs [pine.db.main/connection-id (atom nil)]
+  (do
     (testing "a parameter of the wrong type is a 400 naming it"
       (let [r (post-json "/api/v1/sql" {:query 5})]
         (is (= 400 (:status r)))
@@ -355,15 +356,18 @@
       (is (= 400 (:status (post-json "/api/v1/build" {:expressions ["company"] :connection-id 7}))))
       (is (= 400 (:status (post-json "/api/v1/eval" {:expressions ["company"] :variables [1]})))))
 
-    (testing "no connection selected is a normal error"
+    (testing "a request that names no connection is refused, never run on another one"
+      ;; There used to be a server-wide "selected" connection that filled in
+      ;; for a request without one: another tab's database.
       (doseq [[uri body] [["/api/v1/build" {:expressions ["company"]}]
                           ["/api/v1/eval" {:expressions ["company"]}]
                           ["/api/v1/sql" {:query "select 1"}]]]
         (let [r (post-json uri body)]
           (is (= 200 (:status r)) uri)
           (is (= "no-connection" (get-in r [:json :error-type])) uri)))
-      (let [r (api/app {:request-method :get :uri "/api/v1/connection/stats" :headers {}})]
-        (is (= 200 (:status r)))))
+      (let [r (api/app {:request-method :get :uri "/api/v1/connections/nope/stats" :headers {}})]
+        (is (= 200 (:status r)))
+        (is (re-find #"no-connection" (:body r)))))
 
     (testing "an unknown connection id is a normal error"
       (let [r (post-json "/api/v1/build" {:expressions ["company"] :connection-id "nope"})]
@@ -375,7 +379,7 @@
 
 (deftest test-internal-errors-dont-leak
   (with-redefs [api/api-sql (fn [& _] (throw (NullPointerException. "secret internals")))
-                pine.db.main/connection-id (atom :test)]
+                api/connection-problem (constantly nil)]
     (let [r (post-json "/api/v1/sql" {:query "select 1"})]
       (is (= 500 (:status r)))
       (is (= "internal" (get-in r [:json :error-type])))
@@ -444,16 +448,18 @@
       (is (= 400 (:status (post {:query 1})))))
     (testing "the length cap applies"
       (is (= "too-long" (:error-type (post {:query (str "select * from t where a = '" (apply str (repeat 70000 "a")) "'")})))))
-    (testing "a bare name takes the selected connection's spelling"
+    (testing "a bare name takes the given connection's spelling"
       (let [schema (refs/index-references [[] [["public" "company" "tenantId" 1 "text" nil "YES" nil]] []])
             sql "select * from company where tenantid = 'x'"]
-        (with-redefs [db/connection-id (atom :test)
+        (with-redefs [api/connection-problem (constantly nil)
                       db/init-references (fn [_] schema)]
-          (is (= "company\n | where: tenantId = 'x'" (:expression (post {:query sql})))))
+          (is (= "company\n | where: tenantId = 'x'" (:expression (post {:query sql :connection-id "db"}))))
+          (testing "and not without a connection: none is ever picked for it"
+            (is (= "company\n | where: tenantid = 'x'" (:expression (post {:query sql}))))))
         (testing "and converts without it when the schema can't be read"
-          (with-redefs [db/connection-id (atom :test)
+          (with-redefs [api/connection-problem (constantly nil)
                         db/init-references (fn [_] (throw (ex-info "down" {})))]
-            (is (= "company\n | where: tenantid = 'x'" (:expression (post {:query sql}))))))))))
+            (is (= "company\n | where: tenantid = 'x'" (:expression (post {:query sql :connection-id "db"}))))))))))
 
 (deftest test-sql-schema
   (let [post (fn [body]
@@ -462,17 +468,17 @@
                                  :headers {"content-type" "application/json"}
                                  :body (java.io.ByteArrayInputStream. (.getBytes (json/generate-string body) "UTF-8"))})]
                  (assoc (json/parse-string (:body r) true) :status (:status r))))]
-    (testing "the selected connection's tables, with their columns in order"
-      (with-redefs [db/connection-id (atom :test)]
-        (let [{:keys [status dialect default-schema tables]} (post {})]
+    (testing "the given connection's tables, with their columns in order"
+      (with-redefs [api/connection-problem (constantly nil)
+                    db/init-references (fn [_] (db/get-indexed-references :test))]
+        (let [{:keys [status dialect default-schema tables]} (post {:connection-id "db"})]
           (is (= 200 status))
           (is (= "postgres" dialect))
           (is (= "public" default-schema))
           (is (= {:schema "x" :table "company" :columns ["id" "created_at"]}
                  (first (filter #(= "company" (:table %)) tables)))))))
     (testing "no connection is an empty list, not an error"
-      (with-redefs [db/connection-id (atom nil)]
-        (is (= {:status 200 :tables []} (post {})))))))
+      (is (= {:status 200 :tables []} (post {}))))))
 
 (deftest test-sql-join-hints
   (let [post (fn [body]
@@ -482,16 +488,17 @@
                                  :body (java.io.ByteArrayInputStream. (.getBytes (json/generate-string body) "UTF-8"))})]
                  (assoc (json/parse-string (:body r) true) :status (:status r))))
         sql "select * from company c join "]
-    (testing "joins for the selected connection"
-      (with-redefs [db/connection-id (atom :test)]
+    (testing "joins for the given connection"
+      (with-redefs [api/connection-problem (constantly nil)
+                    connections/get-connection-name identity
+                    db/init-references (fn [_] (db/get-indexed-references :test))]
         (is (= {:sql "y.employee e ON e.company_id = c.id" :schema "y" :table "employee" :resolution "fk"}
-               (first (:joins (post {:query sql :cursor (count sql)})))))))
+               (first (:joins (post {:query sql :cursor (count sql) :connection-id "db"})))))))
     (testing "cursor must be an offset into the query"
       (is (= 400 (:status (post {:query sql}))))
       (is (= 400 (:status (post {:query sql :cursor 999})))))
     (testing "no connection is an empty list"
-      (with-redefs [db/connection-id (atom nil)]
-        (is (= {:status 200 :joins []} (post {:query sql :cursor (count sql)})))))))
+      (is (= {:status 200 :joins []} (post {:query sql :cursor (count sql)}))))))
 
 (deftest test-database-unreachable
   (let [refused (java.sql.SQLException. "Connection to localhost:5435 refused." "08001")
