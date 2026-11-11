@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [0.55.0] - 2026-11-11
 ### Added
 - **`today()`, `yesterday()`, `tomorrow()`, `this_week()` and `this_month()` in `where:`.** Each is a period of days, so `where: created_at = today()` finds everything from today, whatever the time. `> today()` is after today ends, and `<= today()` is today or earlier. A week starts on Monday. The day is the database's own. An index on the column still serves the query. `now()` stays the exact moment. See `docs/computed-values.md`, "Periods of days".
 
