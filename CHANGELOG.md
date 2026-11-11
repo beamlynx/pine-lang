@@ -3,11 +3,16 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Breaking
+- **Without a launch token, only pages served from this machine can call the server.** Before, any web page in your browser could send it requests and read the answers. Now, without `PINE_TOKEN`, a request from a web page is refused unless the page comes from `localhost`, `127.0.0.1` or `[::1]`, or is listed in `PINE_ALLOWED_ORIGINS` (comma-separated, such as `https://app.example.com`). A web UI served from elsewhere needs one of the two. Programs that aren't browsers are unaffected, and so is the desktop app, which always sets a token.
+
 ### Changed
 - **A connection can be opened under the client's own id.** `POST /api/v1/connections` takes an optional `id`, such as the desktop app's saved connection id. Two ids for one address get a pool each. Without `id`, the id is made from the address, as before. A response's `connection-id` is now always the id the request sent.
 - **Connection stats are per connection.** `GET /api/v1/connection/stats` is now `GET /api/v1/connections/:id/stats`.
 
 ### Fixed
+- **A masked column can't leak through a JSON function's error.** On Postgres, `where: jsonb_typeof(email) = 'string'` cast a masked text column to `jsonb`, and the error printed the start of its value. A masked column passed to `jsonb_typeof` or `jsonb_array_length` is now refused, as a `::uuid` cast of one already was.
+- **A connection opened again under the same id can't keep the old database's schema.** Removing a connection while its schema was being read, then opening the same id on another database, could cache the first database's tables and columns for the second.
 - **A request without a connection is refused instead of running on another one.** The server kept one "selected" connection, the last one any client connected to, and used it for any build, run or SQL that named none. A tab with no connection of its own then ran its queries on another tab's database. There is no selected connection now. Build, eval and SQL without `connection-id` answer with error type `no-connection`. `POST /api/v1/connections/:id/connect` only checks the connection and reads its schema. `GET /api/v1/connection` returns just the version. The legacy `build-with-params` route needs `connection-id` too.
 
 ## [0.55.0] - 2026-11-11

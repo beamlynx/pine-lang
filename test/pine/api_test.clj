@@ -307,6 +307,26 @@
     (testing "a server bound to every interface skips the check"
       (is (not= 403 (:status (request :get "/api/v1/connections" {"host" "pine.example"})))))))
 
+(deftest test-origin-check
+  (with-config {:token nil :host "127.0.0.1"}
+    (testing "without a token, a page from elsewhere is refused even with a loopback Host"
+      (let [r (request :post "/api/v1/sql" {"host" "127.0.0.1:33333" "origin" "https://evil.example"})]
+        (is (= 403 (:status r)))
+        (is (re-find #"Origin not allowed" (:body r)))))
+    (testing "a page served from this machine, and a program that sends no Origin, are not"
+      (doseq [origin ["http://localhost:3000" "http://127.0.0.1:3000" "http://[::1]:3000"]]
+        (is (not= 403 (:status (request :get "/api/v1/connections" {"origin" origin}))) origin))
+      (is (not= 403 (:status (request :get "/api/v1/connections")))))
+    (testing "an origin listed in PINE_ALLOWED_ORIGINS is let through"
+      (let [before @api/allowed-origins]
+        (try
+          (reset! api/allowed-origins #{"https://app.example.com"})
+          (is (not= 403 (:status (request :get "/api/v1/connections" {"origin" "https://app.example.com"}))))
+          (finally (reset! api/allowed-origins before))))))
+  (with-config {:token "t" :host "127.0.0.1"}
+    (testing "with a token, the token decides"
+      (is (= 401 (:status (request :get "/api/v1/connections" {"origin" "https://evil.example"})))))))
+
 (deftest test-json-params-only
   ;; A form POST is a CORS "simple request": a web page can send one without a
   ;; preflight. The route must not read parameters from it, or from the query

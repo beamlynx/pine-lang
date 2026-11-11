@@ -39,6 +39,29 @@
         (db/reindex-references "conn-reindex")
         (is (= {:call 2} (@db/references "conn-reindex")))))))
 
+(deftest test-schema-belongs-to-its-pool
+  ;; A connection removed and opened again under the same id can be another
+  ;; database. Its old schema must never be served for the new one.
+  (let [first-pool (fake-pool (atom false))
+        second-pool (fake-pool (atom false))]
+    (try
+      (testing "a schema read while the pool was swapped is refused, not cached"
+        (swap! connections/pools assoc "conn-swap" first-pool)
+        (with-redefs [db/get-indexed-references
+                      (fn [_] (swap! connections/pools assoc "conn-swap" second-pool) {:db "first"})]
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"changed while its schema was read"
+                                (db/init-references "conn-swap"))))
+        (is (not (contains? @db/references "conn-swap"))))
+      (testing "a cached schema is read again once another pool has the id"
+        (with-redefs [db/get-indexed-references (fn [_] {:db "second"})]
+          (is (= {:db "second"} (db/init-references "conn-swap"))))
+        (swap! connections/pools assoc "conn-swap" first-pool)
+        (with-redefs [db/get-indexed-references (fn [_] {:db "first"})]
+          (is (= {:db "first"} (db/init-references "conn-swap")))))
+      (finally
+        (swap! connections/pools dissoc "conn-swap")
+        (db/forget-connection "conn-swap")))))
+
 ;; A real HikariDataSource subclass, not a reify: add-connection-pool has to
 ;; distinguish a realized pool from the lazy thunk get-connection-pool also
 ;; accepts, so it checks `instance? HikariDataSource`. The no-arg

@@ -1263,6 +1263,20 @@
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`r.title` is a masked column, so it can't be cast with `::uuid`"
                               (generate expression [column-type-rule])))))
 
+    (testing "on Postgres, a masked column passed to a JSON function is refused: the jsonb cast's error would print the value"
+      (doseq [e ["report | where: jsonb_typeof(title) = 'string'"
+                 "report | where: jsonb_array_length(title) = 1"
+                 "report | where: jsonb_typeof(if id = 1 then title else title) = 'string'"
+                 "report | where: jsonb_typeof(if id = 1 then 'x' else if id = 2 then 'y' else title) = 'string'"]]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                              #"`r_0.title` is a masked column, so it can't be passed to a JSON function"
+                              (generate e [column-type-rule]))
+            e))
+      (testing "but not a value that isn't cast: Postgres's error for it names the function, not the value"
+        (is (:query (generate "report | where: jsonb_typeof(coalesce(title, title)) = 'string'" [column-type-rule]))))
+      (testing "but not on MySQL or SQLite, whose errors don't print it"
+        (is (:query (generate-sqlite "report | where: jsonb_typeof(title) = 'string'" [column-type-rule])))))
+
     (testing "a `::uuid` cast of a shown column, and a `::text` cast of a masked one, run"
       (is (:query (generate "report | customer .uuid_col ::uuid = .id" [column-type-rule])))
       (is (:query (generate "report | where: title = 'x' ::text" [column-type-rule]))))))

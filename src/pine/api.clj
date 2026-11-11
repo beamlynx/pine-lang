@@ -735,6 +735,36 @@
         (json-error 403 "forbidden" "Host header not allowed.")
         (handler request)))))
 
+(def ^:private loopback-origin
+  #"(?i)^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$")
+
+(defonce ^{:doc "Web origins allowed to call a server that has no launch
+  token, besides loopback ones: PINE_ALLOWED_ORIGINS, comma-separated, such
+  as `https://app.example.com`. Tests reset! it."}
+  allowed-origins
+  (atom (->> (str/split (or (System/getenv "PINE_ALLOWED_ORIGINS") "") #",")
+             (map str/trim)
+             (remove str/blank?)
+             set)))
+
+(defn wrap-origin-check
+  "Without a launch token, refuse a request from a web page that isn't
+  served from this machine or listed in PINE_ALLOWED_ORIGINS. The Host
+  check only stops DNS rebinding: an ordinary page can fetch
+  http://127.0.0.1:33333 and send a loopback Host. Its browser always sends
+  an Origin header naming the page, preflight included. A program that
+  isn't a browser sends none and is let through, as before. With a token,
+  a page can't get the token, so nothing changes."
+  [handler]
+  (fn [request]
+    (let [origin (get-in request [:headers "origin"])]
+      (if (and origin
+               (nil? (:token @server-config))
+               (not (re-matches loopback-origin origin))
+               (not (@allowed-origins origin)))
+        (json-error 403 "forbidden" "Origin not allowed. Set PINE_TOKEN, or list the origin in PINE_ALLOWED_ORIGINS.")
+        (handler request)))))
+
 ;; ---------------------------------------------------------------------------
 ;; Request checks
 ;; ---------------------------------------------------------------------------
@@ -980,5 +1010,6 @@
       wrap-body-limit
       wrap-auth
       wrap-host-check
+      wrap-origin-check
       (wrap-cors :access-control-allow-origin [#".*"]
                  :access-control-allow-methods [:get :post :put :delete])))
