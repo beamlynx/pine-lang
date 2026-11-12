@@ -358,35 +358,91 @@
                        (not= (:table alias1) (:table alias2))
                        candidates1 candidates2 a1 a2))))
 
+(defn- side-text [alias column]
+  (str (when alias (str alias ".")) column))
+
+(defn- pair-sides
+  "[earlier added] for one written pair: each side as {:alias :column :cast
+  :path}. A side that names an alias is that table. A bare side keeps the
+  meaning of its place: typed first, the table being added; typed second,
+  the table before it. So `b .a_id = .id` is b.a_id = a.id, and `c .b_id =
+  b.id` names only the second side.
+
+  A side on a table that a checkpoint sealed reads the checkpoint's column,
+  as where: does.
+
+  Throws when an alias isn't in the query yet, or when the pair doesn't
+  have the table being added on exactly one side."
+  [state added context {:keys [left right left-alias right-alias] :as pair}]
+  (let [unseal (requiring-resolve 'pine.ast.path/unseal-column)
+        side (fn [k a c] {:alias a :column c
+                          :cast (get pair (keyword (str k "-cast")))
+                          :path (get pair (keyword (str k "-path")))})
+        ;; Typed first: the right side. Typed second: the left side.
+        sides [(side "right" (or right-alias added) right) (side "left" (or left-alias context) left)]
+        written (str (side-text right-alias right) " = " (side-text left-alias left))]
+    (doseq [a (keep identity [right-alias left-alias])]
+      (when-not (contains? (:aliases state) a)
+        (throw (ex-info (str "`" a "` in the join `" written "` isn't a table of this query. Name a table that comes before it, or the table being joined.")
+                        {:alias a}))))
+    (let [[mine others] ((juxt filter remove) #(= added (:alias %)) sides)]
+      (when-not (= 1 (count mine))
+        (throw (ex-info (str "The join `" written "` compares " (s/join " with " (map #(side-text (:alias %) (:column %)) sides))
+                             ". It must compare a column of `" added "`, the table being joined, with a column of an earlier table."
+                             " A bare column written first is `" added "`'s, and written second is `" context "`'s."
+                             (when (empty? mine) " A condition on earlier tables goes in where:."))
+                        {:alias added})))
+      [(merge (first others) (select-keys (unseal state (first others)) [:alias :column])) (first mine)])))
+
+(defn- explicit-join
+  "The join for written column pairs. Its :from is the earlier table of the
+  first pair. A pair with another earlier table keeps that table as its own
+  :from-alias: `fd .id = av.attributeId, .tenant_id = c.tenantId`."
+  [state context current pairs]
+  (let [added (:alias current)
+        resolved (map #(pair-sides state added context %) pairs)
+        from (:alias (ffirst resolved))]
+    {:from from :to added :parent "from"
+     ;; A cast or a JSON path on one side of a pair stays with that side.
+     ;; :from and :to stay the real columns, so the access policy checks
+     ;; the JSON column a path reads.
+     :columns (mapv (fn [[earlier mine]]
+                      (cond-> {:from (:column earlier) :to (:column mine)}
+                        (not= from (:alias earlier)) (assoc :from-alias (:alias earlier))
+                        (:cast earlier) (assoc :from-cast (:cast earlier))
+                        (:cast mine) (assoc :to-cast (:cast mine))
+                        (:path earlier) (assoc :from-path (:path earlier))
+                        (:path mine) (assoc :to-path (:path mine))))
+                    resolved)
+     :resolution "manual" :cast nil}))
+
+(defn- with-join-conditions
+  "The join with the conditions written on it, `.type = 'entity'`, resolved
+  as where: resolves them: a bare column is the table being added. They
+  stay in the join's ON, which for a :left join keeps rows where: would
+  drop. pine.ast.where needs this namespace, so it is looked up here."
+  [state join conditions]
+  (if (seq conditions)
+    (let [resolve (requiring-resolve 'pine.ast.where/resolve-conditions)
+          [_ resolved] (resolve state conditions)]
+      (assoc join :conditions resolved))
+    join))
+
 (defn- update-joins
   "Use the tables in the state to create a join between the last 2 tables. The
   reason to get the tables from the state is that they have been assigned an
   alias. We only use the join columns from the current value being processed."
   [state current]
-  (let [{:keys [join-columns join-column-pairs parent join]} current
+  (let [{:keys [join-columns join-column-pairs join-conditions parent join]} current
         from-alias                   (state :context)]
     (cond
       (nil? from-alias) state
-      ;; Explicit columns case: each pair is left table's column = right
-      ;; table's column. In "a | b .a_id = .id", left is "id" (from a) and
-      ;; right is "a_id" (from b). Several pairs join on all of them, which
-      ;; is the only way to write a multi-column join that no foreign key
-      ;; describes.
+      ;; Explicit columns case. In "a | b .a_id = .id", the first column is
+      ;; b's and the second a's. A side may name its table instead. Several
+      ;; pairs join on all of them, which is the only way to write a
+      ;; multi-column join that no foreign key describes.
       (seq join-column-pairs)
-      (let [x (-> state :aliases (get from-alias))
-            join-result {:from (x :alias) :to (current :alias) :parent "from"
-                         ;; A cast or a JSON path on one side of a pair
-                         ;; stays with that side. :from and :to stay the
-                         ;; real columns, so the access policy checks the
-                         ;; JSON column a path reads.
-                         :columns (mapv (fn [{:keys [left right left-cast right-cast left-path right-path]}]
-                                          (cond-> {:from left :to right}
-                                            left-cast (assoc :from-cast left-cast)
-                                            right-cast (assoc :to-cast right-cast)
-                                            left-path (assoc :from-path left-path)
-                                            right-path (assoc :to-path right-path)))
-                                        join-column-pairs)
-                         :resolution "manual" :cast nil}]
+      (let [join-result (with-join-conditions state (explicit-join state from-alias current join-column-pairs) join-conditions)]
         (update state :joins conj (assoc join-result :type join)))
 
       :else (let [x (-> state :aliases (get from-alias))
@@ -407,7 +463,8 @@
                   ;; table, `.user_id`, for its error (describe.clj).
                   join-result (cond-> join-result
                                 (and (empty? (:columns join-result)) (seq join-columns))
-                                (assoc :named (vec join-columns)))]
+                                (assoc :named (vec join-columns)))
+                  join-result (with-join-conditions state join-result join-conditions)]
               (update state :joins conj (assoc join-result :type join))))))
 (defn make-alias [s]
   (let [words (if (not-empty s) (s/split s #"_") ["x"])
@@ -428,7 +485,7 @@
         (assoc  :current-index index)
         (update :tables conj current)
         (update :aliases assoc a current)
-        (update-joins current)
+        (update-joins (assoc current :join-conditions (:join-conditions value)))
         (update :table-count inc))))
 
 (defn- handle-as-variable [state value var-ast]
@@ -445,7 +502,7 @@
         (assoc  :current-index index)
         (update :tables conj current)
         (update :aliases assoc a current)
-        (update-joins current)
+        (update-joins (assoc current :join-conditions (:join-conditions value)))
         (update :table-count inc))))
 
 ;; todo: spec for the :value for a :table

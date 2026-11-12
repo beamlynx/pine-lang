@@ -52,4 +52,19 @@
        (doseq [e ["customer | group: name with min(email) as m | where: m = 'x'"
                   "customer | group: name with min(email) as m | where: m >= 1"
                   "customer | group: name with min(email) as m | o: m asc"]]
-         (is (re-find #"^`m` is masked in `result_1`" (str (:error (masked db e)))) e))))))
+         (is (re-find #"^`m` is masked in `result_1`" (str (:error (masked db e)))) e)))
+
+     (testing "a join may compare a masked column with a value, as where: may"
+       (is (= {:error nil :rows [["Ann" nil] ["Bob" "Bob"]]}
+              (masked db "customer as a | customer as b :left b.id = a.id, b.email = 'bob@example.com' | s: a.name, b.name | o: a.id asc"))))
+
+     (testing "but not cast it to uuid there, which would print its value in the error"
+       (is (re-find #"masked column, so it can't be cast with `::uuid`"
+                    (str (:error (masked db "customer as a | customer as b b.id = a.id, b.email ::uuid = 'x'"))))))
+
+     (testing "a pair's own table is checked, not the join's"
+       (is (re-find #"`a.nope` isn't a column of `customer`"
+                    (str (:error (masked db "customer as a | customer as b b.id = a.id | customer as c c.id = b.id, c.name = a.nope"))))))
+     (testing "a value on a join is checked against its table too"
+       (is (re-find #"`a.nope` isn't a column of `customer`"
+                    (str (:error (masked db "customer as a | customer as b b.id = a.id, a.nope = 'x'")))))))))

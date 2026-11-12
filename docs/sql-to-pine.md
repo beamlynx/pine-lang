@@ -71,10 +71,11 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `SELECT * FROM company` | `company` |
 | `SELECT * FROM public.company AS c` | `public.company as c` |
 | `SELECT name, id AS i FROM company` | `company \| select: name, id as i` |
-| `JOIN employee e ON e.company_id = c.id` | `\| employee as e .company_id = .id` |
+| `JOIN employee e ON e.company_id = c.id` | `\| employee as e e.company_id = c.id` |
 | `LEFT JOIN`, `RIGHT JOIN` (with or without `OUTER`) | `:left`, `:right` |
-| `ON a.x = b.y AND a.z = b.w` | `.y = .x, .w = .z` |
-| `JOIN employee USING (company_id)` | `.company_id = .company_id` |
+| `JOIN b ON b.y = a.x AND b.w = c.z` | `b.y = a.x, b.w = c.z`, with any earlier table on each pair |
+| `ON ... AND b.status = 'paid'`, `AND NOT b.archived` | `b.status = 'paid'`, `b.archived = false`, kept on the join |
+| `JOIN employee USING (company_id)` | `e.company_id = c.company_id` |
 | `WHERE a = 1 AND b = 'x'` | `\| where: a = 1 \| where: b = 'x'` |
 | `WHERE a = 1 OR b = 'x'` | `\| where: a = 1 or b = 'x'` |
 | `<>`, `!=`, `<`, `>`, `<=`, `>=` | the same, `<>` as `!=`, between a column and a value or two columns |
@@ -133,7 +134,7 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `GROUP BY 1, 2`, `ORDER BY 2 DESC` | the selected columns they number; `ORDER BY` uses the item's name when it has one |
 | `GROUP BY a HAVING ...` | `group: a with ... \| where: ...`, by the aggregates' names |
 | `LEFT JOIN k ON k.c = t.x`, k distinct values, tested with `k.c IS NOT NULL` | `x in k` (see [Tests on a LEFT JOIN](#tests-on-a-left-join)) |
-| `ar."resourceableId" = g.id::text` in `ON` | `.resourceableId = .id ::text` |
+| `ar."resourceableId" = g.id::text` in `ON` | `ar.resourceableId = g.id ::text` |
 | `UPDATE t SET c = 'v' WHERE ...` | `t \| where: ... \| update! c = 'v'` |
 | `SET c = COALESCE(c, 'x')`, `SET c = c \|\| 'x'` | `update! c = coalesce(c, 'x')`, `update! c = concat(c, 'x')` |
 | `DELETE FROM t WHERE ...` | `t \| where: ... \| delete! .id`, by the table's primary key |
@@ -146,7 +147,11 @@ column is written with its direction.
 
 ### Where the operations go
 
-Tables and joins first, in the SQL's order. Then one `where:` for each AND-ed condition. Then `select:`,
+Tables and joins first, in the SQL's order. Each side of a join names its table's alias, as SQL's `ON`
+does, so a join to an earlier table needs no `from:`. A column = column or column = value condition in
+`ON` stays on the join. Any other `ON` condition of an inner join moves to `where:`, where it means the
+same. On a left or right join it is refused, since in `where:` it would drop rows.
+Then one `where:` for each AND-ed condition. Then `select:`,
 `group:` or `count:`. Then `order:` and `limit:`. Pine builds one SQL `SELECT` with every join and
 every condition in it, so a `where:` after the joins means the same as SQL's single `WHERE`.
 
@@ -676,7 +681,7 @@ Each is refused with its line.
 | A selected column that isn't grouped | Not in SQL either. |
 | `ORDER BY 1` or `GROUP BY 1` after a `*`, `GROUP BY` a position that numbers a value | Name the column. |
 | `FULL`, `CROSS` or `NATURAL` join, a comma between tables | Pine joins inner, left or right, on named columns. |
-| A join tied to two earlier tables | Pine joins a table to one other. |
+| An outer join's `ON` condition other than column = column or column = value, like `IS NULL` or `>` | In `where:` it would drop rows. |
 | `USING` after more than one table | It can't say which table it joins to. Write it with `ON`. |
 | A column in a join that isn't qualified, when more than one table has it, or the schema isn't known | It could belong to more than one table. |
 | `= NULL` | Never true in SQL. Use `IS NULL`. |

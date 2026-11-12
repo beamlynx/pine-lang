@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Added
+- **A join can name the table on each side.** `fd.id = av.attributeId, fd.tenant_id = c.tenantId` joins `fd` to two earlier tables at once. A side without a name works as before.
+- **A join can hold a condition on a value.** `purchase :left .customer_id = .id, .status = 'paid'` keeps every customer and attaches only paid purchases. The same test in `where:` drops the customers without one.
+
+### Changed
+- **SQL converts with each join written as SQL has it.** Every side names its table, a join to two earlier tables converts instead of being refused, and a column = value condition in `ON` stays on the join, including on a `LEFT JOIN`.
 
 ## [0.56.0] - 2026-11-12
 ### Breaking

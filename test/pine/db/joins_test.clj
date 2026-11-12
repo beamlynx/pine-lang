@@ -37,3 +37,28 @@
      (testing "elements named after the table join it on their `id`"
        (is (= #{["Ann" "Globex"]}
               (set (e/rows db "doc | unnest: data.companies as company | company | s: d_0.name, name"))))))))
+
+(def ^:private orders-fixture
+  ["CREATE TABLE customer (id INTEGER PRIMARY KEY, name {text}, tenant_id INTEGER)"
+   "CREATE TABLE purchase (id INTEGER PRIMARY KEY, customer_id INTEGER, status {text}, tenant_id INTEGER)"
+   "CREATE TABLE note (id INTEGER PRIMARY KEY, purchase_id INTEGER, tenant_id INTEGER, body {text})"
+   "INSERT INTO customer VALUES (1, 'Ann', 1), (2, 'Bob', 1), (3, 'Cy', 2)"
+   "INSERT INTO purchase VALUES (1, 1, 'paid', 1), (2, 2, 'open', 1), (3, 3, 'paid', 2)"
+   ;; Note 3 is on Cy's purchase but in another tenant.
+   "INSERT INTO note VALUES (1, 1, 1, 'first'), (2, 3, 2, 'second'), (3, 3, 1, 'stray')"])
+
+(deftest test-join-conditions
+  (e/on-every-engine
+   orders-fixture
+   (fn [db]
+     (testing "a value on a left join keeps every row of the table before"
+       (is (= [["Ann" 1] ["Bob" nil] ["Cy" 3]]
+              (e/rows db "customer as c | purchase as p :left .customer_id = c.id, .status = 'paid' | s: c.name, p.id | o: c.id asc"))))
+
+     (testing "the same value in where: drops the rows without one"
+       (is (= [["Ann" 1] ["Cy" 3]]
+              (e/rows db "customer as c | purchase as p :left .customer_id = c.id | where: p.status = 'paid' | s: c.name, p.id | o: c.id asc"))))
+
+     (testing "a pair can compare with a table before the one before"
+       (is (= [["Ann" "first"] ["Cy" "second"]]
+              (e/rows db "customer as c | purchase as p .customer_id = c.id | note as n .purchase_id = p.id, .tenant_id = c.tenant_id | s: c.name, n.body | o: c.id asc")))))))

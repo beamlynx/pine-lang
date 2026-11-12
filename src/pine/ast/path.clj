@@ -118,7 +118,7 @@
         (when (and from-path to-path)
           (throw (ex-info "Only one side of a join can be a path into JSON." {})))
         (when-let [message (cond
-                             from-path (join-side-error state pair [from (:from pair) from-path (:from-cast pair)] to)
+                             from-path (join-side-error state pair [(or (:from-alias pair) from) (:from pair) from-path (:from-cast pair)] to)
                              to-path (join-side-error state pair [to (:to pair) to-path (:to-cast pair)] from))]
           (throw (ex-info message {}))))))
   state)

@@ -847,9 +847,23 @@
                           (and (= i (:t r)) (< (:t l) i)) [r l])]
       (when new
         ;; A cast stays with its column: `.resourceableId = .id ::text`.
-        [(:t old) (cond-> {:new (:name new) :anchor (:name old)}
+        [(:t old) (cond-> {:new (:name new) :anchor (:name old) :anchor-t (:t old)}
                     (:cast new) (assoc :new-cast (:cast new))
                     (:cast old) (assoc :anchor-cast (:cast old)))]))))
+
+(defn- join-constant
+  "{:col :value} when `p` is a column of a table in scope = a string,
+  number or true/false, as Pine's join writes it: `.type = 'entity'`.
+  `NOT b.active` is one too, b.active = false. Else nil."
+  [tables p]
+  (let [clauses (try (cnf (nnf tables p false) (:at p))
+                     (catch clojure.lang.ExceptionInfo _ nil))
+        [[{:keys [col operator value cast] :as a} & more-atoms] & more-clauses] clauses]
+    (when (and a (empty? more-atoms) (empty? more-clauses)
+               (= "=" operator) (nil? cast) (nil? (:expr a)) (nil? (:json-text a))
+               (:t col) (nil? (:steps col))
+               (#{:string :number :boolean} (:kind value)))
+      {:col col :value value})))
 
 (defn- plan-elements
   "{:anchor :source} for jsonb_array_elements(a.data) e, the i-th table:
@@ -871,7 +885,13 @@
        :moved []})))
 
 (defn- plan-join
-  "{:anchor :pairs :moved [predicates]} for the i-th table's join."
+  "{:anchor :pairs :constants :moved [predicates]} for the i-th table's
+  join. Each pair names its earlier table, :anchor-t, so a join can compare
+  with several: `fd.id = av.attributeId, fd.tenant_id = c.tenantId`. The
+  join's :anchor is the first pair's. A column = value condition stays on
+  the join, a constant, as SQL has it. Any other condition moves to WHERE
+  for an inner join, where it means the same, and is refused for an outer
+  one."
   [tables i {:keys [type on using at] :as join}]
   (let [in-scope (subvec tables 0 (inc i))]
     (cond
@@ -884,23 +904,23 @@
           {:anchor 0
            :pairs (mapv (fn [{:keys [name quoted]}]
                           {:new (column-name (nth tables i) name quoted at)
-                           :anchor (column-name (first tables) name quoted at)})
+                           :anchor (column-name (first tables) name quoted at)
+                           :anchor-t 0})
                         using)
            :moved []})
       :else
       (let [parts (map (fn [c] [c (join-pair in-scope i c)]) (conjuncts on))
             pairs (keep second parts)
-            others (map first (remove second parts))
-            anchors (distinct (map first pairs))]
+            rest-parts (map (fn [c] [c (join-constant in-scope c)]) (map first (remove second parts)))
+            constants (keep second rest-parts)
+            others (map first (remove second rest-parts))]
         (when (empty? pairs)
           (refuse at (str "This join needs a column of `" (table-key (nth tables i)) "` = a column of an earlier table.")))
-        (when (next anchors)
-          (refuse at (str "This join ties `" (table-key (nth tables i)) "` to more than one table. Pine joins a table to one other.")))
         (when (and (seq others) type)
           (refuse (:at (first others))
-                  (str "In a " (s/upper-case (name type)) " JOIN, an ON condition other than column = column isn't in Pine."
+                  (str "In a " (s/upper-case (name type)) " JOIN, an ON condition other than column = column or column = value isn't in Pine."
                        " Moved to WHERE it would mean something else.")))
-        {:anchor (first anchors) :pairs (mapv second pairs) :moved (vec others)}))))
+        {:anchor (ffirst pairs) :pairs (mapv second pairs) :constants (vec constants) :moved (vec others)}))))
 
 (defn- plan-tables
   "Tables in pipe order, each with its join, and the ON conditions an inner
@@ -1369,7 +1389,12 @@
   (let [cols (fn [c] (when (and (:t c) (not= current (:t c))) [(:t c)]))]
     (set (mapcat (fn [{:keys [op t clause items cols-of] :as o}]
                    (case op
-                     :table (when-let [source (:source (nth tables t))] [(:t source)])
+                     ;; A join writes every side with its table's alias.
+                     :table (let [{:keys [source pairs constants]} (nth tables t)]
+                              (if source
+                                [(:t source)]
+                                (when (seq pairs)
+                                  (concat [t] (map :anchor-t pairs) (map (comp :t :col) constants)))))
                      :from [t]
                      :text (remove #{current} (:refs o))
                      :where (mapcat (fn [{:keys [col value] :as a}]
@@ -1398,7 +1423,7 @@
      (for [{:keys [op t n clause items cols] :as o} ops
            :when (not= :columns op)]
        (case op
-         :table (let [{:keys [schema table db-schema db-table alias type pairs source]} (nth tables t)
+         :table (let [{:keys [schema table db-schema db-table alias type pairs constants source]} (nth tables t)
                       schema (or db-schema schema)]
                   (if source
                     ;; Its source, written with its table's alias: Pine reads a
@@ -1410,10 +1435,15 @@
                          (or db-table table)
                          (when (or alias (referenced t)) (str " as " (alias-of t)))
                          (when type (str " :" (name type)))
+                         ;; Every side names its table: SQL's ON does, and
+                         ;; a join may compare with any table before it.
                          (when (seq pairs)
-                           (str " " (s/join ", " (map #(str "." (:new %) (when (:new-cast %) (str " ::" (:new-cast %)))
-                                                            " = ." (:anchor %) (when (:anchor-cast %) (str " ::" (:anchor-cast %))))
-                                                      pairs)))))))
+                           (str " " (s/join ", " (concat
+                                                  (map #(str (alias-of t) "." (:new %) (when (:new-cast %) (str " ::" (:new-cast %)))
+                                                             " = " (alias-of (:anchor-t %)) "." (:anchor %) (when (:anchor-cast %) (str " ::" (:anchor-cast %))))
+                                                       pairs)
+                                                  (map #(str (alias-of (:t (:col %))) "." (:name (:col %)) " = " (render-value (:value %) col-ref))
+                                                       constants))))))))
          :text (:text o)
          :from (str "from: " (alias-of t))
          :where (str "where: " (s/join " or " (map #(render-atom col-ref %) clause)))
@@ -1450,10 +1480,11 @@
   "The table and from: steps, and the table the pipe ends on."
   [tables]
   (reduce (fn [{:keys [ops current]} i]
-            (let [{:keys [anchor elements]} (nth tables i)]
+            (let [{:keys [anchor elements pairs]} (nth tables i)]
               {:ops (cond-> ops
-                      ;; `unnest: a.data` names its table itself.
-                      (and (pos? i) (not= anchor current) (not elements)) (conj {:op :from :t anchor})
+                      ;; `unnest: a.data` names its table itself, and so
+                      ;; does each side of a join's pairs.
+                      (and (pos? i) (not= anchor current) (not elements) (empty? pairs)) (conj {:op :from :t anchor})
                       true (conj {:op :table :t i}))
                ;; unnest: leaves the pipe on its table.
                :current (if elements current i)}))

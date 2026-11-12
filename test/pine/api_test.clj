@@ -457,7 +457,7 @@
                  (assoc (json/parse-string (:body r) true) :status (:status r))))]
     (testing "converts one SELECT"
       (is (= {:status 200
-              :expression "company as c\n | employee as e .company_id = .id\n | where: name = 'Acme'"
+              :expression "company as c\n | employee as e e.company_id = c.id\n | where: name = 'Acme'"
               :warnings []}
              (post {:query "select e.* from company c join employee e on e.company_id = c.id where e.name = 'Acme'"}))))
     (testing "names what Pine can't say"
