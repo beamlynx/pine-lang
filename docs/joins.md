@@ -148,9 +148,16 @@ This keeps every customer, and attaches only paid purchases. With `where: p.stat
 customers without a paid purchase disappear, because their `status` is NULL. For an inner join the
 two mean the same.
 
+A test for null stays on the join the same way: `.deleted_at is null`, `.archived_at is not null`.
+
+```
+customer as c | purchase as p :left p.customer_id = c.id, p.deleted_at is null
+```
+
 A bare column is the table being joined, and a column with an alias is that table. The value is
 compared as `where:` compares it. A condition can also follow a join Pine finds itself:
-`company | employee .type = 'staff'`. Only `=` is supported, and `[*]` can't be used.
+`company | employee .type = 'staff'`. Only `=`, `is null` and `is not null` are supported, and `[*]`
+can't be used.
 
 ### Joining on values in a JSON array
 

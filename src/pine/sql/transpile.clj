@@ -444,6 +444,13 @@
            :cast (column-cast (:left p))
            :operator (if (not= (:negated p) (boolean negate)) "not in" "in")
            :value vs})
+    :in-variable (let [v (:value p)]
+                   (when-not (= :variable (:kind v))
+                     (refuse (:at p) "= ANY(...) converts with a parameter inside, like = ANY($1), as Pine's `in $name`."))
+                   {:col (left-column tables p)
+                    :cast (column-cast (:left p))
+                    :operator (if (not= (:negated p) (boolean negate)) "not in" "in")
+                    :value v})
     :truthy {:col (resolve-column tables (:column p))
              :operator "="
              :value {:kind :boolean :value (not negate)}}))
@@ -852,18 +859,20 @@
                     (:cast old) (assoc :anchor-cast (:cast old)))]))))
 
 (defn- join-constant
-  "{:col :value} when `p` is a column of a table in scope = a string,
-  number or true/false, as Pine's join writes it: `.type = 'entity'`.
-  `NOT b.active` is one too, b.active = false. Else nil."
+  "{:col :operator :value} when `p` is a column of a table in scope = a
+  string, number or true/false, or IS [NOT] NULL, as Pine's join writes
+  it: `.type = 'entity'`, `.deleted_at is null`. `NOT b.active` is one
+  too, b.active = false. Else nil."
   [tables p]
   (let [clauses (try (cnf (nnf tables p false) (:at p))
                      (catch clojure.lang.ExceptionInfo _ nil))
         [[{:keys [col operator value cast] :as a} & more-atoms] & more-clauses] clauses]
     (when (and a (empty? more-atoms) (empty? more-clauses)
-               (= "=" operator) (nil? cast) (nil? (:expr a)) (nil? (:json-text a))
+               (nil? cast) (nil? (:expr a)) (nil? (:json-text a))
                (:t col) (nil? (:steps col))
-               (#{:string :number :boolean} (:kind value)))
-      {:col col :value value})))
+               (or (#{"is null" "is not null"} operator)
+                   (and (= "=" operator) (#{:string :number :boolean} (:kind value)))))
+      {:col col :operator operator :value value})))
 
 (defn- plan-elements
   "{:anchor :source} for jsonb_array_elements(a.data) e, the i-th table:
@@ -918,7 +927,7 @@
           (refuse at (str "This join needs a column of `" (table-key (nth tables i)) "` = a column of an earlier table.")))
         (when (and (seq others) type)
           (refuse (:at (first others))
-                  (str "In a " (s/upper-case (name type)) " JOIN, an ON condition other than column = column or column = value isn't in Pine."
+                  (str "In a " (s/upper-case (name type)) " JOIN, an ON condition other than column = column, column = value or IS [NOT] NULL isn't in Pine."
                        " Moved to WHERE it would mean something else.")))
         {:anchor (ffirst pairs) :pairs (mapv second pairs) :constants (vec constants) :moved (vec others)}))))
 
@@ -1377,6 +1386,7 @@
        (cond
          (#{"is null" "is not null"} operator) ""
          (= :set (:kind value)) (str " " (:name value))
+         (= :variable (:kind value)) (str " " (render-value value col-ref))
          (#{"in" "not in"} operator) (str " (" (s/join ", " (map #(render-value % col-ref) value)) ")")
          (= :column (:kind value)) (str " " (col-ref (:col value)))
          :else (str " " (render-value value col-ref)))
@@ -1442,7 +1452,10 @@
                                                   (map #(str (alias-of t) "." (:new %) (when (:new-cast %) (str " ::" (:new-cast %)))
                                                              " = " (alias-of (:anchor-t %)) "." (:anchor %) (when (:anchor-cast %) (str " ::" (:anchor-cast %))))
                                                        pairs)
-                                                  (map #(str (alias-of (:t (:col %))) "." (:name (:col %)) " = " (render-value (:value %) col-ref))
+                                                  (map #(str (alias-of (:t (:col %))) "." (:name (:col %))
+                                                             (if (= "=" (:operator %))
+                                                               (str " = " (render-value (:value %) col-ref))
+                                                               (str " " (:operator %))))
                                                        constants))))))))
          :text (:text o)
          :from (str "from: " (alias-of t))
@@ -2389,6 +2402,58 @@
              :when (and (map? n) (string? (:table n)))]
          (s/lower-case (:table n)))))
 
+;; ----------
+;; PARAMETERS
+;; ----------
+;;
+;; `$1` in SQL pasted from an app is a value the app fills in. Pine has
+;; named variables for that, `$tenant_id`, with their values in a values
+;; block above the query (docs/variables.md). So each positional parameter
+;; gets a name, and the Pine starts with a line for it with no value yet.
+
+(defn- positional? [n]
+  (and (map? n) (= :variable (:kind n)) (re-matches #"[0-9]+" (str (:name n)))))
+
+(defn- parameter-names
+  "[[number name] ...] in order of number, for the statement's positional
+  parameters. A parameter compared with a column is named after it:
+  `fd.tenant_id = ANY($1)` is `$tenant_id`. Otherwise `$p1`. A name the
+  statement already uses, or another parameter has, gets `_2`, `_3`."
+  [stmt]
+  (let [nodes (filter map? (tree-seq coll? seq stmt))
+        numbers (sort-by #(Long/parseLong %) (distinct (map :name (filter positional? nodes))))
+        compared (into {} (reverse
+                           (for [n nodes
+                                 :when (:op n)
+                                 :let [col (some #(when (= :column (:kind %)) %) [(:left n) (:right n)])
+                                       v (some #(when (positional? %) %) (concat [(:value n) (:right n) (:left n)] (:values n)))]
+                                 :when (and col v)]
+                             [(:name v) (s/replace (:name (:column col)) #"[^A-Za-z0-9_]" "_")])))
+        taken (set (keep #(when (and (= :variable (:kind %)) (not (positional? %))) (:name %)) nodes))]
+    (first (reduce (fn [[acc taken] number]
+                     (let [base (let [b (get compared number)]
+                                  (if (and b (re-matches #"[A-Za-z_].*" b)) b (str "p" number)))
+                           n (first (remove taken (cons base (map #(str base "_" %) (iterate inc 2)))))]
+                       [(conj acc [number n]) (conj taken n)]))
+                   [[] taken]
+                   numbers))))
+
+(defn- name-parameters [stmt names]
+  (let [m (into {} names)]
+    (walk/postwalk #(if (positional? %) (assoc % :name (m (:name %))) %) stmt)))
+
+(defn- with-values-block
+  "The converted Pine with a values block for the parameters on top, one
+  line each with no value yet, and a warning saying where to write them."
+  [{:keys [expression] :as result} names]
+  (if (and expression (seq names))
+    (-> result
+        (assoc :expression (str (s/join "\n" (map (fn [[_ n]] (str "$" n " =")) names)) "\n\n" expression))
+        (update :warnings conj
+                (str (s/join ", " (map (fn [[number n]] (str "$" number " is $" n)) names))
+                     ". Write each value after its `=` above the query: a string, a number, or a list like ('a', 'b') for `in`.")))
+    result))
+
 (defn- convert [sql]
   (try
     (let [{:keys [statement warnings]} (script-statement sql)
@@ -2398,11 +2463,13 @@
         {:error error :error-type error-type}
         (let [found (atom (vec warnings))
               _ (check-strings result)
+              names (parameter-names result)
+              result (name-parameters result names)
               warn! #(swap! found conj %)
               blocks (binding [*sql-tables* (statement-tables result)
                                *warn!* warn!]
                        (transpile-statement result warn!))]
-          (render-blocks blocks @found))))
+          (with-values-block (render-blocks blocks @found) names))))
     (catch clojure.lang.ExceptionInfo e
       (if (::refusal (ex-data e))
         {:error (str "Line " (sp/line-of sql (:at (ex-data e))) ": " (ex-message e))

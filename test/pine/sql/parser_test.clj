@@ -220,7 +220,6 @@
       (unsupported "select a + 1 from t" "Arithmetic")
       (unsupported "select t.data#>>'{a,b}' as x from t" "#> and #>> aren't converted")
       (unsupported "select a from t group by t.data->>'k'" "A JSON key with -> or ->> converts in a selected value")
-      (unsupported "select * from t where a = $1" "$1")
       (unsupported "select * from t where a = ?" "placeholder")
       (unsupported "select * from t; select * from u" "one statement")
       (unsupported "insert into t values (1)" "INSERT doesn't convert to Pine. Only SELECT, UPDATE and DELETE do."))

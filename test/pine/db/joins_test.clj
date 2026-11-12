@@ -59,6 +59,12 @@
        (is (= [["Ann" 1] ["Cy" 3]]
               (e/rows db "customer as c | purchase as p :left .customer_id = c.id | where: p.status = 'paid' | s: c.name, p.id | o: c.id asc"))))
 
+     (testing "is null on a left join keeps every row of the table before"
+       (is (= [["Ann" nil] ["Bob" nil] ["Cy" nil]]
+              (e/rows db "customer as c | purchase as p :left .customer_id = c.id, .status is null | s: c.name, p.id | o: c.id asc")))
+       (is (= [["Ann" 1] ["Bob" 2] ["Cy" 3]]
+              (e/rows db "customer as c | purchase as p :left .customer_id = c.id, .status is not null | s: c.name, p.id | o: c.id asc"))))
+
      (testing "a pair can compare with a table before the one before"
        (is (= [["Ann" "first"] ["Cy" "second"]]
               (e/rows db "customer as c | purchase as p .customer_id = c.id | note as n .purchase_id = p.id, .tenant_id = c.tenant_id | s: c.name, n.body | o: c.id asc")))))))

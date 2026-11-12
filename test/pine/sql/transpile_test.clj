@@ -229,7 +229,9 @@
     (converts-to "select u.email, o.id from u left join o on o.u_id = u.id and o.status = 'paid'"
                  "u as u | o as o :left o.u_id = u.id, o.status = 'paid' | select: u.email, id")
     (converts-to "select b.* from a left join b on b.a_id = a.id and not b.archived"
-                 "a as a | b as b :left b.a_id = a.id, b.archived = false"))
+                 "a as a | b as b :left b.a_id = a.id, b.archived = false")
+    (converts-to "select b.* from a left join b on b.a_id = a.id and b.deleted_at is null and a.x is not null"
+                 "a as a | b as b :left b.a_id = a.id, b.deleted_at is null, a.x is not null"))
 
   (testing "An inner join's other ON conditions move to where:"
     (converts-to "select b.* from a join b on b.a_id = a.id and b.created_at > now()"
@@ -330,7 +332,8 @@
   (refuses "select x.name from a" "`x` isn't a table")
   (refuses "select * from a join b on b.x > a.y" "needs a column of `b`")
   (refuses "select * from a left join b on b.a_id = a.id and b.x > 1" "LEFT JOIN")
-  (refuses "select * from a left join b on b.a_id = a.id and b.x is null" "LEFT JOIN")
+  (refuses "select * from a left join b on b.a_id = a.id and b.x like 'a%'" "LEFT JOIN")
+  (refuses "select * from t where x = any(y)" "= ANY(...) converts with a parameter inside")
   (refuses "select * from a join b using (x) join c using (y)" "USING after more than one table")
   (refuses "select * from a join a on a.x = a.y" "Two tables are called `a`")
   (refuses "select * from \"my table\"" "can't be written as a name")
@@ -1358,3 +1361,25 @@ edits as ed
  | select: name, ed.field, ed.manual_value, ed.createdAt, ed.updated_by_email, legal_types as current_legal_types, giin as current_giin
  | order: name asc, ed.field asc"
      ["In SQL, `->` gives JSON, so a string keeps its quotes. Pine shows e.after as text, without them, as `->>` does."])))
+
+(deftest test-positional-parameters
+  (testing "$1 becomes a variable named after the column it is compared with, with a line for its value on top"
+    (is (= {:expression "$tenant_id =\n\nt\n | where: tenant_id in $tenant_id"
+            :warnings ["$1 is $tenant_id. Write each value after its `=` above the query: a string, a number, or a list like ('a', 'b') for `in`."]}
+           (t/sql->pine "select * from t where tenant_id = any($1)"))))
+
+  (testing "<> ALL is `not in`. One parameter used twice is one variable, named after its first column"
+    (is (= "$b =\n$a =\n$c =\n\nt\n | where: a = $a\n | where: b > $b\n | where: c not in $c\n | where: d = $b"
+           (:expression (t/sql->pine "select * from t where a = $2 and b > $1 and c <> all($3) and d = $1")))))
+
+  (testing "A name the SQL already uses gets a number"
+    (is (s/starts-with? (:expression (t/sql->pine "select * from t where tenant_id = $1 and x = $tenant_id"))
+                        "$tenant_id_2 =\n\n")))
+
+  (testing "The Pine builds, and runs once the values are written"
+    (let [{:keys [expression]} (t/sql->pine "select * from t where tenant_id = any($1)")
+          [_ query] (s/split expression #"\n\n")]
+      (is (= {:query "SELECT \"t_0\".* FROM \"t\" AS \"t_0\" WHERE \"t_0\".\"tenant_id\" IN (?, ?) LIMIT 250"}
+             (select-keys (-> (s/replace query "$tenant_id" "('a', 'b')") pine.parser/parse :result
+                              (ast/generate :test nil nil {} []) eval/build-query)
+                          [:query]))))))
