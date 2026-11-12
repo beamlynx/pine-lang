@@ -147,7 +147,7 @@
 
   (testing "Two columns compare with any operator"
     (converts-to "select e.id from employee e join company c on c.id = e.company_id where e.salary > c.score"
-                 "employee as e | company as c .id = .company_id | where: e.salary > score | select: e.id | from: e")
+                 "employee as e | company as c c.id = e.company_id | where: e.salary > score | select: e.id | from: e")
     (converts-to "select company_id from employee group by company_id having count(*) > min(salary)"
                  "employee | group: company_id with count, salary => min as min_salary | where: count > min_salary | select: company_id")
     (converts-to "select * from t where a > b" "t | where: a > b")

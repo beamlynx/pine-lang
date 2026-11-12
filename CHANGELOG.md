@@ -7,6 +7,9 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - **A join can name the table on each side.** `fd.id = av.attributeId, fd.tenant_id = c.tenantId` joins `fd` to two earlier tables at once. A side without a name works as before.
 - **A join can hold a condition on a value.** `purchase :left .customer_id = .id, .status = 'paid'` keeps every customer and attaches only paid purchases. The same test in `where:` drops the customers without one.
 
+### Changed
+- **SQL converts with each join written as SQL has it.** Every side names its table, a join to two earlier tables converts instead of being refused, and a column = value condition in `ON` stays on the join, including on a `LEFT JOIN`.
+
 ## [0.56.0] - 2026-11-12
 ### Breaking
 - **Without a launch token, only pages served from this machine can call the server.** Before, any web page in your browser could send it requests and read the answers. Now, without `PINE_TOKEN`, a request from a web page is refused unless the page comes from `localhost`, `127.0.0.1` or `[::1]`, or is listed in `PINE_ALLOWED_ORIGINS` (comma-separated, such as `https://app.example.com`). A web UI served from elsewhere needs one of the two. Programs that aren't browsers are unaffected, and so is the desktop app, which always sets a token.

@@ -95,14 +95,14 @@
                  "t | select: data.plan as p, data.'a b'.c as ab, data.tags[0] as tag")
     (converts-to "select t.data->'plan' as p from t" "t | select: data.plan as p"
                  ["In SQL, `->` gives JSON, so a string keeps its quotes. Pine shows data.plan as text, without them, as `->>` does."])
-    (converts-to "select c.data->>'k' as k from c join o on o.cid = c.id" "c as c | o .cid = .id | select: c.data.k as k | from: c"))
+    (converts-to "select c.data->>'k' as k from c join o on o.cid = c.id" "c as c | o as o o.cid = c.id | select: c.data.k as k | from: c"))
 
   (testing "A first key after a bare name that is also an alias is quoted, so Pine reads a key"
     (converts-to "select data.x->>'k' as k from t as data" "t as data | select: x.k as k")
     (converts-to "select t.data->>'k' as k from t join data on data.tid = t.id"
-                 "t as t | data .tid = .id | select: t.data.k as k | from: t")
+                 "t as t | data as data data.tid = t.id | select: t.data.k as k | from: t")
     (converts-to "select data.data->>'k' as k from t join data on data.tid = t.id"
-                 "t | data .tid = .id | select: data.'k' as k"))
+                 "t as t | data as data data.tid = t.id | select: data.'k' as k"))
 
   (testing "jsonb_typeof() and jsonb_array_length() keep their names, and read a key as JSON: no warning"
     (converts-to "select jsonb_typeof(t.data->'a') as k, jsonb_array_length(t.data) as n from t"
@@ -129,7 +129,7 @@
     (converts-to "select t.data->'plan' as p from t order by p desc nulls last" "t | select: data.plan as p | order: data.plan desc nulls last"
                  ["In SQL, `->` gives JSON, so a string keeps its quotes. Pine shows data.plan as text, without them, as `->>` does."])
     (converts-to "select t.id from t order by t.data->'plan'" "t | select: id | order: data.plan asc")
-    (converts-to "select c.id from c join o on o.cid = c.id order by c.data->'k'" "c as c | o .cid = .id | select: c.id | order: c.data.k asc | from: c"))
+    (converts-to "select c.id from c join o on o.cid = c.id order by c.data->'k'" "c as c | o as o o.cid = c.id | select: c.id | order: c.data.k asc | from: c"))
 
   (testing "A CASE or COALESCE of -> keys and literals is shown as text, with the warning"
     (converts-to "select coalesce(t.d->'a', t.d->'b') as x from t" "t | select: coalesce(d.a, d.b) as x"
@@ -198,32 +198,47 @@
                    ["`count_2` is the SQL's column `count`: Pine needs each name once."]))))
 
 (deftest test-joins
-  (testing "A join is the joined table's columns = the earlier table's"
+  (testing "A join is the joined table's columns = the earlier table's, each with its table's alias"
     (converts-to "select * from company c join employee e on e.company_id = c.id"
-                 "company as c | employee as e .company_id = .id | select: c.*, e.*")
+                 "company as c | employee as e e.company_id = c.id | select: c.*, e.*")
     (converts-to "select e.* from company c join employee e on c.id = e.company_id"
-                 "company as c | employee as e .company_id = .id")
+                 "company as c | employee as e e.company_id = c.id")
     (converts-to "select c.name, e.name from company c left join employee e on e.company_id = c.id and e.x = c.y"
-                 "company as c | employee as e :left .company_id = .id, .x = .y | select: c.name, name")
-    (converts-to "select b.* from a right outer join b on b.a_id = a.id" "a | b :right .a_id = .id")
-    (converts-to "select b.* from a join b using (a_id)" "a | b .a_id = .a_id"))
+                 "company as c | employee as e :left e.company_id = c.id, e.x = c.y | select: c.name, name")
+    (converts-to "select b.* from a right outer join b on b.a_id = a.id" "a as a | b as b :right b.a_id = a.id")
+    (converts-to "select b.* from a join b using (a_id)" "a as a | b as b b.a_id = a.a_id"))
 
-  (testing "A table without an alias gets one only when something refers to it"
+  (testing "A table without an alias is named by its table"
     (converts-to "select company.name, employee.email from company join employee on employee.company_id = company.id"
-                 "company as company | employee .company_id = .id | select: company.name, email"))
+                 "company as company | employee as employee employee.company_id = company.id | select: company.name, email"))
 
-  (testing "A join tied to an earlier table than the last starts with from:"
+  (testing "A join to an earlier table than the last names it, with no from:"
     (converts-to "select * from company c join employee e on e.company_id = c.id join invoice i on i.company_id = c.id"
-                 "company as c | employee as e .company_id = .id | from: c | invoice as i .company_id = .id | select: c.*, e.*, i.*"))
+                 "company as c | employee as e e.company_id = c.id | invoice as i i.company_id = c.id | select: c.*, e.*, i.*"))
+
+  (testing "A join may compare with several earlier tables"
+    (converts-to "select c.* from a join b on b.a_id = a.id join c on c.a_id = a.id and c.b_id = b.id"
+                 "a as a | b as b b.a_id = a.id | c as c c.a_id = a.id, c.b_id = b.id"))
+
+  (testing "A column = value condition stays on the join"
+    (converts-to "select b.* from a join b on b.a_id = a.id and b.active = true"
+                 "a as a | b as b b.a_id = a.id, b.active = true")
+    (converts-to "select b.* from a join b on b.a_id = a.id and a.kind = 'x'"
+                 "a as a | b as b b.a_id = a.id, a.kind = 'x'")
+    ;; On a left join it keeps the rows where: would drop, so it has to.
+    (converts-to "select u.email, o.id from u left join o on o.u_id = u.id and o.status = 'paid'"
+                 "u as u | o as o :left o.u_id = u.id, o.status = 'paid' | select: u.email, id")
+    (converts-to "select b.* from a left join b on b.a_id = a.id and not b.archived"
+                 "a as a | b as b :left b.a_id = a.id, b.archived = false"))
 
   (testing "An inner join's other ON conditions move to where:"
-    (converts-to "select b.* from a join b on b.a_id = a.id and b.active = true"
-                 "a | b .a_id = .id | where: active = true"
+    (converts-to "select b.* from a join b on b.a_id = a.id and b.created_at > now()"
+                 "a as a | b as b b.a_id = a.id | where: created_at > now()"
                  ["A condition in an inner join's ON moved to where:. It means the same there."]))
 
   (testing "Self join"
     (converts-to "select m.* from employee e join employee m on m.id = e.reports_to"
-                 "employee as e | employee as m .id = .reports_to")))
+                 "employee as e | employee as m m.id = e.reports_to")))
 
 ;; A schema as pine.db.references indexes it: [schema table column ...].
 (def ^:private schema
@@ -241,7 +256,7 @@
 (deftest test-database-spelling
   (let [with-schema (fn [sql] (t/sql->pine sql schema))]
     (testing "A bare name takes the database's spelling"
-      (is (= "tenant as t\n | company as c .tenantId = .id\n | select: t.*, c.*"
+      (is (= "tenant as t\n | company as c c.tenantId = t.id\n | select: t.*, c.*"
              (:expression (with-schema "select * from tenant as t join company as c on t.id = c.tenantId"))))
       (is (= {:expression "Invoice\n | where: companyId = 1" :warnings []}
              (with-schema "select * from invoice where COMPANYID = 1")))
@@ -249,7 +264,7 @@
              (with-schema "select invoice.id from invoice"))))
 
     (testing "USING spells each side from its own table"
-      (is (= "Invoice as invoice\n | payment as payment .CompanyId = .companyId\n | select: invoice.*, payment.*"
+      (is (= "Invoice as invoice\n | payment as payment payment.CompanyId = invoice.companyId\n | select: invoice.*, payment.*"
              (:expression (with-schema "select * from invoice join payment using (companyid)")))))
 
     (testing "A schema is spelled too"
@@ -267,7 +282,7 @@
              (with-schema "select name from billing.plan"))))
 
     (testing "An unqualified column belongs to the one table that has it"
-      (is (= "tenant as t\n | company as company .tenantId = .id\n | select: t.*, company.*"
+      (is (= "tenant as t\n | company as company company.tenantId = t.id\n | select: t.*, company.*"
              (:expression (with-schema "select * from tenant as t join company on t.id = tenantId"))))
       (is (= {:error "Line 1: `name` could belong to `t` or `c`. Qualify it, like `t.name`."
               :error-type "sql-unsupported"}
@@ -281,13 +296,13 @@
           "A table the schema doesn't have could have the column too"))
 
     (testing "Without a schema, a bare name is folded to lowercase"
-      (is (= "tenant as t\n | company as c .tenantid = .id\n | select: t.*, c.*"
+      (is (= "tenant as t\n | company as c c.tenantid = t.id\n | select: t.*, c.*"
              (:expression (t/sql->pine "select * from tenant as t join company as c on t.id = c.tenantId")))))))
 
 (deftest test-pine-preview
   (testing "Pine's own SQL reads back, without its hidden columns"
     (converts-to "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"e_1\".* FROM \"company\" AS \"c_0\" JOIN \"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" LIMIT 250"
-                 "company as c_0 | employee as e_1 .company_id = .id | limit: 250"
+                 "company as c_0 | employee as e_1 e_1.company_id = c_0.id | limit: 250"
                  ["Left out __c_0__id: Pine adds its hidden columns itself."]))
 
   (testing "So does a preview with WITH, for a named result, count: or group:"
@@ -314,8 +329,8 @@
   (refuses "select name from a join b on b.a_id = a.id" "could belong to `a` or `b`")
   (refuses "select x.name from a" "`x` isn't a table")
   (refuses "select * from a join b on b.x > a.y" "needs a column of `b`")
-  (refuses "select * from a join b on b.a_id = a.id join c on c.a_id = a.id and c.b_id = b.id" "more than one table")
-  (refuses "select * from a left join b on b.a_id = a.id and b.x = 1" "LEFT JOIN")
+  (refuses "select * from a left join b on b.a_id = a.id and b.x > 1" "LEFT JOIN")
+  (refuses "select * from a left join b on b.a_id = a.id and b.x is null" "LEFT JOIN")
   (refuses "select * from a join b using (x) join c using (y)" "USING after more than one table")
   (refuses "select * from a join a on a.x = a.y" "Two tables are called `a`")
   (refuses "select * from \"my table\"" "can't be written as a name")
@@ -333,8 +348,8 @@
   (refuses "select distinct a from t" "DISTINCT isn't in Pine")
   (refuses "select * from t where a in (select id, name from u)" "must select one column")
   (testing "A cast in a join's ON stays with its column"
-    (converts-to "select b.* from a join b on b.x = a.y::text" "a | b .x = .y ::text")
-    (converts-to "select b.* from a join b on b.x::uuid = a.y" "a | b .x ::uuid = .y")
+    (converts-to "select b.* from a join b on b.x = a.y::text" "a as a | b as b b.x = a.y ::text")
+    (converts-to "select b.* from a join b on b.x::uuid = a.y" "a as a | b as b b.x ::uuid = a.y")
     (refuses "select b.* from a join b on b.x = a.y::int" "cast to int")))
 
 (deftest test-error-lines
@@ -514,7 +529,7 @@
     (converts-to-blocks "select * from (select id from company where id > 1) x join employee e on e.company_id = x.id"
                         "company | where: id > 1 | select: id |= x
 
-                         x as x | employee as e .company_id = .id | select: x.*, e.*"))
+                         x as x | employee as e e.company_id = x.id | select: x.*, e.*"))
 
   (testing "A column of a WITH query keeps the spelling it was selected with"
     (is (= "company\n | select: tenantId |= a\n\na\n | where: tenantId = 1"
@@ -644,7 +659,7 @@
 
   (testing "A LEFT JOIN whose table is used elsewhere stays a join"
     (converts-to "select n.*, k.id from note n left join k on k.id = n.id where k.id is null"
-                 "note as n | k :left .id = .id | where: id is null | select: n.*, id"))
+                 "note as n | k as k :left k.id = n.id | where: id is null | select: n.*, id"))
 
   (testing "DISTINCT in a WITH query used as a table is still refused"
     (refuses "with k as (select distinct company_id from employee) select * from k" "DISTINCT isn't in Pine")))
@@ -665,14 +680,14 @@
 
   (testing "UPDATE ... FROM joins on the WHERE conditions that tie the two"
     (converts-to "update employee e set name = 'x' from company c where e.company_id = c.id and c.name = 'Acme'"
-                 "employee as e | company as c .id = .company_id | where: name = 'Acme' | from: e | update! name = 'x'"))
+                 "employee as e | company as c c.id = e.company_id | where: name = 'Acme' | from: e | update! name = 'x'"))
 
   (testing "DELETE names the rows by the table's primary key"
     (converts-to-blocks "delete from company_document where archived_at is not null"
                         "company_document | where: archived_at is not null | delete! .id"
                         [] keyed-schema)
     (converts-to-blocks "delete from company_document d using attachment a where a.id = d.id and a.type = 'x'"
-                        "company_document as d | attachment as a .id = .id | where: type = 'x' | from: d | delete! .id"
+                        "company_document as d | attachment as a a.id = d.id | where: type = 'x' | from: d | delete! .id"
                         [] keyed-schema))
 
   (testing "Refusals"
@@ -893,8 +908,8 @@ COMMIT;
 (def ^:private motivating-pine
   "What the whole script converts to."
   "company_document as d
-    | company_document_attachment as cda :left .company_document_id = .id
-    | attachment as a :left .id = .attachment_id
+    | company_document_attachment as cda :left cda.company_document_id = d.id
+    | attachment as a :left a.id = cda.attachment_id
     | where: d.tenant_id = '86b8ad91-7463-478a-aa43-43a977105bf4'
     | where: d.deleted_at is null
     | group: d.id, d.company_id, d.reference_id, d.created_at, d.archived_at with id::text => min where type = 'sharepoint' as min_id, id::text => min as min_id_2, any(type = 'sharepoint') as any_type
@@ -904,8 +919,8 @@ COMMIT;
    sp_docs as s | select: s.*, coalesce(reference_id, concat('att:', any_attachment_id)) as dedupe_key |= grouped
 
    grouped as g
-    | activity_resource as ar .resourceableId = .id ::text
-    | activity as act .id = .activityId
+    | activity_resource as ar ar.resourceableId = g.id ::text
+    | activity as act act.id = ar.activityId
     | where: tenantId = '86b8ad91-7463-478a-aa43-43a977105bf4'
     | where: userId != 'd3b93066-ea59-4259-a534-943249fba79c' or userId is null
     | where: type != 'company-document-downloaded' or type is null
@@ -920,7 +935,7 @@ COMMIT;
    ranked | select: id |= keep_final
 
    company_document as d
-    | grouped as g .id = .id
+    | grouped as g g.id = d.id
     | where: archived_at is null
     | where: id not in keep_final
     | from: d
@@ -955,8 +970,8 @@ COMMIT;
   (testing "The structure converts, close to the Pine a person would write"
     (converts-to-blocks motivating-reduced
                         "company_document as d
-                          | company_document_attachment as cda :left .company_document_id = .id
-                          | attachment as a :left .id = .attachment_id
+                          | company_document_attachment as cda :left cda.company_document_id = d.id
+                          | attachment as a :left a.id = cda.attachment_id
                           | where: d.tenant_id = '86b8ad91-7463-478a-aa43-43a977105bf4'
                           | where: d.deleted_at is null
                           | where: type = 'sharepoint' or d.reference_id is not null
@@ -968,7 +983,7 @@ COMMIT;
                          ranked | select: id |= keep_final
 
                          company_document as d
-                          | sp_docs as g .id = .id
+                          | sp_docs as g g.id = d.id
                           | where: archived_at is null
                           | where: id not in keep_final
                           | from: d
@@ -1012,7 +1027,7 @@ COMMIT;
   (testing "With * and after a join, columns keep their alias"
     (converts-to "select s.*, coalesce(s.a, 'x') as k from s" "s as s | select: s.*, coalesce(a, 'x') as k")
     (converts-to "select coalesce(c.name, e.name) as n from company c join employee e on e.company_id = c.id"
-                 "company as c | employee as e .company_id = .id | select: coalesce(c.name, name) as n"))
+                 "company as c | employee as e e.company_id = c.id | select: coalesce(c.name, name) as n"))
 
   (testing "NOW() in WHERE and in SET"
     (converts-to "select * from t where created_at < now()" "t | where: created_at < now()")
@@ -1044,11 +1059,11 @@ COMMIT;
     (converts-to "select a, count(b) as n from t group by a"
                  "t | group: a with count where b is not null as n")
     (converts-to "select u.id, count(*) as roles, count(r.archived_at) as archived from u join r on r.u_id = u.id group by u.id having count(*) = count(r.archived_at)"
-                 "u as u | r .u_id = .id | group: u.id with count as roles, count where archived_at is not null as archived | where: roles = archived"))
+                 "u as u | r as r r.u_id = u.id | group: u.id with count as roles, count where archived_at is not null as archived | where: roles = archived"))
 
   (testing "COUNT(column) keeps the qualifier of an earlier table"
     (converts-to "select u.id, count(u.email) as n from u join r on r.u_id = u.id group by u.id"
-                 "u as u | r .u_id = .id | group: u.id with count where u.email is not null as n"))
+                 "u as u | r as r r.u_id = u.id | group: u.id with count where u.email is not null as n"))
 
   (testing "Without GROUP BY, COUNT(column) on its own is a where: and count:"
     (converts-to "select count(x) from t where y = 1"
@@ -1149,7 +1164,7 @@ COMMIT;
                          select c.id, (k.company_id is not null) as has_staff from company c left join k on k.company_id = c.id"
                         "employee as e | select: company_id |= k
 
-                         company as c | k :left .company_id = .id | select: c.id, company_id is not null as has_staff")))
+                         company as c | k as k :left k.company_id = c.id | select: c.id, company_id is not null as has_staff")))
 
 (deftest test-exists
   (testing "EXISTS is `in`: the subquery selects the column it is tied by"
@@ -1160,7 +1175,7 @@ t | where: id in k_t_ids"))
 
   (testing "Either side of the equality may be the outer column, and the subquery may join"
     (converts-to-blocks "select * from t where exists (select * from k join m on m.k_id = k.id where t.id = k.t_id and m.z = 2 limit 1)"
-                        "k as k | m .k_id = .id | where: z = 2 | select: k.t_id | from: k |= k_t_ids
+                        "k as k | m as m m.k_id = k.id | where: z = 2 | select: k.t_id | from: k |= k_t_ids
 
 t | where: id in k_t_ids"))
 
@@ -1229,12 +1244,12 @@ s | group: a with count as subjects, n => max as max_n | order: max_n desc | lim
 (deftest test-select-of-an-earlier-table
   (testing "A select list of only an earlier table's columns ends on that table, or Pine would show the last table's columns too"
     (converts-to "select sc.a, sc.b from s sc join o on o.id = sc.o_id where o.n = 'x'"
-                 "s as sc | o .id = .o_id | where: n = 'x' | select: sc.a, sc.b | from: sc")
+                 "s as sc | o as o o.id = sc.o_id | where: n = 'x' | select: sc.a, sc.b | from: sc")
     (converts-to "select sc.* from s sc join o on o.id = sc.o_id"
-                 "s as sc | o .id = .o_id | select: sc.* | from: sc"))
+                 "s as sc | o as o o.id = sc.o_id | select: sc.* | from: sc"))
   (testing "A select list with a column of the last table needs no from:"
     (converts-to "select sc.a, o.n from s sc join o on o.id = sc.o_id"
-                 "s as sc | o .id = .o_id | select: sc.a, n")))
+                 "s as sc | o as o o.id = sc.o_id | select: sc.a, n")))
 
 (deftest test-aggregates-without-group-by
   (testing "COUNT(*) with a name of its own is one group, so the name is kept"
@@ -1283,7 +1298,7 @@ s | group: a with count as subjects, n => max as max_n | order: max_n desc | lim
 
   (testing "A table joined after the elements is joined from the table the pipe is on"
     (converts-to "select a.id, b.name from a cross join lateral jsonb_array_elements(a.data) e join b on b.id = a.b_id where e->>'k' = 'v'"
-                 "a as a | unnest: a.data as e | b .id = .b_id | where: e.k = 'v' | select: a.id, name"))
+                 "a as a | unnest: a.data as e | b as b b.id = a.b_id | where: e.k = 'v' | select: a.id, name"))
 
   (testing "An element of jsonb_array_elements_text compares as text"
     (converts-to "select a.id from a, jsonb_array_elements_text(a.tags) e where e != 'red'"
@@ -1328,9 +1343,8 @@ FROM edits ed JOIN company c ON c.id = ed.company_id
 WHERE ed.rn = 1
 ORDER BY c.name, ed.field;"
      "activity as a
- | activity_resource as ar .activityId = .id
+ | activity_resource as ar ar.activityId = a.id, ar.resourceableType = 'Company'
  | unnest: a.data as e
- | where: resourceableType = 'Company'
  | where: a.tenantId = '1d4ec3f6-2046-4b18-aea2-c27c80e89103'
  | where: a.type = 'company-edited'
  | where: a.createdAt >= '2026-01-01 00:00'
@@ -1340,8 +1354,7 @@ ORDER BY c.name, ed.field;"
  | limit: 1 per resourceableId, e.field |= edits
 
 edits as ed
- | company as c .id = .company_id
+ | company as c c.id = ed.company_id
  | select: name, ed.field, ed.manual_value, ed.createdAt, ed.updated_by_email, legal_types as current_legal_types, giin as current_giin
  | order: name asc, ed.field asc"
-     ["A condition in an inner join's ON moved to where:. It means the same there."
-      "In SQL, `->` gives JSON, so a string keeps its quotes. Pine shows e.after as text, without them, as `->>` does."])))
+     ["In SQL, `->` gives JSON, so a string keeps its quotes. Pine shows e.after as text, without them, as `->>` does."])))
