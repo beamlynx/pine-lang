@@ -329,6 +329,10 @@
     (is (= {:query "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"e_1\".\"id\" AS \"__e_1__id\", \"e_1\".* FROM \"company\" AS \"c_0\" JOIN \"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" AND \"e_1\".\"type\" = ? LIMIT 250"
             :params [(dt/string "x")]}
            (generate "company | employee .type = 'x'")))
+    (is (= "SELECT \"b_1\".* FROM \"a\" AS \"a_0\" LEFT JOIN \"b\" AS \"b_1\" ON \"a_0\".\"id\" = \"b_1\".\"a_id\" AND \"b_1\".\"deleted_at\" IS NULL AND \"a_0\".\"x\" IS NOT NULL LIMIT 250"
+           (:query (generate "a | b :left .a_id = .id, .deleted_at is null, a_0.x is not null"))))
+    (is (thrown-with-msg? Exception #"A join's `is null` can't use \[\*\]"
+                          (generate "a | b .a_id = .id, .data[*].k is null")))
     (is (thrown-with-msg? Exception #"A join on a value can't use \[\*\]"
                           (generate "a | b .a_id = .id, .data[*].k = 'x'"))))
 

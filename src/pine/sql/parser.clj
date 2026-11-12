@@ -124,6 +124,8 @@
     :is-null {:op :is-null :negated (negated? node) :left (expr (first args)) :at (at node)}
     :in (let [[l & vs] (operands node)]
           {:op :in :negated (negated? node) :left l :values (vec vs) :at (at node)})
+    :in-any (let [[l v] (operands node)]
+              {:op :in-variable :negated (boolean (child node :ne-all)) :left l :value v :at (at node)})
     :in-select {:op :in :negated (negated? node) :left (first (operands node))
                 :subquery (select-query (child node :select)) :at (at node)}
     :exists {:op :exists :subquery (select-query (or (child node :select) (child node :exists-select))) :at (at node)}
@@ -134,7 +136,7 @@
     :truthy {:op :truthy :column (column (first args)) :at (at node)}))
 
 (def ^:private predicate-tags
-  #{:or :and :not :compare :like :is-null :is-distinct :in :in-select :exists :between :truthy :call-truthy :strict-predicate :predicate})
+  #{:or :and :not :compare :like :is-null :is-distinct :in :in-any :in-select :exists :between :truthy :call-truthy :strict-predicate :predicate})
 
 (defn- expr
   "A value: an operand, or a computed value as

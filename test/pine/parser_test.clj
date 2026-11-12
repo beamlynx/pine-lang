@@ -785,6 +785,7 @@
     (is (thrown-with-msg? Exception #"^`where` needs a colon: `where:`" (p "user as u | where u.status = 'active'")))
     (is (thrown-with-msg? Exception #"^`where` needs a colon" (p "user | where .status = 'active'")))
     (is (thrown-with-msg? Exception #"^`select` needs a colon" (p "user | select u.id = .x")))
+    (is (thrown-with-msg? Exception #"^`where` needs a colon" (p "user | where .x is null")))
     (is (re-find #"^A string is missing its closing quote" (error "user | where: name = 'abc")))
     (is (re-find #"^Join conditions in one where: with `or`" (error "user | where: a = 1, b = 2")))
     (is (re-find #"^Join conditions in one where: with `or`" (error "user | where: a = 1 and b = 2")))

@@ -82,7 +82,12 @@ and           := not-expr (<ws?> <AND> <ws?> not-expr)+
 not           := <NOT> <ws?> not-expr
 <paren>       := <"("> <ws?> or-expr <ws?> <")">
 
-<comparison>  := compare | like | is-null | is-distinct | in | in-select | between | exists | truthy | call-truthy
+(* Ordered first, so `= ANY($1)` isn't read as a call to a function any(). *)
+<comparison>  := in-any / (compare | like | is-null | is-distinct | in | in-select | between | exists | truthy | call-truthy)
+(* `x = ANY($ids)` is `x in $ids`, and `x <> ALL($ids)` is `x not in $ids`. *)
+in-any        := operand <ws?> (eq-any | ne-all) <ws?> <"("> <ws?> operand <ws?> <")">
+eq-any        := <"="> <ws?> <ANY>
+ne-all        := <("<>" | "!=")> <ws?> <ALL>
 (* A function or a count is compared too: in HAVING (`COUNT(1) > 1`), and
    so a function in WHERE is refused by name rather than at a parse error. *)
 compare       := cmp-operand <ws?> cmp-op <ws?> cmp-operand
@@ -170,7 +175,8 @@ string        := <"'"> #"(?:[^']|'')*+" <"'">
 number        := #"-?[0-9]+(?:\.[0-9]+)?"
 boolean       := TRUE | FALSE
 null          := <NULL>
-variable      := <"$"> #"[A-Za-z_][A-Za-z0-9_]*"
+(* `$1`, a positional parameter, becomes a named Pine variable. *)
+variable      := <"$"> #"[A-Za-z_][A-Za-z0-9_]*|[0-9]+"
 
 (* Spaces and comments, one token, as in pine.bnf (see the note there). *)
 ws            := #"(?s)(?:[ \t\r\n]++|--[^\r\n]*+|/\*.*?\*/)++"
@@ -191,6 +197,8 @@ AND     := #"(?i)and\b"
 OR      := #"(?i)or\b"
 NOT     := #"(?i)not\b"
 IN      := #"(?i)in\b"
+ANY     := #"(?i)any\b"
+ALL     := #"(?i)all\b"
 IS      := #"(?i)is\b"
 NULL    := #"(?i)null\b"
 LIKE    := #"(?i)like\b"

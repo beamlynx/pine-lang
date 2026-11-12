@@ -5,10 +5,11 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ## [Unreleased]
 ### Added
 - **A join can name the table on each side.** `fd.id = av.attributeId, fd.tenant_id = c.tenantId` joins `fd` to two earlier tables at once. A side without a name works as before.
-- **A join can hold a condition on a value.** `purchase :left .customer_id = .id, .status = 'paid'` keeps every customer and attaches only paid purchases. The same test in `where:` drops the customers without one.
+- **A join can hold a condition on a value, or a test for null.** `purchase :left .customer_id = .id, .status = 'paid'` keeps every customer and attaches only paid purchases. The same test in `where:` drops the customers without one. `.deleted_at is null` works the same way.
+- **SQL with `$1`, `$2` converts.** Each becomes a variable named after the column it is compared with, such as `$tenant_id`, with an empty line for its value above the query. `x = ANY($1)` becomes `x in $x`.
 
 ### Changed
-- **SQL converts with each join written as SQL has it.** Every side names its table, a join to two earlier tables converts instead of being refused, and a column = value condition in `ON` stays on the join, including on a `LEFT JOIN`.
+- **SQL converts with each join written as SQL has it.** Every side names its table, a join to two earlier tables converts instead of being refused, and a column = value or `IS NULL` condition in `ON` stays on the join, including on a `LEFT JOIN`.
 
 ## [0.56.0] - 2026-11-12
 ### Breaking

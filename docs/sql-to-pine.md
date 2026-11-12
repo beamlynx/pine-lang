@@ -74,7 +74,8 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `JOIN employee e ON e.company_id = c.id` | `\| employee as e e.company_id = c.id` |
 | `LEFT JOIN`, `RIGHT JOIN` (with or without `OUTER`) | `:left`, `:right` |
 | `JOIN b ON b.y = a.x AND b.w = c.z` | `b.y = a.x, b.w = c.z`, with any earlier table on each pair |
-| `ON ... AND b.status = 'paid'`, `AND NOT b.archived` | `b.status = 'paid'`, `b.archived = false`, kept on the join |
+| `ON ... AND b.status = 'paid'`, `AND NOT b.archived`, `AND b.deleted_at IS NULL` | `b.status = 'paid'`, `b.archived = false`, `b.deleted_at is null`, kept on the join |
+| `x = $1`, `x = ANY($1)`, `x <> ALL($1)` | `x = $x`, `x in $x`, `x not in $x`, with a line `$x =` above the query for its value (see [Parameters](#parameters)) |
 | `JOIN employee USING (company_id)` | `e.company_id = c.company_id` |
 | `WHERE a = 1 AND b = 'x'` | `\| where: a = 1 \| where: b = 'x'` |
 | `WHERE a = 1 OR b = 'x'` | `\| where: a = 1 or b = 'x'` |
@@ -154,6 +155,31 @@ same. On a left or right join it is refused, since in `where:` it would drop row
 Then one `where:` for each AND-ed condition. Then `select:`,
 `group:` or `count:`. Then `order:` and `limit:`. Pine builds one SQL `SELECT` with every join and
 every condition in it, so a `where:` after the joins means the same as SQL's single `WHERE`.
+
+### Parameters
+
+SQL copied from an app often has `$1`, `$2`: values the app fills in. Each one becomes a Pine
+[variable](variables.md), named after the column it is compared with, and the Pine starts with a values
+block holding a line for it with no value yet:
+
+```sql
+SELECT * FROM field_definition fd WHERE fd.tenant_id = ANY($1)
+```
+
+```
+$tenant_id =
+
+field_definition as fd
+ | where: tenant_id in $tenant_id
+```
+
+- A parameter compared with no column is `$p1`, `$p2`.
+- One parameter used twice is one variable, named after the first column it is compared with.
+- A name the SQL already uses as a `$variable`, or that another parameter took, gets `_2`, `_3`.
+- `= ANY($1)` becomes `in`, and `<> ALL($1)` becomes `not in`.
+- A warning says which `$` number became which name. The query builds as it is, and runs once each line
+  has a value: `$tenant_id = ('t1', 't2')`.
+- A `?` placeholder is still refused: it has no number to tell two apart.
 
 ### Computed values
 
@@ -681,7 +707,8 @@ Each is refused with its line.
 | A selected column that isn't grouped | Not in SQL either. |
 | `ORDER BY 1` or `GROUP BY 1` after a `*`, `GROUP BY` a position that numbers a value | Name the column. |
 | `FULL`, `CROSS` or `NATURAL` join, a comma between tables | Pine joins inner, left or right, on named columns. |
-| An outer join's `ON` condition other than column = column or column = value, like `IS NULL` or `>` | In `where:` it would drop rows. |
+| An outer join's `ON` condition other than column = column, column = value or `IS [NOT] NULL`, like `>` or `LIKE` | In `where:` it would drop rows. |
+| `= ANY(...)` around anything but a parameter, like `ARRAY[1, 2]` | Write `IN (1, 2)`. |
 | `USING` after more than one table | It can't say which table it joins to. Write it with `ON`. |
 | A column in a join that isn't qualified, when more than one table has it, or the schema isn't known | It could belong to more than one table. |
 | `= NULL` | Never true in SQL. Use `IS NULL`. |

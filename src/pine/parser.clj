@@ -52,6 +52,14 @@
   (:value (parse-condition (cond-> [:condition (into [:column] side) [:equals] value]
                              cast (conj [:cast cast])))))
 
+(defn- join-null-test
+  "`.deleted_at is null` or `is not null` on a join, as a condition: what
+  where: would parse from `deleted_at is null`."
+  [[_ & side] [_ negated]]
+  (when (some #(= :json-any (first %)) side)
+    (throw (ex-info "A join's `is null` can't use [*]. Test one key, like `.data.status is null`." {})))
+  (:value (parse-condition [:condition (into [:column] side) [(if negated :is-not :is)] [:null]])))
+
 (defn- explicit-pair
   "One `.right = .left` pair, {:left :right}, with :right-cast or :left-cast
   for a cast after either column: `.resourceableId = .id ::text`, and
@@ -60,13 +68,21 @@
   `fd.tenant_id = c.tenantId`. Which table a bare side is, pine.ast.table
   decides.
 
-  A pair with a value on its second side, `.type = 'entity'`, is
-  {:condition}, a where: condition kept on the join."
+  A pair with a value on its second side, `.type = 'entity'`, or a test
+  for null, `.deleted_at is null`, is {:condition}, a where: condition
+  kept on the join."
   [[tag & children :as pair]]
   (when-not (= :explicit-pair tag)
     (throw (ex-info "Unknown explicit join columns" {:_ pair})))
-  (if-let [value (some #(when (= :join-value (first %)) %) children)]
-    {:condition (join-constant (first children) (some #(when (= :cast (first %)) (second %)) children) value)}
+  (cond
+    (some #(= :join-value (first %)) children)
+    {:condition (join-constant (first children) (some #(when (= :cast (first %)) (second %)) children)
+                               (some #(when (= :join-value (first %)) %) children))}
+
+    (some #(= :join-null (first %)) children)
+    {:condition (join-null-test (first children) (some #(when (= :join-null (first %)) %) children))}
+
+    :else
     (let [[[right-col right-path right-cast right-alias] [left-col left-path left-cast left-alias]]
           (reduce (fn [acc [t x :as node]]
                     (case t
