@@ -13,9 +13,11 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - **Connection stats are per connection.** `GET /api/v1/connection/stats` is now `GET /api/v1/connections/:id/stats`.
 
 ### Fixed
-- **A masked column can't leak through a JSON function's error.** On Postgres, `where: jsonb_typeof(email) = 'string'` cast a masked text column to `jsonb`, and the error printed the start of its value. A masked column passed to `jsonb_typeof` or `jsonb_array_length` is now refused, as a `::uuid` cast of one already was.
 - **A connection opened again under the same id can't keep the old database's schema.** Removing a connection while its schema was being read, then opening the same id on another database, could cache the first database's tables and columns for the second.
 - **A request without a connection is refused instead of running on another one.** The server kept one "selected" connection, the last one any client connected to, and used it for any build, run or SQL that named none. A tab with no connection of its own then ran its queries on another tab's database. There is no selected connection now. Build, eval and SQL without `connection-id` answer with error type `no-connection`. `POST /api/v1/connections/:id/connect` only checks the connection and reads its schema. `GET /api/v1/connection` returns just the version. The legacy `build-with-params` route needs `connection-id` too.
+
+### Security
+- **A masked column can't leak through a JSON function's error.** On Postgres, `where: jsonb_typeof(email) = 'string'` cast a masked text column to `jsonb`, and the error printed the start of its value. A masked column passed to `jsonb_typeof` or `jsonb_array_length` is now refused, as a `::uuid` cast of one already was.
 
 ## [0.55.0] - 2026-11-11
 ### Added
