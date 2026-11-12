@@ -76,6 +76,7 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `JOIN b ON b.y = a.x AND b.w = c.z` | `b.y = a.x, b.w = c.z`, with any earlier table on each pair |
 | `ON ... AND b.status = 'paid'`, `AND NOT b.archived`, `AND b.deleted_at IS NULL` | `b.status = 'paid'`, `b.archived = false`, `b.deleted_at is null`, kept on the join |
 | `x = $1`, `x = ANY($1)`, `x <> ALL($1)` | `x = $x`, `x in $x`, `x not in $x`, with a line `$x =` above the query for its value (see [Parameters](#parameters)) |
+| `x = ANY(ARRAY['a', 'b'])`, `x <> ALL(ARRAY[1, 2])` | `x in ('a', 'b')`, `x not in (1, 2)` |
 | `JOIN employee USING (company_id)` | `e.company_id = c.company_id` |
 | `WHERE a = 1 AND b = 'x'` | `\| where: a = 1 \| where: b = 'x'` |
 | `WHERE a = 1 OR b = 'x'` | `\| where: a = 1 or b = 'x'` |
@@ -177,6 +178,9 @@ field_definition as fd
 - One parameter used twice is one variable, named after the first column it is compared with.
 - A name the SQL already uses as a `$variable`, or that another parameter took, gets `_2`, `_3`.
 - `= ANY($1)` becomes `in`, and `<> ALL($1)` becomes `not in`.
+- The response's `parameters` says which number became which name: `[{"number": "1", "name":
+  "tenant_id"}]`. A client that holds values by number, such as an AI agent sending `{"1": [...]}` to
+  `run_sql_as_pine`, renames them with it before running.
 - A warning says which `$` number became which name. The query builds as it is, and runs once each line
   has a value: `$tenant_id = ('t1', 't2')`.
 - A `?` placeholder is still refused: it has no number to tell two apart.
@@ -708,7 +712,7 @@ Each is refused with its line.
 | `ORDER BY 1` or `GROUP BY 1` after a `*`, `GROUP BY` a position that numbers a value | Name the column. |
 | `FULL`, `CROSS` or `NATURAL` join, a comma between tables | Pine joins inner, left or right, on named columns. |
 | An outer join's `ON` condition other than column = column, column = value or `IS [NOT] NULL`, like `>` or `LIKE` | In `where:` it would drop rows. |
-| `= ANY(...)` around anything but a parameter, like `ARRAY[1, 2]` | Write `IN (1, 2)`. |
+| `= ANY(...)` around anything but a parameter or an `ARRAY[...]` of strings and numbers, like a column | Pine's `in` takes a list of values or a variable. |
 | `USING` after more than one table | It can't say which table it joins to. Write it with `ON`. |
 | A column in a join that isn't qualified, when more than one table has it, or the schema isn't known | It could belong to more than one table. |
 | `= NULL` | Never true in SQL. Use `IS NULL`. |

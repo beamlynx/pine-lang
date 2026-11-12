@@ -1365,8 +1365,14 @@ edits as ed
 (deftest test-positional-parameters
   (testing "$1 becomes a variable named after the column it is compared with, with a line for its value on top"
     (is (= {:expression "$tenant_id =\n\nt\n | where: tenant_id in $tenant_id"
-            :warnings ["$1 is $tenant_id. Write each value after its `=` above the query: a string, a number, or a list like ('a', 'b') for `in`."]}
+            :warnings ["$1 is $tenant_id. Write each value after its `=` above the query: a string, a number, or a list like ('a', 'b') for `in`."]
+            :parameters [{:number "1" :name "tenant_id"}]}
            (t/sql->pine "select * from t where tenant_id = any($1)"))))
+
+  (testing "An array inside ANY or ALL is the list of an `in`"
+    (converts-to "select * from t where x = any(array['a', 'b'])" "t | where: x in ('a', 'b')")
+    (converts-to "select * from t where x <> all(ARRAY[1, 2])" "t | where: x not in (1, 2)")
+    (refuses "select * from t where x = any(array[y])" "An IN list in Pine holds strings and numbers only"))
 
   (testing "<> ALL is `not in`. One parameter used twice is one variable, named after its first column"
     (is (= "$b =\n$a =\n$c =\n\nt\n | where: a = $a\n | where: b > $b\n | where: c not in $c\n | where: d = $b"
