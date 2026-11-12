@@ -124,8 +124,12 @@
     :is-null {:op :is-null :negated (negated? node) :left (expr (first args)) :at (at node)}
     :in (let [[l & vs] (operands node)]
           {:op :in :negated (negated? node) :left l :values (vec vs) :at (at node)})
-    :in-any (let [[l v] (operands node)]
-              {:op :in-variable :negated (boolean (child node :ne-all)) :left l :value v :at (at node)})
+    :in-any (let [[l v] (operands node)
+                  negated (boolean (child node :ne-all))]
+              (if-let [array (child node :array)]
+                ;; `= ANY(ARRAY['a', 'b'])` is `IN ('a', 'b')`.
+                {:op :in :negated negated :left l :values (vec (operands array)) :at (at node)}
+                {:op :in-variable :negated negated :left l :value v :at (at node)}))
     :in-select {:op :in :negated (negated? node) :left (first (operands node))
                 :subquery (select-query (child node :select)) :at (at node)}
     :exists {:op :exists :subquery (select-query (or (child node :select) (child node :exists-select))) :at (at node)}

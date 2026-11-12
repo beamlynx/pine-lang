@@ -85,7 +85,9 @@ not           := <NOT> <ws?> not-expr
 (* Ordered first, so `= ANY($1)` isn't read as a call to a function any(). *)
 <comparison>  := in-any / (compare | like | is-null | is-distinct | in | in-select | between | exists | truthy | call-truthy)
 (* `x = ANY($ids)` is `x in $ids`, and `x <> ALL($ids)` is `x not in $ids`. *)
-in-any        := operand <ws?> (eq-any | ne-all) <ws?> <"("> <ws?> operand <ws?> <")">
+in-any        := operand <ws?> (eq-any | ne-all) <ws?> <"("> <ws?> (operand | array) <ws?> <")">
+(* `ARRAY['a', 'b']` inside ANY or ALL is the list of an `in`. *)
+array         := <ARRAY> <ws?> <"["> <ws?> operand (<ws?> <","> <ws?> operand)* <ws?> <"]">
 eq-any        := <"="> <ws?> <ANY>
 ne-all        := <("<>" | "!=")> <ws?> <ALL>
 (* A function or a count is compared too: in HAVING (`COUNT(1) > 1`), and
@@ -199,6 +201,7 @@ NOT     := #"(?i)not\b"
 IN      := #"(?i)in\b"
 ANY     := #"(?i)any\b"
 ALL     := #"(?i)all\b"
+ARRAY   := #"(?i)array\b"
 IS      := #"(?i)is\b"
 NULL    := #"(?i)null\b"
 LIKE    := #"(?i)like\b"

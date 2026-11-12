@@ -2444,11 +2444,14 @@
 
 (defn- with-values-block
   "The converted Pine with a values block for the parameters on top, one
-  line each with no value yet, and a warning saying where to write them."
+  line each with no value yet, and a warning saying where to write them.
+  :parameters says which number became which name, so a client holding
+  values by number, an agent's {\"1\": ...}, can pass them by name."
   [{:keys [expression] :as result} names]
   (if (and expression (seq names))
     (-> result
         (assoc :expression (str (s/join "\n" (map (fn [[_ n]] (str "$" n " =")) names)) "\n\n" expression))
+        (assoc :parameters (mapv (fn [[number n]] {:number number :name n}) names))
         (update :warnings conj
                 (str (s/join ", " (map (fn [[number n]] (str "$" number " is $" n)) names))
                      ". Write each value after its `=` above the query: a string, a number, or a list like ('a', 'b') for `in`.")))
