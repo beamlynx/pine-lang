@@ -9,6 +9,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - **SQL with `$1`, `$2` converts.** Each becomes a variable named after the column it is compared with, such as `$tenant_id`, with an empty line for its value above the query. `x = ANY($1)` becomes `x in $x`.
 
 ### Changed
+- **Column suggestions come from every table in the query.** In `select:`, `where:`, `order:`, after `per` and in `unnest:`, the current table's columns come first, then the other tables', nearest first. Each suggestion names its table's alias. Typing `u.` still lists only `u`'s columns. A column already in the list hides only itself, so `s: id, ` still offers the other tables' `id`. Tables before a `group:` or `limit: … per` aren't suggested.
 - **SQL converts with each join written as SQL has it.** Every side names its table, a join to two earlier tables converts instead of being refused, and a column = value or `IS NULL` condition in `ON` stays on the join, including on a `LEFT JOIN`.
 
 ## [0.56.0] - 2026-11-12

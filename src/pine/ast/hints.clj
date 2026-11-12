@@ -699,51 +699,63 @@
     (filter #(str/includes? (:column %) (:column column)) hints)
     hints))
 
-(defn exclude-columns [hints columns]
-  ;; A path into a JSON column (`data.plan`) doesn't use up the column:
-  ;; `data.region` can still follow.
-  (if-let [columns (seq (remove :path columns))]
-    (filter (fn [hint]
-              (not (some #(= (:column hint) (:column %)) columns)))
-            hints)
-    hints))
+(defn exclude-columns
+  "Leave out the hints for columns already listed. A column is its alias and
+  its name: `s: id, ` still offers `u.id`. Pine's own hidden columns (a
+  table's key, see table/added-column?) aren't listed by the user. A path
+  into a JSON column (`data.plan`) doesn't use up the column: `data.region`
+  can still follow."
+  [hints columns]
+  (let [taken (set (keep #(when-not (or (:path %) (table/added-column? %))
+                            [(:alias %) (:column %)])
+                         columns))]
+    (remove #(taken [(:alias %) (:column %)]) hints)))
 
-(defn- column-hint-sort-key [hint]
-  (let [c (:column hint)]
-    [(count c) (str/lower-case c)]))
+(defn- stage-aliases
+  "The aliases a column can come from here: the tables of the current
+  stage. A checkpoint (group:, `limit: … per`) seals the tables before it,
+  and they leave (:tables state). The current table comes first, then the
+  others, nearest in the pipe first."
+  [state]
+  (let [current (:current state)
+        others (->> (:tables state) (map :alias) reverse (remove #{current}) distinct)]
+    (if current (cons current others) others)))
 
-(defn- sort-column-hints [hints]
-  (vec (sort-by column-hint-sort-key hints)))
+(defn- stage-column-hints
+  "The columns of `typed-alias` when one was typed (`s: e.`), else of every
+  table in the stage, in stage-aliases order."
+  [state typed-alias]
+  (mapcat #(generate-all-column-hints state %)
+          (if typed-alias [typed-alias] (stage-aliases state))))
 
-(defn generate-where-hints [state]
-  ;; Where conditions need custom logic unlike order/select partials because:
-  ;; - Order partial: simple exclude-already-selected logic works with generic generate-column-hints
-  ;; - Where partial: complex state-dependent filtering based on partial completion:
-  ;;   * `where:` → show all columns
-  ;;   * `w: i` → filter to columns matching "i"
-  ;;   * `w: e.i` → filter to columns matching "i" from alias "e"
-  ;;   * `w: id =` → show all columns (ready for next condition)
-  (let [operation (state :operation)
-        where-data (get operation :value {})
-        partial-condition (:partial-condition where-data)
-        current-alias (state :current)
-        lookup-alias (or (and partial-condition (:alias partial-condition)) current-alias)]
-    (if (nil? partial-condition)
-      ;; No partial condition yet, show all columns
-      (generate-all-column-hints state current-alias)
-      ;; Has partial condition, filter based on it
-      (if (and (:column partial-condition) (not (contains? partial-condition :operator)))
-        ;; Just a column specified — use the condition's alias if present, else current
-        (find-relevant-columns
-         (generate-all-column-hints state lookup-alias)
-         partial-condition)
-        ;; Column + operator, show all columns for next condition
-        (generate-all-column-hints state current-alias)))))
+(defn- sort-column-hints
+  "Group the hints by table, in stage-aliases order, and sort each group by
+  the column's length, then its name. A client shows them in this order."
+  [state hints]
+  (let [rank (zipmap (stage-aliases state) (range))
+        last-rank (count rank)]
+    (vec (sort-by (fn [{:keys [alias column]}]
+                    [(get rank alias last-rank) (count column) (str/lower-case column)])
+                  hints))))
+
+(defn generate-where-hints
+  "The columns for a where: condition, from every table in the stage:
+  * `where:`, or after `id = 1 or ` → every column
+  * `w: i` → the columns matching \"i\"
+  * `w: e.i` → the columns of e matching \"i\""
+  [state]
+  (let [partial-condition (get-in state [:operation :value :partial-condition])
+        typing? (and (:column partial-condition) (not (contains? partial-condition :operator)))]
+    (if typing?
+      (find-relevant-columns (stage-column-hints state (:alias partial-condition)) partial-condition)
+      (stage-column-hints state nil))))
 
 (defn generate-update-hints [state]
   (let [assignments (get-in state [:update :assignments] [])
         partial-column (get-in state [:update :partial-column])
-        assigned-columns (map (fn [a] {:column (get-in a [:column :column])}) assignments)
+        lookup-alias (or (and partial-column (:alias partial-column)) (state :current))
+        ;; update! writes into one table: what's assigned is that table's.
+        assigned-columns (map (fn [a] {:column (get-in a [:column :column]) :alias lookup-alias}) assignments)
         lookup-alias (or (and partial-column (:alias partial-column)) (state :current))
         hints (-> (generate-all-column-hints state lookup-alias)
                   (exclude-columns assigned-columns))]
@@ -751,39 +763,25 @@
       (find-relevant-columns hints partial-column)
       hints)))
 
-(defn generate-column-hints [state columns]
-  ;; Generic column hints logic that works for most operations:
-  ;; - Complete operations (select, order): filter hints to match the column being typed, using its alias
-  ;; - Partial operations (select-partial, order-partial): exclude already-selected columns,
-  ;;   defaulting to the current context table so the next slot shows relevant columns
-  ;; - Note: where-partial needs custom logic (see generate-where-hints)
-  (let [column (some-> columns reverse first)
-        type (-> state :operation :type)
-        ;; For partial ops, always use the current context table — the user hasn't started typing
-        ;; the next column yet, so the last completed column's alias is irrelevant.
-        ;; For complete ops, use the typed column's alias when it was added in the current scope.
-        a (if (#{:select-partial :order-partial :limit-partial} type)
-            (or (get-in state [:operation :partial-alias :alias]) (state :current))
-            (if (and (seq column)
-                     (column :operation-index)
-                     (> (column :operation-index) (state :current-index)))
-              (column :alias)
-              (state :current)))
-        hints (generate-all-column-hints state a)]
+(defn generate-column-hints
+  "The columns for a list of them: select:, order: and the columns after
+  `per`. `listed` is what the list holds so far.
+  * While a column is being typed (`s: id, em`), the columns matching it.
+  * In an empty slot (`s: id, `), the columns not listed yet.
+  Both come from every table in the stage, or from the alias typed before
+  the column (`s: e.em`, `s: e.`)."
+  [state listed]
+  (let [{:keys [type value per partial-alias]} (:operation state)
+        typing (case type
+                 (:select :order) (last value)
+                 :limit (last per)
+                 nil)
+        hints (stage-column-hints state (:alias (or typing partial-alias)))]
     (cond
       ;; A computed column is complete: nothing is being typed.
-      (and (= :select type) (:computed column))
-      []
-
-      ;; If the type is :select, :order, or :where and columns exist, filter hints using the columns
-      (and (#{:select :order :where :limit} type) column)
-      (find-relevant-columns hints column)
-
-      ;; If the type is :select-partial, :order-partial, or :where-partial and columns exist
-      (and (#{:select-partial :order-partial :where-partial :limit-partial} type) columns)
-      (exclude-columns hints (filter #(= (:alias %) a) columns))
-
-      ;; Otherwise, return all hints
+      (and (= :select type) (:computed typing)) []
+      typing (find-relevant-columns hints typing)
+      (#{:select-partial :order-partial :limit-partial} type) (exclude-columns hints listed)
       :else hints)))
 
 (defn- computed-hints
@@ -813,20 +811,20 @@
            []))))
 
 (defn- generate-unnest-hints
-  "The columns `unnest:` can read: the JSON columns of the table the pipe is
-  on, or of the alias typed, `unnest: a.`. SQLite has no JSON type and keeps
-  JSON in text, so there its text columns are offered too (see
-  path/may-hold-json?). A table with none gets none, and the canvas leaves
-  `unnest` out of its menu.
+  "The columns `unnest:` can read: the JSON columns of every table in the
+  stage, or of the alias typed, `unnest: a.`. SQLite has no JSON type and
+  keeps JSON in text, so there its text columns are offered too (see
+  path/may-hold-json?). When no table has one there are none, and the
+  canvas leaves `unnest` out of its menu.
   While `unnest: da` is typed, the columns matching `da`. Keys inside a
   column aren't in the schema, so a path gets none."
   [state]
   (let [{:keys [type value partial-alias]} (:operation state)
         typed (if (= :elements type) value partial-alias)
-        a (or (:alias typed) (:current state))]
-    (if (or (seq (:path typed)) (not (contains? (:aliases state) a)))
+        a (:alias typed)]
+    (if (or (seq (:path typed)) (and a (not (contains? (:aliases state) a))))
       []
-      (let [hints (filter #(path/may-hold-json? state a (:column %)) (generate-all-column-hints state a))]
+      (let [hints (filter #(path/may-hold-json? state (:alias %) (:column %)) (stage-column-hints state a))]
         (cond-> hints
           (seq (:column typed)) (find-relevant-columns typed))))))
 
@@ -858,7 +856,7 @@
 
        (#{:elements :unnest-partial} op-type)
        ;; Its own key: picking one completes the column alone, not `col, `.
-       (assoc-in state [:hints :unnest] (if json-path? [] (sort-column-hints (generate-unnest-hints state-for-hints))))
+       (assoc-in state [:hints :unnest] (if json-path? [] (sort-column-hints state-for-hints (generate-unnest-hints state-for-hints))))
 
        :else
        (let [hints (case (if json-path? :json-path op-type)
@@ -869,7 +867,7 @@
                      :order-partial (generate-column-hints state-for-hints (state-for-hints :order))
                      :order (generate-column-hints state-for-hints (state-for-hints :order))
                      :where-partial (generate-where-hints state-for-hints)
-                     :where (generate-all-column-hints state-for-hints)
+                     :where (stage-column-hints state-for-hints nil)
                      :update-partial (generate-update-hints state-for-hints)
                      ;; The columns after `per`. A plain limit: has none.
                      :limit (when (seq (get-in state-for-hints [:operation :per]))
@@ -885,7 +883,7 @@
              hints (if (#{:select :select-partial :order :order-partial
                           :where :where-partial :update-partial :limit :limit-partial}
                         op-type)
-                     (sort-column-hints hints)
+                     (sort-column-hints state-for-hints hints)
                      hints)
              hint-key (case op-type
                         :select-partial :select

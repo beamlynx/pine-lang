@@ -115,12 +115,28 @@
     (is (= [{:column "id" :alias "c_0"} {:column "created_at" :alias "c_0"}] (->  "x.company  | s:"                      gen :select)))
     (is (= ["id" "company_id" "reports_to"]                                 (->> "y.employee | s:"                      gen :select (map :column))))
     (is (= ["reports_to"]                                                    (->> "y.employee | s: id, company_id,"      gen :select (map :column))))
-    (is (= ["id" "company_id" "reports_to"]                                 (->> "company | s: id | employee | s: "     gen :select (map :column))))
-    (is (= ["company_id" "reports_to"]                                      (->> "company | s: id | employee | s: id, " gen :select (map :column))))
+    ;; Every table in the stage: the current one (employee) first, then
+    ;; company, without company's id, which is already selected.
+    (is (= ["e_1.id" "e_1.company_id" "e_1.reports_to" "c_0.created_at"]
+           (->> "company | s: id | employee | s: " gen :select (map #(str (:alias %) "." (:column %))))))
+    ;; `id` in employee's select is employee's id: company's id was selected too.
+    (is (= ["e_1.company_id" "e_1.reports_to" "c_0.created_at"]
+           (->> "company | s: id | employee | s: id, " gen :select (map #(str (:alias %) "." (:column %))))))
 
-    ;; Cross-table: after selecting from company, next slot defaults to current context (employee)
-    (is (= ["id" "company_id" "reports_to"]
-           (->> "x.company as c | y.employee as e | s: c.id,"  gen :select (map :column))))
+    ;; A column is its alias and its name: selecting c.id leaves e.id
+    (is (= ["e.id" "e.company_id" "e.reports_to" "c.created_at"]
+           (->> "x.company as c | y.employee as e | s: c.id,"  gen :select (map #(str (:alias %) "." (:column %))))))
+
+    ;; The current table first, then the others nearest in the pipe first
+    (is (= ["d" "e" "c"]
+           (->> "x.company as c | y.employee as e | z.document as d | s: " gen :select (map :alias) distinct)))
+    ;; from: makes an earlier table the current one
+    (is (= ["c" "d" "e"]
+           (->> "x.company as c | y.employee as e | z.document as d | from: c | s: " gen :select (map :alias) distinct)))
+
+    ;; Typing a name narrows every table's columns to the ones matching it
+    (is (= ["e.id" "e.company_id" "c.id"]
+           (->> "x.company as c | y.employee as e | s: id" gen :select (map #(str (:alias %) "." (:column %))))))
 
     ;; Alias-dot partial: s: e. should show all columns for alias e
     (is (= ["id" "company_id" "reports_to"]
@@ -219,8 +235,9 @@
     (is (= [{:column "id" :alias "c_0"}]
            (-> (gen "company | s: id | employee | s: " {:line 0 :character 14}) :select)))
 
-    ;; Cursor at "company | s: id | employee | s:" should show all columns
-    (is (= ["id" "company_id" "reports_to"]
+    ;; Cursor at "company | s: id | employee | s:" shows every table's
+    ;; columns but company's id, which is selected
+    (is (= ["id" "company_id" "reports_to" "created_at"]
            (->> (gen "company | s: id | employee | s: id, " {:line 0 :character 31})
                 :select
                 (map :column))))
@@ -238,7 +255,7 @@
            (-> (gen "company | s: id" {:line 0 :character 14}) :select)))
 
     ;; Edge case: cursor at end should behave like no cursor
-    (is (= ["id" "company_id" "reports_to"]
+    (is (= ["id" "company_id" "reports_to" "created_at"]
            (->> (gen "company | s: id | employee | s: " {:line 0 :character 100})
                 :select
                 (map :column)))))
@@ -557,3 +574,35 @@
       (is (contains? (tables "comp") "company"))
       (is (contains? (tables "Comp") "company"))
       (is (contains? (tables "COMP") "company")))))
+
+(deftest test-column-hints-from-every-table
+  (let [cols (fn [hints] (map #(str (:alias %) "." (:column %)) hints))]
+    (testing "where: offers every table's columns, the current table first"
+      (is (= ["e.id" "e.company_id" "e.reports_to" "c.id" "c.created_at"]
+             (-> "x.company as c | y.employee as e | w: " gen :where cols)))
+      (is (= ["e.id" "e.company_id" "c.id"]
+             (-> "x.company as c | y.employee as e | w: id" gen :where cols)))
+      (is (= ["c.id"]
+             (-> "x.company as c | y.employee as e | w: c.i" gen :where cols)))
+      (is (= ["e.id" "e.company_id" "e.reports_to" "c.id" "c.created_at"]
+             (-> "x.company as c | y.employee as e | w: id = 1 or " gen :where cols))))
+
+    (testing "order: leaves out a column by its table, not its name"
+      (is (= ["e.company_id" "e.reports_to" "c.id" "c.created_at"]
+             (-> "x.company as c | y.employee as e | o: e.id, " gen :order cols))))
+
+    (testing "the columns after `per` come from every table"
+      (is (= ["e.id" "e.company_id" "e.reports_to" "c.created_at"]
+             (-> "x.company as c | y.employee as e | l: 3 per c.id, " gen :select cols))))
+
+    (testing "unnest: offers every table's JSON columns"
+      (is (= ["p.config" "cu.data"]
+             (-> "customer as cu | product as p | unnest: " gen :unnest cols)))
+      (is (= ["cu.data"]
+             (-> "customer as cu | product as p | unnest: cu." gen :unnest cols)))
+      (is (= ["cu.data"]
+             (-> "customer as cu | product as p | unnest: da" gen :unnest cols))))
+
+    (testing "tables a checkpoint sealed aren't offered"
+      (is (= ["c_1" "result_1"]
+             (->> "company as c | employee .company_id | l: 10 | company | s: " gen :select (map :alias) distinct))))))
