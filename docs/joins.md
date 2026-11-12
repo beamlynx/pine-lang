@@ -17,6 +17,8 @@ table_a | table_b .hint_col
 table_a | table_b .hint_col, .hint_col
 table_a | table_b .left_col = .right_col
 table_a | table_b .left_col = .right_col, .left_col = .right_col
+table_a as a | table_b as b b.left_col = a.right_col
+table_a | table_b .left_col = .right_col, .status = 'active'
 table_a | table_b .left_col = .json_col.key[*].key
 table_a | table_b :parent
 table_a | table_b :left
@@ -28,6 +30,10 @@ table_a | table_b :left
   [Naming a relation](#naming-a-relation).
 - **`.col1 = .col2`** — override both sides explicitly; bypasses the reference map entirely. Several
   pairs, comma-separated, for a join on more than one column.
+- **`b.col1 = a.col2`** — each side names its table, so a pair can compare with any table before it.
+  See [Naming each side's table](#naming-each-sides-table).
+- **`.col = 'value'`** — a condition kept on the join. On a `:left` join this keeps rows that the same
+  test in `where:` would drop. See [Conditions on a join](#conditions-on-a-join).
 - **`.col = .json_col[*].key`** — join on the values inside a JSON array. See
   [Joining on values in a JSON array](#joining-on-values-in-a-json-array).
 - **A name given with `as`** — `s: resourceId as company_id | company` joins `company` on that column. See
@@ -91,6 +97,60 @@ employee | document .company_id = .id
 ```
 
 Bypasses the reference map. `company_id` is on `document` (right table); `id` is on `employee` (left table).
+
+### Naming each side's table
+
+Either side of a pair can name its table's alias. Then a pair can compare with any table before it,
+not only the one just before:
+
+```
+attribute_values as av
+ | company as c c.id = av.company_id
+ | field_definition as fd fd.id = av.attributeId, fd.tenant_id = c.tenantId
+```
+
+```sql
+JOIN "field_definition" AS "fd"
+  ON "av"."attributeId" = "fd"."id" AND "c"."tenantId" = "fd"."tenant_id"
+```
+
+Which table a side is:
+
+- **A side with an alias** is that table.
+- **A bare side** keeps the rule from [Explicit columns](#explicit-columns): written first, it is the
+  table being joined; written second, the table before it. This holds whatever the other side says.
+  So in `fd .tenant_id = c.tenantId`, `.tenant_id` is `fd`'s. In `fd c.tenantId = .tenant_id`, it is
+  the table before `fd`'s, and the pair is an error.
+
+Each pair has to compare a column of the table being joined with a column of an earlier table. A
+pair between two earlier tables is an error, and its message says which table each side was read as.
+A condition on earlier tables belongs in `where:`. An alias that isn't in the query yet is an error
+too.
+
+After a checkpoint, an alias it sealed is read through the checkpoint, as in `where:`.
+
+The join is drawn to the table of its first pair, so `from:` isn't needed to join to an earlier table.
+
+### Conditions on a join
+
+A pair can compare a column with a string, a number, `true` or `false`. The condition stays in the
+join's `ON`, as SQL has it:
+
+```
+customer as c | purchase as p :left p.customer_id = c.id, p.status = 'paid'
+```
+
+```sql
+LEFT JOIN "purchase" AS "p" ON "c"."id" = "p"."customer_id" AND "p"."status" = ?
+```
+
+This keeps every customer, and attaches only paid purchases. With `where: p.status = 'paid'` instead,
+customers without a paid purchase disappear, because their `status` is NULL. For an inner join the
+two mean the same.
+
+A bare column is the table being joined, and a column with an alias is that table. The value is
+compared as `where:` compares it. A condition can also follow a join Pine finds itself:
+`company | employee .type = 'staff'`. Only `=` is supported, and `[*]` can't be used.
 
 ### Joining on values in a JSON array
 

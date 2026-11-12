@@ -30,35 +30,78 @@
 ;; FROM
 ;; ----
 
-(declare json-step)
+(declare json-step parse-condition)
 
 (defn- join-side
-  "[column path] for one side of an explicit pair. The path is nil without
-  steps; `[*]` is the step :*."
-  [[_ [_ column] & steps]]
-  [column (when (seq steps) (mapv json-step steps))])
+  "[column path cast alias] for one side of an explicit pair. The path is
+  nil without steps; `[*]` is the step :*. The alias is nil for a bare
+  `.column`. The cast is filled in by explicit-pair."
+  [[_ & children]]
+  (let [[alias [[_ column] & steps]] (if (= :alias (ffirst children))
+                                       [(-> children first second second) (rest children)]
+                                       [nil children])]
+    [column (when (seq steps) (mapv json-step steps)) nil alias]))
+
+(defn- join-constant
+  "A join pair whose second side is a value, `.type = 'entity'`, as a
+  condition: what where: would parse from `type = 'entity'`. pine.ast.table
+  resolves it as where: does."
+  [[_ & side] cast [_ value]]
+  (when (some #(= :json-any (first %)) side)
+    (throw (ex-info "A join on a value can't use [*]. Compare one key, like `.data.status = 'active'`." {})))
+  (:value (parse-condition (cond-> [:condition (into [:column] side) [:equals] value]
+                             cast (conj [:cast cast])))))
 
 (defn- explicit-pair
   "One `.right = .left` pair, {:left :right}, with :right-cast or :left-cast
   for a cast after either column: `.resourceableId = .id ::text`, and
-  :right-path or :left-path for a path into a JSON value: `.officers[*].id`."
+  :right-path or :left-path for a path into a JSON value: `.officers[*].id`.
+  A side that names its table has :right-alias or :left-alias:
+  `fd.tenant_id = c.tenantId`. Which table a bare side is, pine.ast.table
+  decides.
+
+  A pair with a value on its second side, `.type = 'entity'`, is
+  {:condition}, a where: condition kept on the join."
   [[tag & children :as pair]]
   (when-not (= :explicit-pair tag)
     (throw (ex-info "Unknown explicit join columns" {:_ pair})))
-  (let [[[right-col right-path right-cast] [left-col left-path left-cast]]
-        (reduce (fn [acc [t x :as node]]
-                  (case t
-                    :join-side (conj acc (conj (join-side node) nil))
-                    :cast (update acc (dec (count acc)) assoc 2 x)))
-                []
-                children)]
-    (cond-> {:left left-col :right right-col}
-      right-cast (assoc :right-cast right-cast)
-      left-cast (assoc :left-cast left-cast)
-      right-path (assoc :right-path right-path)
-      left-path (assoc :left-path left-path))))
+  (if-let [value (some #(when (= :join-value (first %)) %) children)]
+    {:condition (join-constant (first children) (some #(when (= :cast (first %)) (second %)) children) value)}
+    (let [[[right-col right-path right-cast right-alias] [left-col left-path left-cast left-alias]]
+          (reduce (fn [acc [t x :as node]]
+                    (case t
+                      :join-side (conj acc (join-side node))
+                      :cast (update acc (dec (count acc)) assoc 2 x)))
+                  []
+                  children)]
+      (cond-> {:left left-col :right right-col}
+        right-cast (assoc :right-cast right-cast)
+        left-cast (assoc :left-cast left-cast)
+        right-path (assoc :right-path right-path)
+        left-path (assoc :left-path left-path)
+        right-alias (assoc :right-alias right-alias)
+        left-alias (assoc :left-alias left-alias)))))
+
+(defn- operation-without-colon
+  "Throws for `where u.status = 'active'`: an operation's name missing its
+  colon, which reads as a table called `where` joined on a condition. A
+  real table of that name is joined the same way without the mistake, so
+  only names that are never tables in practice are refused. `order` and
+  `group` are real table names."
+  [{:keys [schema table join-column-pairs join-conditions] :as t}]
+  (when (and (nil? schema)
+             (#{"select" "where" "limit" "from"} (s/lower-case table))
+             (or (seq join-conditions)
+                 (some #(or (:left-alias %) (:right-alias %)) join-column-pairs)))
+    (throw (ex-info (str "`" table "` needs a colon: `" (s/lower-case table) ":`.") {})))
+  t)
+
+(declare make-table*)
 
 (defn- make-table [table-info modifiers]
+  (operation-without-colon (make-table* table-info modifiers)))
+
+(defn- make-table* [table-info modifiers]
   (reduce (fn [acc modifier]
             (match modifier
               ;; Direction modifiers
@@ -76,9 +119,12 @@
               ;; In "a | b .a_id = .id", the first column of a pair is from the
               ;; right table (b.a_id) and the second from the left (a.id), so
               ;; each pair is stored the other way round from how it is typed.
+              ;; A pair with a value, `.type = 'entity'`, is a condition of
+              ;; the join, kept apart so the pairs stay column = column.
               [:table-mod [:hint-columns [:explicit-columns & pairs]]]
-              (assoc acc :join-column-pairs
-                     (mapv explicit-pair pairs))
+              (let [parsed (map explicit-pair pairs)]
+                (cond-> (assoc acc :join-column-pairs (vec (remove :condition parsed)))
+                  (some :condition parsed) (assoc :join-conditions (vec (keep :condition parsed)))))
 
               ;; Hint column modifier: one or more columns naming which
               ;; relation is meant. They identify it rather than specify it -
@@ -979,7 +1025,14 @@
 
       (and word (some #{(s/lower-case word)} ["select" "where" "limit" "from" "order" "group"])
            (re-find #"^\s*[^:\s|]" after))
-      (str "`" word "` needs a colon: `" (s/lower-case word) ":`."))))
+      (str "`" word "` needs a colon: `" (s/lower-case word) ":`.")
+
+      ;; `where id = 1` reads as a table `where` and a join, `id.x = ...`,
+      ;; so the parse fails later than the missing colon.
+      :else
+      (when-let [[_ op] (re-find #"(?i)^\s*(select|where|limit|from|order|group)\s+[^:\s|]"
+                                 (last (s/split before #"\|" -1)))]
+        (str "`" op "` needs a colon: `" (s/lower-case op) ":`.")))))
 
 (defn- expected-item
   "One thing the grammar would have accepted, as a reader would name it, or

@@ -96,7 +96,24 @@
            (p "user .id = .user_id :left")))
 
     (is (= [{:type :table, :value {:table "user" :join "RIGHT" :join-column-pairs [{:left "user_id" :right "id"}]}}]
-           (p "user .id = .user_id :right"))))
+           (p "user .id = .user_id :right")))
+
+    ;; A side may name its table. Which table a bare side is, the AST decides.
+    (is (= [{:type :table, :value {:table "fd" :join-column-pairs [{:right "id" :right-alias "fd" :left "attributeId" :left-alias "av"}
+                                                                   {:right "tenant_id" :left "tenantId" :left-alias "c"}]}}]
+           (p "fd fd.id = av.attributeId, .tenant_id = c.tenantId")))
+    (is (= [{:type :table, :value {:table "t" :join-column-pairs [{:right "id" :left "x" :left-alias "a" :left-cast "text"}]}}]
+           (p "t .id = a.x ::text")))
+
+    ;; A value on the second side is a condition of the join, parsed as
+    ;; where: parses it.
+    (is (= [{:type :table, :value {:table "c" :join "LEFT"
+                                   :join-column-pairs [{:right "id" :left "company_id"}]
+                                   :join-conditions [[(dt/column "type") "=" (dt/string "entity")]
+                                                     [(dt/aliased-column "c" "n") "=" (dt/number "3")]]}}]
+           (p "c :left .id = .company_id, .type = 'entity', c.n = 3")))
+    (is (= [{:type :table, :value {:table "c" :join-column-pairs [] :join-conditions [[(dt/column "live") "=" (dt/pine-symbol "true")]]}}]
+           (p "c .live = true"))))
 
   (testing "Parse `from` expressions"
     (is (= [{:type :from, :value {:alias "u"}}] (p "from: u"))))
@@ -764,6 +781,10 @@
       (is (not (re-find #"Pine docs" (error "user ? document"))) "no operation, no topic"))
     (is (re-find #"^`\?` follows a pipe: `user \| \? document`\." (error "user ? document")))
     (is (re-find #"^`where` needs a colon" (error "user | where id = 1")))
+    ;; These read as a table called `where` joined on a condition.
+    (is (thrown-with-msg? Exception #"^`where` needs a colon: `where:`" (p "user as u | where u.status = 'active'")))
+    (is (thrown-with-msg? Exception #"^`where` needs a colon" (p "user | where .status = 'active'")))
+    (is (thrown-with-msg? Exception #"^`select` needs a colon" (p "user | select u.id = .x")))
     (is (re-find #"^A string is missing its closing quote" (error "user | where: name = 'abc")))
     (is (re-find #"^Join conditions in one where: with `or`" (error "user | where: a = 1, b = 2")))
     (is (re-find #"^Join conditions in one where: with `or`" (error "user | where: a = 1 and b = 2")))

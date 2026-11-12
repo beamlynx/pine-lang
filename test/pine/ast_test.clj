@@ -292,7 +292,19 @@
     (is (= [{:from "c_0" :to "e_1" :parent "from"
              :columns [{:from "id" :to "company_id"}]
              :resolution "manual" :cast nil :type "RIGHT"}]
-           (generate :joins "company | employee .company_id = .id :right"))))
+           (generate :joins "company | employee .company_id = .id :right")))
+
+    ;; The join is to the table of its first pair. A pair with another
+    ;; earlier table keeps that table as :from-alias.
+    (is (= [{:from "a" :to "b" :parent "from" :columns [{:from "id" :to "a_id"}] :resolution "manual" :cast nil :type nil}
+            {:from "b" :to "c" :parent "from"
+             :columns [{:from "id" :to "b_id"} {:from "tenant_id" :to "tenant_id" :from-alias "a"}]
+             :resolution "manual" :cast nil :type nil}]
+           (generate :joins "a as a | b as b .a_id = .id | c as c c.b_id = b.id, .tenant_id = a.tenant_id")))
+
+    ;; Conditions on a join are resolved as where: resolves them.
+    (is (= [{:alias "e_1" :column "type" :cast nil :operator "=" :value (dt/string "x")}]
+           (-> (generate :joins "company | employee :left .type = 'x'") first :conditions))))
 
   (testing "Generate ast for `count`"
     (is (= {:column "*"} (generate :count "company | count:"))))

@@ -283,6 +283,55 @@
             :params nil}
            (generate "a | b .a_id = .id | c .b_id = .id"))))
 
+  (testing "Join sides that name their table"
+    (let [two-tables "SELECT \"b\".* FROM \"a\" AS \"a\" JOIN \"b\" AS \"b\" ON \"a\".\"id\" = \"b\".\"a_id\" LIMIT 250"]
+      ;; Named sides in either order. A bare side keeps its place's
+      ;; meaning: first, the table being added; second, the table before.
+      (is (= two-tables (:query (generate "a as a | b as b b.a_id = a.id"))))
+      (is (= two-tables (:query (generate "a as a | b as b a.id = b.a_id"))))
+      (is (= two-tables (:query (generate "a as a | b as b .a_id = a.id"))))
+      (is (= two-tables (:query (generate "a as a | b as b b.a_id = .id")))))
+    (is (thrown-with-msg? Exception #"compares a.id with a.a_id\. It must compare a column of `b`.*written second is `a`'s"
+                          (generate "a as a | b as b a.id = .a_id")))
+
+    ;; A pair may compare with a table before the one before.
+    (is (= {:query "SELECT \"c\".* FROM \"a\" AS \"a\" JOIN \"b\" AS \"b\" ON \"a\".\"id\" = \"b\".\"a_id\" JOIN \"c\" AS \"c\" ON \"b\".\"id\" = \"c\".\"b_id\" AND \"a\".\"tenant_id\" = \"c\".\"tenant_id\" LIMIT 250"
+            :params nil}
+           (generate "a as a | b as b .a_id = .id | c as c .b_id = b.id, .tenant_id = a.tenant_id")))
+
+    ;; The join is to the table its first pair names, without from:.
+    (is (= {:query "SELECT \"c\".* FROM \"a\" AS \"a\" JOIN \"b\" AS \"b\" ON \"a\".\"id\" = \"b\".\"a_id\" JOIN \"c\" AS \"c\" ON \"a\".\"id\" = \"c\".\"a_id\" LIMIT 250"
+            :params nil}
+           (generate "a as a | b as b .a_id = .id | c as c .a_id = a.id")))
+
+    (is (thrown-with-msg? Exception #"`x` in the join `c.a_id = x.id` isn't a table of this query"
+                          (generate "a as a | b as b .a_id = .id | c as c c.a_id = x.id")))
+    (is (thrown-with-msg? Exception #"must compare a column of `c`, the table being joined.*goes in where:"
+                          (generate "a as a | b as b .a_id = .id | c as c a.id = b.a_id")))
+    (is (thrown-with-msg? Exception #"compares c.x with c.y\. It must compare a column of `c`"
+                          (generate "a as a | b as b .a_id = .id | c as c c.x = c.y")))
+    ;; A table a checkpoint sealed is read through the checkpoint, as in where:.
+    (is (= "WITH \"result_1\" AS ( SELECT \"c\".\"id\", COUNT(1) AS \"count\" FROM \"company\" AS \"c\" JOIN \"employee\" AS \"e_1\" ON \"c\".\"id\" = \"e_1\".\"company_id\" GROUP BY \"c\".\"id\" ) SELECT \"result_1\".\"id\", \"d_1\".\"id\" AS \"__d_1__id\", \"d_1\".* FROM \"result_1\" AS \"result_1\" JOIN \"document\" AS \"d_1\" ON \"result_1\".\"id\" = \"d_1\".\"company_id\" LIMIT 250"
+           (:query (generate "company as c | employee .company_id | group: c.id | s: c.id | document .company_id = c.id")))))
+
+  (testing "Conditions on a join"
+    ;; A value stays in the ON, so a left join keeps rows where: would drop.
+    (is (= {:query "SELECT \"b_1\".* FROM \"a\" AS \"a_0\" LEFT JOIN \"b\" AS \"b_1\" ON \"a_0\".\"id\" = \"b_1\".\"a_id\" AND \"b_1\".\"status\" = ? LIMIT 250"
+            :params [(dt/string "paid")]}
+           (generate "a | b :left .a_id = .id, .status = 'paid'")))
+    (is (= "SELECT \"b_1\".* FROM \"a\" AS \"a_0\" JOIN \"b\" AS \"b_1\" ON \"a_0\".\"id\" = \"b_1\".\"a_id\" AND \"b_1\".\"n\" = ? AND \"b_1\".\"live\" = true LIMIT 250"
+           (:query (generate "a | b .a_id = .id, .n = 3, .live = true"))))
+    ;; On an earlier table.
+    (is (= {:query "SELECT \"b\".* FROM \"a\" AS \"a\" JOIN \"b\" AS \"b\" ON \"a\".\"id\" = \"b\".\"a_id\" AND \"a\".\"type\" = ? LIMIT 250"
+            :params [(dt/string "entity")]}
+           (generate "a as a | b as b .a_id = .id, a.type = 'entity'")))
+    ;; With a join Pine finds itself.
+    (is (= {:query "SELECT \"c_0\".\"id\" AS \"__c_0__id\", \"e_1\".\"id\" AS \"__e_1__id\", \"e_1\".* FROM \"company\" AS \"c_0\" JOIN \"employee\" AS \"e_1\" ON \"c_0\".\"id\" = \"e_1\".\"company_id\" AND \"e_1\".\"type\" = ? LIMIT 250"
+            :params [(dt/string "x")]}
+           (generate "company | employee .type = 'x'")))
+    (is (thrown-with-msg? Exception #"A join on a value can't use \[\*\]"
+                          (generate "a | b .a_id = .id, .data[*].k = 'x'"))))
+
   (testing "Joins with a context"
     (is (= {:query "SELECT \"c\".\"id\" AS \"__c__id\", \"e_1\".\"id\" AS \"__e_1__id\", \"d_2\".\"id\" AS \"__d_2__id\", \"d_2\".* FROM \"x\".\"company\" AS \"c\" JOIN \"y\".\"employee\" AS \"e_1\" ON \"c\".\"id\" = \"e_1\".\"company_id\" JOIN \"z\".\"document\" AS \"d_2\" ON \"c\".\"id\" = \"d_2\".\"company_id\" LIMIT 250",
             :params nil}

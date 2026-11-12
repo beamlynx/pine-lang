@@ -347,33 +347,41 @@
         [(str holder " @> jsonb_build_array(" element ")")
          (concat holder-params (json-path-params after))]))))
 
+(declare render-condition)
+
 (defn- build-on-clause
   "The ON condition of one join, as [sql params]: every column pair the
   relation carries, ANDed together. A key made of several columns is simply
   a longer list here - this does not care how many there are.
 
   An unresolved join (nothing connects the two tables, so :columns is
-  empty) never gets here: build-join-clause rejects it first."
-  [{:keys [from to columns cast]}]
+  empty) never gets here: build-join-clause rejects it first.
+
+  A pair with :from-alias compares with that table instead of the join's
+  :from: `fd .id = av.attributeId, .tenant_id = c.tenantId`. Conditions
+  written on the join, `.type = 'entity'`, come after the pairs."
+  [{join-from :from :keys [to columns cast conditions]}]
   (when (seq columns)
-    (let [conditions (map (fn [{from-column :from to-column :to :keys [from-cast to-cast from-path to-path from-value-path]}]
+    (let [pairs (map (fn [{from-column :from to-column :to :keys [from-alias from-cast to-cast from-path to-path from-value-path]}]
                             ;; A cast written on one side of an explicit
                             ;; pair, `.resourceableId = .id ::text`, is
                             ;; that side's alone.
-                            (let [from-ref (join-column-ref (or from-cast cast) from from-column)
-                                  to-ref (join-column-ref (or to-cast cast) to to-column)]
-                              (cond
+                       (let [from (or from-alias join-from)
+                             from-ref (join-column-ref (or from-cast cast) from from-column)
+                             to-ref (join-column-ref (or to-cast cast) to to-column)]
+                         (cond
                                 ;; A join from a name given with `as` to a
                                 ;; key inside JSON, or an element: the
                                 ;; value's text. Postgres compares text with
                                 ;; text only, so `id` is cast there.
-                                from-value-path
-                                (let [[x ps] (json-extract :text (q from from-column) from-value-path)]
-                                  [(str x " = " (if (= *dialect* :postgres) (render-cast to-ref "text") to-ref)) ps])
-                                from-path (json-element-join (q from from-column) from-path to-ref)
-                                to-path (json-element-join (q to to-column) to-path from-ref)
-                                :else [(str from-ref " = " to-ref) []])))
-                          columns)]
+                           from-value-path
+                           (let [[x ps] (json-extract :text (q from from-column) from-value-path)]
+                             [(str x " = " (if (= *dialect* :postgres) (render-cast to-ref "text") to-ref)) ps])
+                           from-path (json-element-join (q from from-column) from-path to-ref)
+                           to-path (json-element-join (q to to-column) to-path from-ref)
+                           :else [(str from-ref " = " to-ref) []])))
+                     columns)
+          conditions (concat pairs (map render-condition conditions))]
       [(str " ON " (s/join " AND " (map first conditions)))
        (mapcat second conditions)])))
 

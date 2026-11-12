@@ -154,8 +154,15 @@ explicit-columns   := explicit-pair (<","> <ws*> explicit-pair)*
 (* A cast on either side: `.resourceableId = .id ::text`. Either side may
    be a path into a JSON array, `.id = .officers[*].id`: the row joins each
    element that holds its value. See docs/joins.md. *)
-explicit-pair      := join-side (<ws*> cast)? <ws*> <"="> <ws*> join-side (<ws*> cast)?
-join-side          := <"."> symbol (json-step | json-any)*
+(* A side may name its table's alias, `fd.id = av.attributeId`, so a join
+   can compare with any table before it. A bare side is the table being
+   added, except in a pair of two bare sides, where the second is the table
+   before it. The second side may instead be a value, `.type = 'entity'`,
+   which keeps the condition on the join: for a :left join it means
+   something else in where:. See docs/joins.md. *)
+explicit-pair      := join-side (<ws*> cast)? <ws*> <"="> <ws*> (join-side (<ws*> cast)? | join-value)
+join-side          := (alias | <"">) <"."> symbol (json-step | json-any)*
+join-value         := string | number | boolean
 json-any           := <"[*]">
 
 columns            := column (<","> <ws*> column)*

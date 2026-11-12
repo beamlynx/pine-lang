@@ -483,9 +483,15 @@
 (defn- join-pairs
   "[[alias column] [alias column]] for every pair of columns a join
   compares. A pair's :from column is the :from alias's, whichever table is
-  the parent."
+  the parent, or its own :from-alias's: `.tenant_id = c.tenantId`."
   [{:keys [from to columns]}]
-  (map (fn [pair] [[from (:from pair)] [to (:to pair)]]) columns))
+  (map (fn [pair] [[(or (:from-alias pair) from) (:from pair)] [to (:to pair)]]) columns))
+
+(defn- join-conditions
+  "The conditions written on joins, `.status = 'paid'`. They compare a
+  column with a value, as where: does, so they are checked as where:'s are."
+  [joins]
+  (mapcat :conditions joins))
 
 (defn- table-name [{:keys [table schema]}]
   (if schema (str schema "." table) table))
@@ -551,7 +557,7 @@
   value. Postgres's error for a value that isn't a uuid prints the value:
   `invalid input syntax for type uuid: \"...\"`."
   [{:keys [where joins group order limit-per]} current]
-  (let [conditions (mapcat #(if-let [cs (:or %)] cs [%]) where)
+  (let [conditions (concat (mapcat #(if-let [cs (:or %)] cs [%]) where) (join-conditions joins))
         computed-nodes (->> (concat conditions group order (:columns limit-per))
                             (tree-seq coll? seq)
                             (filter #(and (map? %) (:kind %) (= "uuid" (:cast %)))))]
@@ -561,7 +567,7 @@
      (mapcat (fn [{:keys [from to columns]}]
                (mapcat (fn [pair]
                          (cond-> []
-                           (= "uuid" (:from-cast pair)) (conj [from (:from pair)])
+                           (= "uuid" (:from-cast pair)) (conj [(or (:from-alias pair) from) (:from pair)])
                            (= "uuid" (:to-cast pair)) (conj [to (:to pair)])))
                        columns))
              joins))))
@@ -612,6 +618,7 @@
   [{:keys [where order group limit-per joins columns current aliases] :as state} rules]
   (when (seq rules)
     (let [named   (concat (mapcat #(where-columns current %) where)
+                          (mapcat #(where-columns current %) (join-conditions joins))
                           (mapcat entry-columns order)
                           (mapcat entry-columns group)
                           (mapcat entry-columns (:columns limit-per)))
