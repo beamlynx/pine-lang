@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [0.57.0] - 2026-11-14
 ### Added
 - **A join can name the table on each side.** `fd.id = av.attributeId, fd.tenant_id = c.tenantId` joins `fd` to two earlier tables at once. A side without a name works as before.
 - **A join can hold a condition on a value, or a test for null.** `purchase :left .customer_id = .id, .status = 'paid'` keeps every customer and attaches only paid purchases. The same test in `where:` drops the customers without one. `.deleted_at is null` works the same way.
