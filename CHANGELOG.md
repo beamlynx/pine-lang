@@ -12,6 +12,9 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - **Column suggestions come from every table in the query.** In `select:`, `where:`, `order:`, after `per` and in `unnest:`, the current table's columns come first, then the other tables', nearest first. Each suggestion names its table's alias. Typing `u.` still lists only `u`'s columns. A column already in the list hides only itself, so `s: id, ` still offers the other tables' `id`. Tables before a `group:` or `limit: … per` aren't suggested. Each column suggestion also carries the column's database type, such as `integer` or `timestamp`, so a client can offer only the columns an aggregate can read.
 - **SQL converts with each join written as SQL has it.** Every side names its table, a join to two earlier tables converts instead of being refused, and a column = value or `IS NULL` condition in `ON` stays on the join, including on a `LEFT JOIN`.
 
+### Fixed
+- **`describe:` after a group describes the group's result.** `tenant as t | company .tenantId | group: t.id | describe:` lists `id` and `count`. Before, it listed the columns of `company`, the table before the group. `references:` after a group lists the relations of the table behind the group's keys.
+
 ## [0.56.0] - 2026-11-12
 ### Breaking
 - **Without a launch token, only pages served from this machine can call the server.** Before, any web page in your browser could send it requests and read the answers. Now, without `PINE_TOKEN`, a request from a web page is refused unless the page comes from `localhost`, `127.0.0.1` or `[::1]`, or is listed in `PINE_ALLOWED_ORIGINS` (comma-separated, such as `https://app.example.com`). A web UI served from elsewhere needs one of the two. Programs that aren't browsers are unaffected, and so is the desktop app, which always sets a token.

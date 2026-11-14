@@ -48,6 +48,12 @@
        (is (= ["name" "" "yes" ""]
               (second (described db "person | describe:")))))
 
+     (testing "after a group, the group's result: its keys and aggregates"
+       (is (= ["id" "count"]
+              (mapv first (described db "company as c | person .company_id | group: c.id | describe:"))))
+       (is (= ["id" "count"]
+              (mapv first (described db "company as c | person .company_id | group: c.id |= x | describe:")))))
+
      (testing "the database isn't queried: the rows come from the schema"
        (is (= 1 (count (e/rows db "company"))))))))
 
@@ -58,6 +64,10 @@
      (testing "the relations into a table"
        (is (= [["person.company_id" "company.id" "foreign key" "| person .company_id"]]
               (result db "company | references:" ["from" "to" "how" "pine"]))))
+
+     (testing "after a group, the relations of the table behind the group's keys"
+       (is (= [["person.company_id" "company.id" "foreign key" "| person .company_id"]]
+              (result db "company as c | person .company_id | group: c.id | references:" ["from" "to" "how" "pine"]))))
 
      (testing "a foreign key out, and a relation in that Pine infers from a column's name"
        (is (= #{["person.company_id" "company.id" "foreign key" "| company .company_id :parent"]
