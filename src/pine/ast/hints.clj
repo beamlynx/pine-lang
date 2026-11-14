@@ -676,12 +676,15 @@
        ;; implicitly selects everything, so the column list (names, types)
        ;; is exactly the real underlying table's own schema. Resolve through
        ;; the same one-hop rule join resolution uses to reach it, even
-       ;; through a chain of variables.
+       ;; through a chain of variables. Each hint carries the column's
+       ;; database type, as the schema has it (`integer`, `numeric`, `text`):
+       ;; a client can offer only the columns an aggregate can read. A
+       ;; selected column (below) has none.
        (mapcat (fn [{:keys [table schema]}]
                  (let [columns (if schema
                                  (get-in state [:references :schema schema :table table :columns])
                                  (get-in state [:references :table table :columns]))]
-                   (map #(-> % (select-keys [:column]) (assoc :alias a)) columns)))
+                   (map #(-> % (select-keys [:column :type]) (assoc :alias a)) columns)))
                (table/resolve-table entry))
        ;; Explicit columns: only what was actually selected, under its
        ;; exposed name. A `t.*` among them is every column of t, as the

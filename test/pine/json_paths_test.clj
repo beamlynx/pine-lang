@@ -474,9 +474,9 @@
 
 (deftest test-unnest-hints-and-canvas
   (testing "unnest: is offered the JSON columns of the table the pipe is on, or of an alias"
-    (is (= [{:column "data" :alias "c_0"}] (get-in (state "customer | unnest: ") [:hints :unnest])))
-    (is (= [{:column "data" :alias "c"}] (get-in (state "customer as c | unnest: c.") [:hints :unnest])))
-    (is (= [{:column "data" :alias "c_0"}] (get-in (state "customer | unnest: da") [:hints :unnest])))
+    (is (= [{:column "data" :alias "c_0" :type "jsonb"}] (get-in (state "customer | unnest: ") [:hints :unnest])))
+    (is (= [{:column "data" :alias "c" :type "jsonb"}] (get-in (state "customer as c | unnest: c.") [:hints :unnest])))
+    (is (= [{:column "data" :alias "c_0" :type "jsonb"}] (get-in (state "customer | unnest: da") [:hints :unnest])))
     (is (= [] (get-in (state "customer | unnest: data.x") [:hints :unnest])) "Keys aren't in the schema")
     (is (= [] (get-in (state "customer | unnest: data.") [:hints :unnest]))))
 

@@ -4,16 +4,27 @@
    [pine.parser :as parser]
    [pine.ast.main :as ast]))
 
+(defn- hints-with-types
+  "The hints for an expression, as the server sends them."
+  [expression cursor]
+  (-> expression
+      parser/parse
+      :result
+      (ast/generate :test expression cursor)
+      :hints))
+
+(defn- without-types
+  "The hints without each column's :type, which most tests here don't
+  check. `column hints carry the column's type` does."
+  [hints]
+  (into {} (map (fn [[k v]] [k (if (sequential? v) (mapv #(if (map? %) (dissoc % :type) %) v) v)]) hints)))
+
 (defn- gen
   "Helper function to generate and get the relevant part in the ast"
   ([expression]
    (gen expression nil))
   ([expression cursor]
-   (-> expression
-       parser/parse
-       :result
-       (ast/generate :test expression cursor)
-       :hints)))
+   (without-types (hints-with-types expression cursor))))
 
 (defn- gen-with-variables
   "Evaluate expressions sequentially, threading variables. Returns :hints from the last expression."
@@ -27,6 +38,14 @@
                 {:named-results {} :last-hints nil}
                 expressions)]
     last-hints))
+
+(deftest column-hints-carry-the-column-type
+  ;; A client can offer only the columns an aggregate can read: sum and avg
+  ;; a number, min and max something that sorts.
+  (is (= [{:column "id" :alias "c_0" :type "integer"} {:column "created_at" :alias "c_0" :type "timestamp"}]
+         (:select (hints-with-types "x.company | s:" nil))))
+  (is (= [{:column "id" :alias "c_0" :type "integer"}]
+         (:select (hints-with-types "x.company | s: i" nil)))))
 
 (deftest test-hints
   (testing "Generate hints"
