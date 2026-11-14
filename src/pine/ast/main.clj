@@ -202,9 +202,11 @@
 ;; fully typed before the comma, so it needs the same sealed scope a complete op
 ;; would. count/delete/update are deliberately excluded — they build their own
 ;; wrapper query generically (see build-count-query) and don't need the checkpoint's
-;; group-shaped state separated into a CTE first.
+;; group-shaped state separated into a CTE first. describe:/references: read
+;; the result too: after a group, they describe the group's result, not the
+;; table before it.
 (def ^:private checkpoint-consuming-op-types
-  #{:select :select-partial :where :where-partial :order :order-partial})
+  #{:select :select-partial :where :where-partial :order :order-partial :describe :references})
 
 (defn- reset-for-cte [state]
   (assoc state
