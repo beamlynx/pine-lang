@@ -1954,6 +1954,8 @@
                           (generate "employee | document .id"))))
 
   (testing "tables nothing connects say how to name a column of each"
+    ;; `company .x = .y` after report is company.x = report.y: the column
+    ;; before `=` is the new table's (see ast_test's explicit columns).
     (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                          #"Nothing in the schema connects them\. Name a column of each table: `company \.x = \.y`"
+                          #"Nothing in the schema connects them\. Name a column of each table: `company \.x = \.y` joins `company`'s x to `report`'s y\.$"
                           (generate "report | company")))))

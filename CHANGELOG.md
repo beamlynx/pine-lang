@@ -6,6 +6,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Fixed
 - **A `from:` naming a group's or limit's result reads that result, even with nothing after it.** `dp | limit: 1 |= result_1 | from: result_1` failed with "missing FROM-clause entry for table result_1".
 - **A later query can join on every column a named result returns.** In `tenant as t | s: title | company .tenantId |= a`, the select names only tenant's columns, so `a` also returns all of company's. Pine counted only `title`, so `b | a .tenantId` failed with "`tenantId` isn't a column of `b` or `a`". The canvas's list of a group's or limit's columns had the same gap.
+- **The error for two tables nothing connects shows the join the right way round.** It said `a .x = .y` joins `b`'s x to `a`'s y. It joins `a`'s x to `b`'s y.
 
 ## [0.57.0] - 2026-11-14
 ### Added

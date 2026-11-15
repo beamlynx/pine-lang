@@ -223,4 +223,4 @@
                      (str/join ", " (for [[pine how] joins] (str "`" pine "` (" how ")")))
                      ".")
                 (str "Nothing in the schema connects them. Name a column of each table: `" to-label
-                     " .x = .y` joins `" from-label "`'s x to `" to-label "`'s y."))]))))
+                     " .x = .y` joins `" to-label "`'s x to `" from-label "`'s y."))]))))
