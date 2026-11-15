@@ -1032,6 +1032,11 @@
     (is (= "WITH \"result_1\" AS ( SELECT \"c_0\".\"id\", COUNT(1) AS \"count\" FROM \"x\".\"company\" AS \"c_0\" GROUP BY \"c_0\".\"id\" ) SELECT \"result_1\".\"id\" FROM \"result_1\" AS \"result_1\" LIMIT 250"
            (:query (generate "x.company | group: id with count | s: id")))))
 
+  (testing "A from: naming a checkpoint, with nothing after it, reads the checkpoint's result"
+    (let [expected "WITH \"result_1\" AS ( SELECT \"c\".* FROM \"x\".\"company\" AS \"c\" LIMIT 1 ) SELECT \"result_1\".* FROM \"result_1\" AS \"result_1\" LIMIT 250"]
+      (is (= expected (:query (generate "x.company as c | limit: 1 |= result_1 | from: result_1"))))
+      (is (= expected (:query (generate "x.company as c | limit: 1 | from: result_1"))))))
+
   (testing "Checkpoint feeding a terminal GROUP nests its own CTE (user-named via |=)"
     ;; build-group-query is a separate rendering path from build-select-query
     ;; and used to skip collect-ctes entirely, so a checkpoint's CTE was never

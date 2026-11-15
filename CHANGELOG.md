@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Fixed
+- **A `from:` naming a group's or limit's result reads that result, even with nothing after it.** `dp | limit: 1 |= result_1 | from: result_1` failed with "missing FROM-clause entry for table result_1".
 
 ## [0.57.0] - 2026-11-14
 ### Added
