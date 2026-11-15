@@ -10,6 +10,17 @@
   [col]
   (boolean (or (:auto-id col) (:json-type-of col) (:element-index col))))
 
+(defn adds-current-star?
+  "Whether a state's SQL returns every column of its current table on top
+  of the columns it selects: when the current table has no select of its
+  own and the last step isn't a select:, group: or delete!. So
+  `t | s: title | company .tenant_id` returns title and all of company.
+  Mirrors pine.eval's select-items, which writes that `current.*`."
+  [{:keys [columns current operation aliases]}]
+  (and (not (contains? #{:select :delete-action :group} (:type operation)))
+       (not-any? #(= current (:alias %)) (remove added-column? columns))
+       (not-any? #(= current (get-in % [:elements :on])) (vals aliases))))
+
 (defn column-source
   "The real table (and schema) this column ultimately traces back to - itself
   if selecting from a real table, or copied forward from a variable's own
@@ -54,13 +65,18 @@
       (if (empty? columns)
         (when-let [current-alias (:current ast)]
           (resolve-table (get (:aliases ast) current-alias)))
-        (->> columns
-             (filter :source)
-             (group-by :source)
-             (map (fn [[source cols]]
-                    {:table (:table source)
-                     :schema (:schema source)
-                     :rename (into {} (map (fn [c] [(:column c) (or (:column-alias c) (:column c))]) cols))})))))
+        (concat
+         (->> columns
+              (filter :source)
+              (group-by :source)
+              (map (fn [[source cols]]
+                     {:table (:table source)
+                      :schema (:schema source)
+                      :rename (into {} (map (fn [c] [(:column c) (or (:column-alias c) (:column c))]) cols))})))
+         ;; The current table's `*` that comes on top of the selected
+         ;; columns, as the SQL writes it.
+         (when (adds-current-star? ast)
+           (some-> (get (:aliases ast) (:current ast)) resolve-table)))))
     [{:table table :schema schema :rename {}}]))
 
 (defn translate-column

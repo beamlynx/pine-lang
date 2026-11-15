@@ -216,24 +216,30 @@
          :table-count 0 :operation {:type nil :value nil}))
 
 (defn- result-columns
-  "The names of the columns a sealed state returns: what it selects, or,
-  with no select (`*`), every column of its current table. A current table
-  that is itself a named result or checkpoint returns what that one does,
-  so `group: name | l: 3` gives name and count, not the grouped table's
-  columns."
+  "The names of the columns a sealed state returns, as its SQL does (see
+  eval's select-items): what it selects, then every column of its current
+  table when that table has no select of its own and the last step isn't a
+  select:. So `t | s: title | company .tenant_id` returns title and every
+  company column. A current table that is itself a named result or
+  checkpoint returns what that one does, so `group: name | l: 3` gives name
+  and count, not the grouped table's columns."
   [snapshot]
   (let [explicit (remove table/added-column? (:columns snapshot))
         current  (:current snapshot)
-        entry    (get (:aliases snapshot) current)]
-    (cond
-      (seq explicit) (mapcat (fn [{:keys [alias column column-alias]}]
-                               (if (and (str/blank? column) (not column-alias))
-                                 ;; `s: c.*`
-                                 (map :column (hints/generate-all-column-hints snapshot alias))
-                                 [(or column-alias column)]))
-                             explicit)
-      (:ast entry)   (result-columns (:ast entry))
-      :else          (map :column (hints/generate-all-column-hints snapshot current)))))
+        entry    (get (:aliases snapshot) current)
+        all-of   (fn [] (if (:ast entry)
+                          (result-columns (:ast entry))
+                          (map :column (hints/generate-all-column-hints snapshot current))))
+        star?    (table/adds-current-star? snapshot)]
+    (if (seq explicit)
+      (concat (mapcat (fn [{:keys [alias column column-alias]}]
+                        (if (and (str/blank? column) (not column-alias))
+                          ;; `s: c.*`
+                          (map :column (hints/generate-all-column-hints snapshot alias))
+                          [(or column-alias column)]))
+                      explicit)
+              (when star? (all-of)))
+      (all-of))))
 
 (defn- checkpoint-entry
   "What the client is told about one checkpoint: enough to label it and to

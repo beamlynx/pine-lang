@@ -1640,6 +1640,30 @@
 ;; its own); matching on search_id alone is not, and used to return rows
 ;; belonging to other cases without saying so.
 
+(deftest test-named-result-keeps-the-last-tables-columns
+  ;; `s: created_at` names only company's column. employee, joined after it
+  ;; with no select of its own, still comes back whole (`"e_1".*`), so a
+  ;; later query can join on its company_id.
+  (testing "A select before a join leaves the joined table's columns in the result"
+    (is (clojure.string/includes?
+         (:query (generate-expressions ["company as c | s: created_at | employee .company_id |= a"
+                                        "company |= b"
+                                        "b | a .company_id"]))
+         "JOIN \"a\" AS \"a\" ON \"b\".\"id\" = \"a\".\"company_id\"")))
+
+  (testing "The same after a limit"
+    (is (clojure.string/includes?
+         (:query (generate-expressions ["company as c | s: created_at | employee .company_id | l: 1 |= a"
+                                        "company |= b"
+                                        "b | a .company_id"]))
+         "JOIN \"a\" AS \"a\" ON \"b\".\"id\" = \"a\".\"company_id\"")))
+
+  (testing "A select that ends the query returns only what it names"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"`company_id` isn't a column of `b` or `a`"
+                          (generate-expressions ["company as c | employee .company_id | s: c.created_at |= a"
+                                                 "company |= b"
+                                                 "b | a .company_id"])))))
+
 (deftest test-composite-foreign-key
   (testing "Every column of the key lands in the ON clause"
     (is (clojure.string/includes?

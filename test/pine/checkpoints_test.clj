@@ -42,6 +42,15 @@
     (is (= [{:alias "c_0" :column "data" :path ["region"] :column-alias "data.region"}]
            (:per (first (checkpoints "customer | l: 1 per data.region")))))))
 
+(deftest test-select-before-a-join
+  (testing "A checkpoint returns what its SQL does: the selected columns, then all of the last table's"
+    (is (= ["created_at" "id" "company_id" "reports_to"]
+           (:columns (first (checkpoints "company as c | s: created_at | employee .company_id | l: 10"))))))
+
+  (testing "A select of the last table's own columns returns only those"
+    (is (= ["created_at" "id"]
+           (:columns (first (checkpoints "company as c | employee .company_id | s: c.created_at, id | l: 10")))))))
+
 (deftest test-group
   (testing "A group checkpoint has its columns and aggregates, and returns only those"
     (is (= [{:name "result_1" :sealed true :index 1 :kind "group"
