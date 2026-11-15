@@ -297,12 +297,20 @@
 
   Fires when the incoming op is a table (join composition), another checkpoint
   op (e.g. LIMIT after GROUP), or an op that queries the checkpoint's result
-  (select/where/order, complete or partial). Does not fire for count/delete/update
+  (select/where/order, complete or partial, or a `from:` naming it). Does not fire for count/delete/update
   since those have their own query-building paths that do not need CTE separation."
   [state op]
   (let [checkpoint (:pending-checkpoint state)
         op-type    (:type op)
+        ;; `from: result_1` reads the checkpoint's result, even with nothing
+        ;; after it. Its name is the one it will get: the one written with
+        ;; `|= name`, or else the next auto name.
+        names-it?  (and checkpoint
+                        (= op-type :from)
+                        (= (get-in op [:value :alias])
+                           (if (:needs-assign checkpoint) (next-auto-cte-name state) (:name checkpoint))))
         fire?      (or (= op-type :table)
+                       names-it?
                        (contains? checkpoint-op-types op-type)
                        (contains? checkpoint-consuming-op-types op-type))]
     (cond
