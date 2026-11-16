@@ -568,6 +568,13 @@
     (is (= {:type :string :value "7"} (dt/convert-value-to-db-type (dt/number "7") "text")))
     (is (= {:type :string :value "7"} (dt/convert-value-to-db-type {:type :number :value 7} "varchar"))))
 
+  (testing "a string given for a numeric column is a number, as the results grid writes one"
+    (doseq [db-type ["numeric" "decimal" "real" "float8" "double precision" "double"]]
+      (is (= {:type :number :value 343M} (dt/convert-value-to-db-type (dt/string "343") db-type)) db-type))
+    (is (= {:type :number :value 12.50M} (dt/convert-value-to-db-type (dt/string "12.50") "numeric")))
+    (testing "a string that isn't a number is left for the database to refuse"
+      (is (= (dt/string "abc") (dt/convert-value-to-db-type (dt/string "abc") "numeric")))))
+
   (testing "an update! still being typed (trailing comma) builds nothing"
     (is (= {:query "" :params nil}
            (generate "company | where: id = 1 | u! name = 'x',"))))

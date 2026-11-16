@@ -16,6 +16,8 @@
    "CREATE TABLE membership (group_code VARCHAR(20), member_code VARCHAR(20), role {text}, PRIMARY KEY (group_code, member_code))"
    "CREATE TABLE loose (id INTEGER, note {text})"
    "CREATE TABLE doc (id INTEGER PRIMARY KEY, name {text}, data {json})"
+   "CREATE TABLE item (id INTEGER PRIMARY KEY, price DECIMAL(10, 2), weight DOUBLE PRECISION)"
+   "INSERT INTO item VALUES (1, 10.00, 1.5), (2, 20.00, 2.5)"
    "INSERT INTO company VALUES (1, 'Acme'), (2, 'Globex'), (3, 'Initech')"
    (str "INSERT INTO person VALUES (1, 'Ann', 1, TRUE, NULL), (2, 'Bob', 1, FALSE, NULL), "
         "(3, 'Cy', 2, TRUE, NULL), (4, 'Di', 3, FALSE, NULL)")
@@ -28,7 +30,7 @@
         "(3, 'Cy', NULL)")])
 
 (def ^:private tables
-  {"company" [:id] "person" [:id] "membership" [:group_code :member_code] "loose" [:id :note] "doc" [:id]})
+  {"company" [:id] "person" [:id] "membership" [:group_code :member_code] "loose" [:id :note] "doc" [:id] "item" [:id]})
 
 (defn- changed-by
   "Runs `expression` as a write, and returns what it changed in every table,
@@ -157,6 +159,21 @@
      (testing "a row the pipe reaches twice with different values: nothing changes"
        (is (re-find #"more than one value for some rows of `company`"
                     (unchanged-after-refusal db "company | where: id = 1 | person | from: c_0 | update! name = p_1.name")))))))
+
+(deftest test-update-numeric-from-a-string
+  (scenario
+   (fn [db]
+     (testing "the results grid writes an edited number as a string: a decimal and a float column take it"
+       (let [{:keys [changes]} (changed-by db "item | where: id = 2 | update! price = '343.25', weight = '7'")
+             changed (get-in changes ["item" :changed])]
+         (is (= #{"item"} (set (keys changes))) "only that table")
+         (is (= #{[2]} (set (keys changed))) "only that row")
+         (is (== 343.25 (second (get-in changed [[2] :price]))))
+         (is (== 7 (second (get-in changed [[2] :weight]))))))
+     (testing "and compares as one in where:"
+       (is (= {"item" {:changed {[1] {:weight [1.5 9.0]}}}}
+              (update-in (:changes (changed-by db "item | where: price < '15' | update! weight = 9"))
+                         ["item" :changed [1] :weight] #(mapv double %))))))))
 
 (deftest test-update-is-all-or-nothing
   (scenario

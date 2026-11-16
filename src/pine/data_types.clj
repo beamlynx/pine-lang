@@ -124,6 +124,17 @@
         (catch Exception _
           value))
       value)
+    ;; A number with a fraction. The results grid writes every edited cell
+    ;; as a string: `update! total_price = '343'`. Bound as text, Postgres
+    ;; refused it: "column is of type numeric but expression is of type
+    ;; character varying". A string that isn't a number stays one.
+    ("numeric" "decimal" "real" "float4" "double precision" "float8" "float" "double")
+    (if (= (:type value) :string)
+      (try
+        {:type :number :value (BigDecimal. (clojure.string/trim (:value value)))}
+        (catch NumberFormatException _
+          value))
+      value)
     ;; bpchar is Postgres's own internal name for CHAR(n)/"character" --
     ;; pg_catalog's pg_type.typname (postgres.clj's get-columns) returns it
     ;; where information_schema.columns would have said "character".
