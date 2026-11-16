@@ -685,6 +685,12 @@
     (converts-to "update employee e set name = 'x' from company c where e.company_id = c.id and c.name = 'Acme'"
                  "employee as e | company as c c.id = e.company_id | where: name = 'Acme' | from: e | update! name = 'x'"))
 
+  (testing "SET from a column: the changed table's bare, another table's by its alias"
+    (converts-to "update company set name = other where id = 1"
+                 "company | where: id = 1 | update! name = other")
+    (converts-to "update employee e set name = c.name, note = coalesce(c.note, e.note) from company c where e.company_id = c.id and c.id = 1"
+                 "employee as e | company as c c.id = e.company_id | where: id = 1 | from: e | update! name = c.name, note = coalesce(c.note, note)"))
+
   (testing "DELETE names the rows by the table's primary key"
     (converts-to-blocks "delete from company_document where archived_at is not null"
                         "company_document | where: archived_at is not null | delete! .id"
@@ -696,7 +702,6 @@
   (testing "Refusals"
     (converts-to "update company set updated_at = now() where id = 1" "company | where: id = 1 | update! updated_at = now()")
     (refuses "update company set name = lower(name) where id = 1" "lower() isn't in Pine's update!. update! writes a value")
-    (refuses "update company set name = other where id = 1" "Setting a column from another column isn't converted")
     (refuses "update company set name = 'x'" "has no condition of its own")
     (refuses "update employee e set name = 'x' from company c where c.name = 'Acme'" "needs a WHERE condition that ties `c` to `e`")
     (refuses "delete from company where id = 1" "Converting a DELETE needs the connection")

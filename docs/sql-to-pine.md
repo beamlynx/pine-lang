@@ -139,6 +139,7 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `ar."resourceableId" = g.id::text` in `ON` | `ar.resourceableId = g.id ::text` |
 | `UPDATE t SET c = 'v' WHERE ...` | `t \| where: ... \| update! c = 'v'` |
 | `SET c = COALESCE(c, 'x')`, `SET c = c \|\| 'x'` | `update! c = coalesce(c, 'x')`, `update! c = concat(c, 'x')` |
+| `UPDATE t SET c = o.v FROM o WHERE o.id = t.o_id` | `t \| o .id = .o_id \| from: t \| update! c = o.v` |
 | `DELETE FROM t WHERE ...` | `t \| where: ... \| delete! .id`, by the table's primary key |
 | `BEGIN; ...; COMMIT;` | the statement inside, with a warning |
 
@@ -548,9 +549,12 @@ employee as e
 - The `WHERE` conditions that tie the `FROM` table to the changed one are its join. The rest are
   `where:` steps. `DELETE ... USING` works the same.
 - When the pipe ends on another table, `from:` goes back to the changed one before `update!`.
-- `SET` takes values: a string, a number, true, false, NULL, a `$variable`, `NOW()`,
-  `COALESCE(...)` or `a || b` of the changed table's columns. Another function, or another column on
-  its own, is refused.
+- `SET` takes values: a string, a number, true, false, NULL, a `$variable`, `NOW()`, a column, or
+  `COALESCE(...)` or `a || b` of columns. Another function is refused.
+- A column of a `FROM` table is written with its alias: `SET name = c.name` becomes
+  `update! name = c.name`. Each changed row takes the value from its joined row. A row joined to
+  several different values refuses the whole `update!` (see
+  [side-effects.md](side-effects.md#a-value-from-another-table)).
 - `delete!` names rows by the table's primary key, so converting a `DELETE` needs the connection.
   A table without a primary key is refused, and with the connection, so is an `UPDATE` of one.
 - A statement with no condition of its own is refused, as Pine refuses to change every row.

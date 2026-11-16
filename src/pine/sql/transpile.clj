@@ -1420,6 +1420,7 @@
                      :group (mapcat cols (:cols o))
                      :order (mapcat #(some-> (or (:col %) (:json-col %)) cols) items)
                      :limit (mapcat cols (:per o))
+                     :update (mapcat #(remove #{0} (:refs (:value %))) (:assignments o))
                      nil))
                  ops))))
 
@@ -1479,8 +1480,9 @@
          :update (str "update! " (s/join ", " (map (fn [{:keys [column value]}]
                                                      (str column " = " (case (:kind value)
                                                                          :null "null"
-                                                                         ;; update! reads the changed table's columns bare.
-                                                                         :computed (render-value value :name)
+                                                                         ;; update! reads the changed table's
+                                                                         ;; columns bare, another table's by alias.
+                                                                         :computed (render-value value (make-col-ref tables 0))
                                                                          (render-value value col-ref))))
                                                    (:assignments o))))
          :delete (str "delete! " (s/join ", " (map #(str "." %) cols))))))))
@@ -1505,20 +1507,18 @@
           (range (count tables))))
 
 (defn- assignment-value
-  "The value an UPDATE's SET writes: a literal, NULL, now(), COALESCE(...)
-  or a || b of the changed table's columns. Another column on its own isn't
-  converted."
+  "The value an UPDATE's SET writes: a literal, NULL, now(), a column, or
+  COALESCE(...) or a || b of columns. A column may be one of another table
+  of UPDATE ... FROM: update! reads it from the row the pipe joins to the
+  changed one."
   [tables {:keys [kind at] :as operand}]
   (cond
     (= :null kind) {:kind :null}
     (= :now kind) {:kind :now}
-    (= :column kind) (refuse at "update! here takes a value. Setting a column from another column isn't converted.")
-    (computed-operand? operand)
-    (do (doseq [c (expr-columns operand)
-                :when (pos? (:t (resolve-column tables c)))]
-          (refuse (:at c) (str "update! can only read the columns of the table it changes, not `" (:qualifier c) "." (:name c) "`.")))
-        (expr-pine {:tables tables :col-ref :name} operand)
-        {:kind :computed :expr operand :tables tables})
+    (or (= :column kind) (computed-operand? operand))
+    (do (expr-pine {:tables tables :col-ref :name} operand)
+        {:kind :computed :expr operand :tables tables
+         :refs (set (map #(:t (resolve-column tables %)) (expr-columns operand)))})
     (#{:call :concat :case :pred :count} kind)
     (refuse at (str (if (= :call kind) (str (:fn operand) "() isn't in Pine's update!.") "This value isn't in Pine's update!.")
                     " update! writes a value, coalesce(...), a || b, or now()."))

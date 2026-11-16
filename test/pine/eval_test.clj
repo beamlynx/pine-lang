@@ -617,8 +617,23 @@
                        :query "UPDATE \"company\" SET \"name\" = \"country\" WHERE \"id\" IN ( SELECT \"c\".\"id\" FROM \"company\" AS \"c\" WHERE \"c\".\"id\" = ? )"
                        :params (list (dt/number "1"))}]}
            (generate "company as c | where: id = 1 | update! c.name = c.country")))
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"only copy a column of the table it changes"
-                          (generate "company as c | where: id = 1 | document as d | update! c.name = d.title"))))
+    ;; A column of another table of the pipe: a subquery on the pipe's rows,
+    ;; matched to the changed row by its key. The guard finds a row the
+    ;; pipe gives more than one value.
+    (let [source "SELECT \"c\".\"id\" AS \"__pine_key_1__\", \"d\".\"title\" AS \"__pine_value_1__\" FROM \"company\" AS \"c\" JOIN \"document\" AS \"d\" ON \"c\".\"id\" = \"d\".\"company_id\" WHERE \"c\".\"id\" = ?"]
+      (is (= {:queries [{:table "company"
+                         :query (str "UPDATE \"company\" SET \"name\" = (SELECT DISTINCT \"__pine_source__\".\"__pine_value_1__\" FROM ( " source " ) AS \"__pine_source__\" WHERE \"__pine_source__\".\"__pine_key_1__\" = \"company\".\"id\"), \"updated_at\" = NOW() "
+                                     "WHERE \"id\" IN ( SELECT \"c\".\"id\" FROM \"company\" AS \"c\" JOIN \"document\" AS \"d\" ON \"c\".\"id\" = \"d\".\"company_id\" WHERE \"c\".\"id\" = ? )")
+                         :params (list (dt/number "1") (dt/number "1"))
+                         :guard {:query (str "SELECT \"__pine_key_1__\" FROM ( SELECT DISTINCT \"__pine_key_1__\", \"__pine_value_1__\" FROM ( " source " ) AS \"__pine_source__\" ) AS \"__pine_values__\" GROUP BY \"__pine_key_1__\" HAVING COUNT(*) > 1")
+                                 :params (list (dt/number "1"))
+                                 :message "update! found more than one value for some rows of `company`: the pipe reaches them more than once, with different values. Narrow it with where: so each row is reached once."}}]}
+             (generate "company as c | where: id = 1 | document as d | update! c.name = d.title, c.updated_at = now()"))))
+    (testing "a computed value mixes the changed table's columns, written bare, with another table's"
+      (is (re-find #"SET \"title\" = \(SELECT DISTINCT COALESCE\(\"__pine_source__\".\"__pine_value_1__\", \"title\"\) FROM"
+                   (-> (generate "document as d | where: id = 1 | company as c | from: d | update! title = coalesce(c.name, title)") :queries first :query))))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"update! can't read `d.title` while it changes `d` too"
+                          (generate "company as c | where: id = 1 | document as d | update! c.name = d.title, d.title = c.name"))))
 
   ;; Schema "p" in the fixtures: tables not keyed on `id`.
   (testing "update! finds rows by the table's primary key"
