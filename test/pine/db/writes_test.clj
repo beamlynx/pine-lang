@@ -133,6 +133,31 @@
                "person" {:changed {[3] {:note [nil "g"]}}}}
               (:changes (changed-by db "company as c | where: c.id = 2 | person | update! c.name = 'Globex2', note = 'g'"))))))))
 
+(deftest test-update-from-another-table
+  (scenario
+   (fn [db]
+     (testing "each changed row takes the value its own joined row has"
+       (is (= {"person" {:changed {[1] {:note [nil "Acme"]} [2] {:note [nil "Acme"]} [3] {:note [nil "Globex"]}}}}
+              (:changes (changed-by db "company | where: id = 1 or id = 2 | person | update! note = c_0.name")))))
+
+     (testing "a computed value, beside a plain one"
+       (is (= {"person" {:changed {[4] {:note [nil "Initech/Di"] :name ["Di" "Dee"]}}}}
+              (:changes (changed-by db "person | where: id = 4 | company | from: p_0 | update! note = concat(c_1.name, '/', name), name = 'Dee'"))))))))
+
+(deftest test-update-from-a-row-reached-twice
+  (scenario
+   (fn [db]
+     (testing "a row the pipe reaches twice with the same value"
+       (is (= {"company" {:changed {[1] {:name ["Acme" "none"]}}}}
+              (:changes (changed-by db "company | where: id = 1 | person | from: c_0 | update! name = coalesce(p_1.note, 'none')"))))))))
+
+(deftest test-update-from-another-table-refused
+  (scenario
+   (fn [db]
+     (testing "a row the pipe reaches twice with different values: nothing changes"
+       (is (re-find #"more than one value for some rows of `company`"
+                    (unchanged-after-refusal db "company | where: id = 1 | person | from: c_0 | update! name = p_1.name")))))))
+
 (deftest test-update-is-all-or-nothing
   (scenario
    (fn [db]

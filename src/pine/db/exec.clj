@@ -145,7 +145,14 @@
       (jdbc/db-transaction*
        {:connection conn}
        (fn [tx]
-         (mapv (fn [{:keys [table query params]}]
+         (mapv (fn [{:keys [table query params guard]}]
+                 ;; A guard is a SELECT that finds the rows the write
+                 ;; can't change safely. Any row refuses the whole write.
+                 (when guard
+                   (log-query "Checking (tx): %s" (:query guard))
+                   (when (seq (run-statement (jdbc/db-find-connection tx) (:query guard) {:timeout query-timeout-seconds}
+                                             #(jdbc/query tx (cons % (map convert-param (:params guard))))))
+                     (throw (ex-info (:message guard) {:error-type "write-refused"}))))
                  (let [params (map convert-param (or params []))
                        _ (log-query "Running action (tx): %s" query)
                        result (run-statement (jdbc/db-find-connection tx) query {:timeout query-timeout-seconds}

@@ -94,6 +94,37 @@ UPDATE "k"."case_ref" SET "note" = ? WHERE ("case_id", "search_id") IN (
 A table with no primary key, such as a view, is refused: no column is known to
 pick out one row, so the update could change rows nobody meant.
 
+### A value from another table
+
+A value can read a column of another table in the pipe. Each changed row takes
+the value from the row the pipe joins to it:
+
+```
+employee as e | company as c .id = .company_id | from: e | update! note = c.name
+```
+
+A column of the changed table is written bare, as in `coalesce(c.note, note)`.
+
+`UPDATE` has only the changed table in scope. So each such value is a subquery
+on the pipe's rows, matched to the changed row by its key:
+
+```sql
+UPDATE "employee" SET "note" = (SELECT DISTINCT "__pine_source__"."__pine_value_1__"
+  FROM ( SELECT "e"."id" AS "__pine_key_1__", "c"."name" AS "__pine_value_1__" FROM ... ) AS "__pine_source__"
+  WHERE "__pine_source__"."__pine_key_1__" = "employee"."id")
+WHERE "id" IN ( SELECT "e"."id" FROM ... )
+```
+
+The pipe must give each changed row one value. It may reach a row twice with
+the same value. A row it reaches with different values refuses the whole
+`update!`, and nothing changes: "update! found more than one value for some
+rows of `employee`". Before the `UPDATE`, in the same transaction, Pine looks
+for such a row.
+
+One `update!` can't change a table and also read from it. `update! c.name =
+e.note, e.note = c.name` is refused: each table's `UPDATE` runs after the one
+before, so the second would read the first's new values.
+
 ### Writes Pine refuses to build
 
 Some writes would act on more rows than the person can have meant. Pine refuses

@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+### Added
+- **`update!` can take a value from another table in the query.** In `employee as e | company as c .id = .company_id | from: e | update! note = c.name`, each employee gets its own company's name. If a row is joined to two different values, nothing changes and Pine says which table. SQL's `UPDATE ... SET c = other.c FROM other` now converts to this.
 
 ## [0.57.1] - 2026-11-16
 ### Fixed
