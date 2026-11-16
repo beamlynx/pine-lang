@@ -1217,11 +1217,35 @@ t | where: id is null or id not in k_t_ids"))
     (refuses "select * from t where exists (select 1 from k where k.t_id = t.id and exists (select 1 from m where m.k_id = k.id))"
              "An EXISTS inside another EXISTS isn't converted."))
 
-  (testing "The subquery must be tied to the outer query by one equality, and only by it"
+  (testing "Tied by more than one condition: the outer table joined to the subquery's, by its key"
+    (converts-to-blocks "select a.* from attachment a where not exists (select 1 from note n where n.id = a.id and (n.body = a.type or a.type is null))"
+                        "attachment as a
+                          | note as n n.id = a.id
+                          | where: body = a.type or a.type is null
+                          | select: a.id
+                          | from: a |= attachment_ids
+
+                         attachment as a | where: id not in attachment_ids"
+                        [] keyed-schema)
+    (testing "the first equality is the join, and a comparison that isn't one stays a condition"
+      (converts-to-blocks "select a.* from attachment a where exists (select 1 from note n where n.id > a.id and n.body = a.type)"
+                          "attachment as a
+                            | note as n n.body = a.type
+                            | where: id > a.id
+                            | select: a.id
+                            | from: a |= attachment_ids
+
+                           attachment as a | where: id in attachment_ids"
+                          [] keyed-schema)))
+
+  (testing "The subquery must be tied to the outer query in its WHERE, through one of its tables"
     (refuses "select * from t where exists (select 1 from k where k.x = 1)" "doesn't refer to the outer query")
-    (refuses "select * from t where exists (select 1 from k where k.t_id = t.id or k.x = 1)" "tied to the outer query by one equality")
-    (refuses "select * from t where exists (select 1 from k where k.t_id = t.id and k.x = t.y)" "tied to the outer query by one equality")
-    (refuses "select * from t where exists (select 1 from k where k.t_id > t.id)" "tied to the outer query by one equality")
+    (refuses "select * from t where exists (select 1 from k where k.t_id = t.id or k.x = 1)" "has to be an equality")
+    (refuses "select * from t where exists (select 1 from k where k.t_id > t.id)" "has to be an equality")
+    (refuses "select * from t where exists (select 1 from k where k.t_id = t.id and k.x = t.y)" "needs a column that tells the rows of `t` apart")
+    (refuses "select * from t join m on m.t_id = t.id where exists (select 1 from k where k.t_id = t.id and k.x = m.y)" "more than one of the outer query's tables")
+    (refuses "with g as (select k.t_id, max(k.x) as x from k group by k.t_id) select * from g where not exists (select 1 from k where k.t_id = g.t_id and k.x <> g.x)"
+             "needs `g.t_id` to be never NULL")
     (refuses "select * from t where exists (select 1 from k join m on m.t_id = t.id where k.t_id = t.id)" "also refers to it elsewhere"))
 
   (testing "An alias the subquery reuses is the subquery's own"

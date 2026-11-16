@@ -1670,12 +1670,77 @@
        {:table n :at (:at tref)}])
     [state tref]))
 
+(def ^:private ^:dynamic *outer-query*
+  "While a query's WHERE is flattened: that query. An EXISTS in it reads its
+  tables."
+  nil)
+
+(declare entry-named output-item not-null?)
+
+(defn- row-key
+  "The name of a column whose value is different on each row of table `t`,
+  or nil when none is known: a real table's primary key of one column, the
+  one column a WITH query groups by, or a key a WITH query passes on from
+  its one table."
+  [entries t depth]
+  (if-let [e (and (nil? (:schema t)) (entry-named entries (:table t)))]
+    (let [{:keys [group joins] :as q} (:query e)
+          passes (fn [k] (some #(when (and (= :column (:kind %)) (= k (:name (:column %)))) (or (:as %) k)) (:select q)))]
+      (when (and (< depth 16) (nil? (:distinct-on q)) (nil? (:limit q)))
+        (cond
+          (= 1 (count group)) (some-> (:name (first group)) passes)
+          (and (empty? group) (empty? joins)) (some-> (row-key entries (:from q) (inc depth)) passes))))
+    (when *schema*
+      (let [{:keys [db-schema db-table]} (db-table t)
+            pk (when db-table (refs/primary-key *schema* db-schema db-table))]
+        (when (= 1 (count pk)) (first pk))))))
+
+(defn- exists->join
+  "EXISTS (SELECT ... FROM k WHERE k.c = t.x AND <more about t>) as t.key
+  IN (SELECT t.key FROM t JOIN k ON k.c = t.x WHERE <more about t>), marked
+  :exists. For a subquery that refers to the outer query more than once:
+  each reference has to be to the same outer table `t`, and one of them an
+  equality, which becomes the join. The rest stay conditions, so they may
+  be `<>`, `OR`, or anything else WHERE takes.
+
+  `key` is a column whose value differs on each row of t (row-key), and is
+  never NULL, so that t.key picks out the same rows the EXISTS does."
+  [state sq at ties outer? tied]
+  (let [qualifiers (distinct (keep #(when (outer? %) (:qualifier %)) (mapcat expr-columns ties)))
+        t-ref (when (= 1 (count qualifiers))
+                (first (filter #(= (first qualifiers) (table-key %)) (some-> *outer-query* query-tables))))
+        eq? (fn [{:keys [op operator left right]}]
+              (and (= :compare op) (= "=" operator)
+                   (= :column (:kind left)) (= :column (:kind right))
+                   (not (:cast left)) (not (:cast right))
+                   (not= (outer? (:column left)) (outer? (:column right)))))
+        join-on (first (filter eq? ties))
+        key (when t-ref (row-key (:entries state) t-ref 0))
+        key-col {:name key :qualifier (table-key t-ref) :at at}]
+    (cond
+      (nil? t-ref) (refuse at (str tied " This one refers to more than one of the outer query's tables."))
+      (nil? join-on) (refuse at (str tied " One of the conditions that refer to it has to be an equality, such as `r.user_id = u.id`."))
+      (nil? key) (refuse at (str tied " With more than one such condition, it needs a column that tells the rows of `" (table-key t-ref)
+                                 "` apart: a primary key of one column, or the one column a WITH query groups by."))
+      (not (not-null? (:entries state) *outer-query* key-col 0))
+      (refuse at (str tied " With more than one such condition, it needs `" (table-key t-ref) "." key "` to be never NULL.")))
+    {:op :in :negated false :exists true :at at
+     :left {:kind :column :column key-col :at at}
+     :subquery (-> sq
+                   (assoc :from t-ref
+                          :joins (into [{:type nil :table (:from sq) :on join-on :at at}] (:joins sq))
+                          :where (and-of (concat (remove #{join-on} ties)
+                                                 (remove (set ties) (some-> (:where sq) conjuncts))))
+                          :select [{:kind :column :column key-col :at at}])
+                   (dissoc :order :limit :distinct))}))
+
 (defn- exists->in
   "EXISTS (SELECT ... FROM k WHERE k.c = t.x AND ...) as x IN (SELECT k.c
   FROM k WHERE ...), marked :exists. The subquery must refer to the outer
-  query through that one equality and nowhere else. A column qualified by
-  none of the subquery's tables is the outer query's."
-  [{sq :subquery at :at}]
+  query through that one equality and nowhere else; with more, see
+  exists->join. A column qualified by none of the subquery's tables is the
+  outer query's."
+  [state {sq :subquery at :at}]
   (when-let [e (first (find-nodes #(= :exists (:op %)) (:where sq)))]
     (refuse (:at e) "An EXISTS inside another EXISTS isn't converted."))
   (let [inner (set (map table-key (query-tables sq)))
@@ -1690,30 +1755,32 @@
                         (let [[l r] [(:column left) (:column right)]]
                           (cond (and (outer? r) (not (outer? l))) [l r]
                                 (and (outer? l) (not (outer? r))) [r l])))
-        tied "EXISTS converts when its subquery is tied to the outer query by one equality, such as `r.user_id = u.id`, joined to the rest of its WHERE with AND."
-        sq (-> sq
-               (assoc :where (and-of (remove #{pair} parts))
-                      :select [{:kind :column :column k-col :at (:at k-col)}])
-               (dissoc :order :limit :distinct))]
+        tied "EXISTS converts when its subquery is tied to the outer query in its WHERE, joined to the rest of it with AND."
+        ties (filter refers? parts)
+        rest-sq (assoc sq :where (and-of (remove (set ties) parts)))]
     (cond
       (nil? pair) (refuse at (str tied " This one doesn't refer to the outer query."))
-      (or more (nil? k-col)) (refuse at tied)
-      (some outer? (concat (query-columns sq) (some-> (:where sq) predicate-columns)))
+      (some outer? (concat (query-columns rest-sq) (some-> (:where rest-sq) predicate-columns)))
       (refuse at (str tied " This one also refers to it elsewhere."))
       (or (seq (:group sq)) (:having sq) (:distinct-on sq))
       (refuse at "EXISTS with GROUP BY, HAVING or DISTINCT ON in its subquery isn't converted.")
       (some-> (:limit sq) :value zero?)
       (refuse at "EXISTS with LIMIT 0 is always false."))
-    {:op :in :negated false :exists true :at at
-     :left {:kind :column :column t-col :at (:at t-col)}
-     :subquery sq}))
+    (if (or more (nil? k-col))
+      (exists->join state sq at ties outer? tied)
+      {:op :in :negated false :exists true :at at
+       :left {:kind :column :column t-col :at (:at t-col)}
+       :subquery (-> sq
+                     (assoc :where (and-of (remove #{pair} parts))
+                            :select [{:kind :column :column k-col :at (:at k-col)}])
+                     (dissoc :order :limit :distinct))})))
 
 (defn- flatten-predicate
   "A subquery after IN becomes an entry, and the condition `x in <entry>`.
   EXISTS is first an IN (exists->in)."
   [state {:keys [op] :as p}]
   (case op
-    :exists (flatten-predicate state (exists->in p))
+    :exists (flatten-predicate state (exists->in state p))
     (:and :or) (let [[state args] (reduce (fn [[st acc] a] (let [[st a] (flatten-predicate st a)] [st (conj acc a)]))
                                           [state []] (:args p))]
                  [state (assoc p :args args)])
@@ -1794,7 +1861,10 @@
         [state from] (flatten-table state (:from q))
         [state joins] (reduce (fn [[st acc] j] (let [[st t] (flatten-table st (:table j))] [st (conj acc (assoc j :table t))]))
                               [state []] (:joins q))
-        [state where] (if (:where q) (flatten-predicate state (:where q)) [state nil])
+        [state where] (if (:where q)
+                        (binding [*outer-query* (assoc q :from from :joins joins)]
+                          (flatten-predicate state (:where q)))
+                        [state nil])
         [state select] (if (:select q) (flatten-select state (:select q)) [state nil])]
     [state (cond-> (assoc q :from from :joins joins :where where)
              (:select q) (assoc :select select))]))

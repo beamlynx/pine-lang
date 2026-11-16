@@ -5,6 +5,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ## [Unreleased]
 ### Added
 - **`update!` can take a value from another table in the query.** In `employee as e | company as c .id = .company_id | from: e | update! note = c.name`, each employee gets its own company's name. If a row is joined to two different values, nothing changes and Pine says which table. SQL's `UPDATE ... SET c = other.c FROM other` now converts to this.
+- **SQL with an `EXISTS` that refers to the outer query more than once converts.** For example, `NOT EXISTS (SELECT 1 FROM b WHERE b.request_id = p.request_id AND b.item_id <> p.item_id)`. The `=` becomes a join, the other conditions stay `where:` steps, and the result is matched to the outer rows by their key. This needs the connection, so that Pine knows the key and that it is never NULL.
 
 ## [0.57.1] - 2026-11-16
 ### Fixed
