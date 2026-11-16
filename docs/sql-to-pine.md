@@ -111,6 +111,7 @@ agent, and `/eval` refuses an expression that writes before it runs (see
 | `LEFT JOIN k ON k.c = t.x WHERE k.c IS NULL` | `where: x not in k` |
 | `EXISTS (SELECT 1 FROM k WHERE k.c = t.x AND ...)` | a block for `k`, then `where: x in <block>` (see [EXISTS](#exists)) |
 | `NOT EXISTS (...)`, the same | `where: x not in <block>`, guarded against NULLs |
+| `EXISTS (SELECT 1 FROM k WHERE k.c = t.x AND k.d <> t.y)` | a block of `t` joined to `k`, selecting t's key, then `where: key in <block>` (see [Tied by more than one condition](#tied-by-more-than-one-condition)) |
 | `ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS rn`, kept with `rn = 1` or `rn <= N` | `order: o \| limit: N per p` |
 | `SELECT DISTINCT ON (p) ... ORDER BY p, o` | `order: p, o \| limit: 1 per p` |
 | `COALESCE(a, b)`, `a \|\| b`, `NOW()` | `coalesce(a, b)`, `concat(a, b)`, `now()` (see [Computed values](#computed-values)) |
@@ -484,6 +485,44 @@ unless the schema says the columns are `NOT NULL`, the condition is `x is null o
 
 `EXISTS` converts only in `WHERE`, of a `SELECT`, `UPDATE` or `DELETE`.
 
+#### Tied by more than one condition
+
+A subquery may refer to the outer query in more than one condition, or in one that isn't an
+equality. Then the block is the outer table joined to the subquery's, and it selects the outer
+table's key:
+
+```sql
+SELECT p.item_id FROM picked p
+WHERE NOT EXISTS (
+  SELECT 1 FROM best_candidates other
+  WHERE other.request_id = p.request_id
+    AND other.item_id <> p.item_id
+    AND (p.tier = 2 OR other.tier = 1)
+)
+```
+
+```
+picked as p
+ | best_candidates as other other.request_id = p.request_id
+ | where: item_id != p.item_id
+ | where: p.tier = 2 or tier = 1
+ | select: p.item_id
+ | from: p |= picked_item_ids
+
+picked as p
+ | where: item_id not in picked_item_ids
+```
+
+- The first condition that compares a column of each side with `=` is the join. The other
+  conditions stay `where:` steps, so they may use `<>`, `OR`, or anything else `where:` takes.
+- Every condition has to refer to the same outer table.
+- The key is a column whose value is different on each row of that table: its primary key, if it
+  has one column. For a `WITH` query, it is the one column it groups by, or a key it selects from
+  its one table. A real table's key needs the connection.
+- The key has to be `NOT NULL`, traced through `WITH` queries as for [rows with no
+  match](#rows-with-no-match). Without that, a row whose key is NULL could be kept when its
+  `EXISTS` is true.
+
 ### Top N per group
 
 A `ROW_NUMBER()` numbers the rows of each group. A later query that keeps the first ones is Pine's
@@ -692,7 +731,7 @@ Each is refused with its line.
 | A subquery other than in `FROM`, `JOIN` or after `IN` | Not in Pine. |
 | A function other than `COALESCE`, `NOW()`, `jsonb_typeof()`, `jsonb_array_length()` and the aggregates above; arithmetic | Not in Pine. |
 | `->` or `->>` in `WHERE` or with `GROUP BY`; `ORDER BY` a `->>` key; `#>`, `#>>`; a negative index; a `$` path without the connection; a `CASE` or `COALESCE` mixing a `->` key with a column | See [JSON keys](#json-keys). |
-| `EXISTS` outside `WHERE`, or not tied to the outer query by one equality | See [EXISTS](#exists). |
+| `EXISTS` outside `WHERE`; tied to two outer tables, or with no equality; tied more than once to a table with no known key | See [EXISTS](#exists). |
 | `CONCAT()` on Postgres; `\|\|` on MySQL | Postgres's `CONCAT()` skips NULLs: write `a \|\| b`. MySQL reads `\|\|` as OR. |
 | `AND`, `BETWEEN` or `IS [NOT] DISTINCT FROM` inside a value | Pine joins a value's conditions with `or`. |
 | A computed value without `AS`, other than an aggregate | Pine names every computed value. |

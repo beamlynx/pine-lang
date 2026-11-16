@@ -283,6 +283,15 @@ WHERE d.id = g.id AND kf.id IS NULL AND g.archived_at IS NULL")
    "SELECT u.id FROM \"user\" u WHERE NOT (u.id = 3 OR EXISTS (SELECT * FROM user_tenant_role r WHERE r.\"userId\" = u.key))"
    "WITH k AS (SELECT \"userId\" FROM user_tenant_role) SELECT u.id FROM \"user\" u WHERE NOT EXISTS (SELECT 1 FROM k WHERE k.\"userId\" = u.key)"])
 
+(def ^:private exists-tied-twice-queries
+  "SELECTs whose EXISTS refers to the outer query more than once. They
+  convert only with the schema, which knows the outer table's key."
+  ["SELECT u.id FROM \"user\" u WHERE NOT EXISTS (SELECT 1 FROM user_tenant_role r WHERE r.\"userId\" = u.id AND (r.archived_at IS NULL OR u.archived_at IS NOT NULL))"
+   "SELECT u.id FROM \"user\" u WHERE EXISTS (SELECT 1 FROM user_tenant_role r WHERE r.\"userId\" = u.key AND r.id <> u.id)"
+   ;; Each user's first role type, kept when no other role of theirs differs.
+   "WITH g AS (SELECT u.id AS uid, MIN(r.type) AS t FROM \"user\" u JOIN user_tenant_role r ON r.\"userId\" = u.id GROUP BY u.id)
+      SELECT g.uid AS id FROM g WHERE NOT EXISTS (SELECT 1 FROM user_tenant_role r WHERE r.\"userId\" = g.uid AND r.type <> g.t)"])
+
 (deftest test-exists-on-postgres
   (if-not server
     (println "Skipping the Postgres EXISTS check: set PINE_TEST_POSTGRES_URL to run it.")
@@ -305,6 +314,14 @@ WHERE d.id = g.id AND kf.id IS NULL AND g.archived_at IS NULL")
                   (is (nil? error) error)
                   (when expression
                     (is (= (set (map :id (jdbc/query db [sql]))) (pine-ids expression)) expression)))))
+            (doseq [sql exists-tied-twice-queries]
+              (testing (str "Tied twice: " sql)
+                (let [{:keys [expression error]} (t/sql->pine sql (db/init-references id))
+                      expected (set (map :id (jdbc/query db [sql])))]
+                  (is (seq expected) "the fixture gives it rows to keep")
+                  (is (nil? error) error)
+                  (when expression
+                    (is (= expected (pine-ids expression)) expression)))))
             (finally
               (connections/remove-connection-pool id)
               (db/forget-connection id))))))))
