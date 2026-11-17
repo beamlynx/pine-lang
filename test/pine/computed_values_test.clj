@@ -290,7 +290,7 @@
 
 (deftest test-update
   (testing "now() as a value"
-    (is (= "UPDATE \"company\" SET \"created_at\" = NOW() WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = '1' );"
+    (is (= "UPDATE \"company\" SET \"created_at\" = NOW() WHERE \"company\".\"id\" = '1' AND \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = '1' );"
            (s/trim (eval/formatted-query (first (:queries (build "company | where: id = 1 | update! created_at = now()"))))))))
   (testing "On SQLite"
     (is (s/includes? (:query (first (:queries (build :test-sqlite "company | where: id = 1 | update! created_at = now()"))))

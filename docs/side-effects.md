@@ -94,6 +94,31 @@ UPDATE "k"."case_ref" SET "note" = ? WHERE ("case_id", "search_id") IN (
 A table with no primary key, such as a view, is refused: no column is known to
 pick out one row, so the update could change rows nobody meant.
 
+### Conditions on the changed table
+
+A `where:` that reads only the changed table is written twice: in the subquery
+that picks the rows, and on the changed row itself.
+
+```
+case_item | where: reference_id is null | where: status = 'Pending' | update! status = 'Done'
+```
+
+```sql
+UPDATE "case_item" SET "status" = ?
+WHERE "case_item"."reference_id" IS NULL AND "case_item"."status" = ?
+  AND "id" IN ( SELECT "c_0"."id" FROM "case_item" AS "c_0" WHERE ... )
+```
+
+On its own, the second copy changes nothing. It matters when another
+transaction changes one of the rows while the write waits for it. Postgres
+then checks the statement's own `WHERE` again on the new version of the row,
+but not a subquery's. Without the copy, a row someone else has just filled in
+would be overwritten. With it, the row is left alone, as the same `UPDATE`
+written by hand would leave it. `delete!` does the same.
+
+A condition that reads another table, such as `where: name = c.name`, or an
+`in` with a named result, stays in the subquery only.
+
 ### A value from another table
 
 A value can read a column of another table in the pipe. Each changed row takes
@@ -105,15 +130,18 @@ employee as e | company as c .id = .company_id | from: e | update! note = c.name
 
 A column of the changed table is written bare, as in `coalesce(c.note, note)`.
 
-`UPDATE` has only the changed table in scope. So each such value is a subquery
-on the pipe's rows, matched to the changed row by its key:
+The pipe's rows are read once: each changed row's key, and the values it takes
+from the other tables. The `UPDATE` joins them to the changed table by its key.
+That join also picks the rows it changes.
 
 ```sql
-UPDATE "employee" SET "note" = (SELECT DISTINCT "__pine_source__"."__pine_value_1__"
-  FROM ( SELECT "e"."id" AS "__pine_key_1__", "c"."name" AS "__pine_value_1__" FROM ... ) AS "__pine_source__"
-  WHERE "__pine_source__"."__pine_key_1__" = "employee"."id")
-WHERE "id" IN ( SELECT "e"."id" FROM ... )
+UPDATE "employee" SET "note" = "__pine_source__"."__pine_value_1__"
+FROM ( SELECT "e"."id" AS "__pine_key_1__", "c"."name" AS "__pine_value_1__" FROM ... ) AS "__pine_source__"
+WHERE "__pine_source__"."__pine_key_1__" = "employee"."id"
 ```
+
+That is Postgres and SQLite. MySQL writes the same join as `UPDATE "employee"
+JOIN ( ... ) AS "__pine_source__" ON ... SET ...`.
 
 The pipe must give each changed row one value. It may reach a row twice with
 the same value. A row it reaches with different values refuses the whole

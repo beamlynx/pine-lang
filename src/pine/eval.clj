@@ -1266,6 +1266,41 @@
     (str "(" (s/join ", " (map q columns)) ")")
     (q (first columns))))
 
+(defn- condition-aliases
+  "The aliases one where: condition reads. A named result counts as another
+  table: its rows aren't the changed table's."
+  [{:keys [alias value computed]}]
+  (cond-> #{alias}
+    (= :column (:type value)) (conj (first (:value value)))
+    (= :computed (:type value)) (into (map :alias (computed/columns (:node value))))
+    computed (into (map :alias (computed/columns computed)))
+    (= :named-result (:type value)) (conj ::named-result)))
+
+(defn- own-conditions
+  "[sql params] for each where: of the pipe that reads only the changed
+  table `alias`, written on `table` itself, as the UPDATE or DELETE has it
+  in scope: `\"case_item\".\"reference_id\" IS NULL`.
+
+  The pipe already keeps only rows that meet them, so they change nothing
+  on their own. They matter when another transaction changes one of the
+  rows first. Postgres then checks the statement's own WHERE again on the
+  new version of the row, but not a subquery's. So `update! reference_id =
+  ...` after `where: reference_id is null` leaves alone a row someone else
+  has filled in meanwhile, as the SQL it came from did.
+
+  Nil for a named result: its columns may be renamed."
+  [{:keys [where aliases]} alias table]
+  (when-not (get-in aliases [alias :ast])
+    (let [own? #(= #{alias} (condition-aliases %))]
+      (binding [*column-ref* (fn [_ column] (q table column))]
+        (doall
+         (for [entry where
+               :when (if-let [group (:or entry)] (every? own? group) (own? entry))]
+           (if-let [group (:or entry)]
+             (let [rendered (map render-condition group)]
+               [(str "(" (s/join " OR " (map first rendered)) ")") (mapcat second rendered)])
+             (render-condition entry))))))))
+
 (defn build-delete-query
   "`delete!` names the columns that identify the rows to remove, and the
   DELETE matches them against those same columns as selected by the
@@ -1280,11 +1315,14 @@
   (let [{:keys [delete current aliases]} state
         {table :table schema :schema}     (write-target "delete!" state current)
         {:keys [columns]}                 delete
+        own                               (own-conditions state current table)
         state                             (assoc state :columns
                                                  (mapv (fn [column] {:column column :alias current}) columns))
         {:keys [query params]}            (build-select-query state)]
-    {:query (str "DELETE FROM " (q schema table) " WHERE " (key-target columns) " IN ( "  (in-subquery query) " )")
-     :params params}))
+    {:query (str "DELETE FROM " (q schema table) " WHERE "
+                 (apply str (map #(str (first %) " AND ") own))
+                 (key-target columns) " IN ( "  (in-subquery query) " )")
+     :params (if (seq own) (concat (mapcat second own) params) params)}))
 
 (def ^:private ^:dynamic *other-table-ref*
   "While update! writes a value read from another table of the pipe: a
@@ -1405,15 +1443,18 @@
   pipe, as in `case_item as ci | unambiguous as u .item_id | update!
   reference_id = u.request_id`.
 
-  UPDATE has only the changed table in scope, so each such value is a
-  subquery on the pipe's rows, matched to the row being changed by its key:
-  `SET reference_id = (SELECT DISTINCT s.v FROM (<pipe>) AS s WHERE s.k =
-  case_item.id)`. The pipe has to give each changed row one value; where it
-  gives several, the database refuses the UPDATE (Postgres and MySQL) or
-  the guard query does first (all three). See :guard in
-  pine.db.exec/run-action-queries-in-transaction.
+  The pipe's rows are read once, as `__pine_source__`: each changed row's
+  key and the values read from the other tables. The UPDATE joins them to
+  the changed table by its key, `UPDATE case_item SET reference_id =
+  s.v FROM (<pipe>) AS s WHERE s.k = case_item.id` (JOIN ... ON on MySQL),
+  so the join also picks the rows it changes. The pipe has to give each
+  changed row one value: the guard query refuses the update where it gives
+  several, which the UPDATE would otherwise settle by picking one. See
+  :guard in pine.db.exec/run-action-queries-in-transaction.
 
-  Returns {:set-entries :guard}, with the SET entries as set-column's."
+  Returns {:set-entries :source :matches :guard}: the SET entries as
+  set-column's, the source's {:query :params}, and the condition that joins
+  it to `table`."
   [state update-alias table key-columns assignments reads]
   (let [key-names (map-indexed (fn [i _] (str "__pine_key_" (inc i) "__")) key-columns)
         read-names (zipmap reads (map-indexed (fn [i _] (str "__pine_value_" (inc i) "__")) reads))
@@ -1427,22 +1468,9 @@
                    build-select-query)
         s (q "__pine_source__")
         matches (s/join " AND " (map (fn [n column] (str s "." (q n) " = " (q table column))) key-names key-columns))
-        entries (binding [*other-table-ref* (fn [alias column]
-                                              (some->> (read-names [alias column]) q (str s ".")))]
-                  (doall (map #(set-column update-alias %) (group-by-column assignments))))
-        ;; A value that reads another table becomes a subquery. One that
-        ;; doesn't stays as it is: `updated_at = now()`.
-        reads-other? (fn [entry-assignments] (seq (other-table-reads update-alias entry-assignments)))
-        set-entries (map (fn [entry-assignments [sql params]]
-                           (if (reads-other? entry-assignments)
-                             ;; set-column wrote `"column" = value`.
-                             (let [column (q (-> entry-assignments first :column :column))
-                                   value (subs sql (count (str column " = ")))]
-                               [(str column " = (SELECT DISTINCT " value " FROM ( " (:query source) " ) AS " s
-                                     " WHERE " matches ")")
-                                (concat params (:params source))])
-                             [sql params]))
-                         (group-by-column assignments) entries)
+        set-entries (binding [*other-table-ref* (fn [alias column]
+                                                  (some->> (read-names [alias column]) q (str s ".")))]
+                      (doall (map #(set-column update-alias %) (group-by-column assignments))))
         ;; The rows where the pipe gives a key more than one different set
         ;; of values. Each value is in the SELECT DISTINCT, so the same
         ;; value twice is one.
@@ -1456,7 +1484,10 @@
                :message (str "update! found more than one value for some rows of `" table
                              "`: the pipe reaches them more than once, with different values. "
                              "Narrow it with where: so each row is reached once.")}]
-    {:set-entries set-entries :guard guard}))
+    {:set-entries set-entries
+     :source (select-keys source [:query :params])
+     :matches matches
+     :guard guard}))
 
 (defn- build-single-update-query [state update-alias assignments]
   (check-write-allowed state "update!" update-alias)
@@ -1465,23 +1496,47 @@
          named-key :key}               (write-target "update!" state update-alias)
         key-columns                    (or named-key (update-key state update-alias))
         reads                          (other-table-reads update-alias assignments)
-        {sourced :set-entries guard :guard} (when (seq reads)
-                                              (sourced-update state update-alias table key-columns assignments reads))
+        {sourced :set-entries
+         :keys [source matches guard]} (when (seq reads)
+                                         (sourced-update state update-alias table key-columns assignments reads))
         set-entries                    (or sourced (map #(set-column update-alias %) (group-by-column assignments)))
         set-clause                     (s/join ", " (map first set-entries))
-        holder-checks                  (distinct
-                                        (for [{{:keys [column path]} :column} assignments
-                                              :when (seq path)]
-                                          (json-holder-check column path)))
-        state-for-subquery (-> state
-                               (assoc :columns (mapv (fn [column] {:column column :alias update-alias}) key-columns))
-                               (assoc :operation {:type :select :value nil}))
-        {:keys [query params]} (build-select-query state-for-subquery)]
-    (cond-> {:table (if schema (str schema "." table) table)
-             :query (str "UPDATE " (q schema table) " SET " set-clause " WHERE "
-                         (apply str (map #(str (first %) " AND ") holder-checks))
-                         (key-target key-columns) " IN ( " (in-subquery query) " )")
-             :params (concat (mapcat second set-entries) (mapcat second holder-checks) params)}
+        set-params                     (mapcat second set-entries)
+        ;; The conditions on the changed row itself: each JSON key's holder
+        ;; is there, and the pipe's where: on this table (own-conditions).
+        checks                         (concat (distinct
+                                                (for [{{:keys [column path]} :column} assignments
+                                                      :when (seq path)]
+                                                  (json-holder-check column path)))
+                                               (own-conditions state update-alias table))
+        check-params                   (mapcat second checks)
+        target                         (q schema table)]
+    (cond-> (assoc
+             (cond
+               ;; A value from another table: the pipe's rows, joined once.
+               (and source (= *dialect* :mysql))
+               {:query (str "UPDATE " target " JOIN ( " (:query source) " ) AS " (q "__pine_source__")
+                            " ON " matches " SET " set-clause
+                            (when (seq checks) (str " WHERE " (s/join " AND " (map first checks)))))
+                :params (concat (:params source) set-params check-params)}
+
+               source
+               {:query (str "UPDATE " target " SET " set-clause
+                            " FROM ( " (:query source) " ) AS " (q "__pine_source__")
+                            " WHERE " (s/join " AND " (concat (map first checks) [matches])))
+                :params (concat set-params (:params source) check-params)}
+
+               ;; Otherwise the rows are found by their key among the pipe's.
+               :else
+               (let [{:keys [query params]} (build-select-query
+                                             (-> state
+                                                 (assoc :columns (mapv (fn [column] {:column column :alias update-alias}) key-columns))
+                                                 (assoc :operation {:type :select :value nil})))]
+                 {:query (str "UPDATE " target " SET " set-clause " WHERE "
+                              (apply str (map #(str (first %) " AND ") checks))
+                              (key-target key-columns) " IN ( " (in-subquery query) " )")
+                  :params (concat set-params check-params params)}))
+             :table (if schema (str schema "." table) table))
       guard (assoc :guard guard))))
 
 (defn build-update-queries [state]

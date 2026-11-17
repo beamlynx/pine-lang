@@ -500,6 +500,46 @@ ORDER BY c.name, ed.field;")
       (4, '{\"plan\": \"free\"}', '[\"c\"]'),
       (5, '{\"plan\": 10}', NULL)"])
 
+(def ^:private claim-fixture
+  ["CREATE TABLE company (id INTEGER PRIMARY KEY, name text NOT NULL)"
+   "CREATE TABLE person (id INTEGER PRIMARY KEY, company_id INTEGER REFERENCES company (id), note text)"
+   "INSERT INTO company VALUES (1, 'Acme')"
+   "INSERT INTO person VALUES (1, 1, NULL), (2, 1, NULL)"])
+
+(defn- waiting-on-a-lock?
+  "Whether a statement on the database of `spec` is waiting for a lock."
+  [spec]
+  (pos? (:n (first (jdbc/query spec ["SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'"])))))
+
+(deftest test-write-checks-its-own-where-again-on-postgres
+  ;; Another transaction fills in person 1's note while an update! of every
+  ;; person without a note waits for it. Postgres checks the UPDATE's own
+  ;; WHERE again on the new version of the row, but not a subquery's. So
+  ;; the where: has to be on the UPDATE's own row too, or person 1's note
+  ;; is overwritten. The same for a plain value and one from another table.
+  (e/on-engine
+   :postgres claim-fixture
+   (fn [{:keys [spec] :as db}]
+     (doseq [[expression note] [["person | where: note is null | update! note = 'mine'" "mine"]
+                                ["company | person | where: note is null | update! note = c_0.name" "Acme"]]]
+       (testing expression
+         (jdbc/execute! spec ["UPDATE person SET note = NULL"])
+         (with-open [other (jdbc/get-connection spec)]
+           (.setAutoCommit other false)
+           ;; Left open: execute! would commit a transaction of its own.
+           (jdbc/execute! {:connection other} ["UPDATE person SET note = 'theirs' WHERE id = 1"] {:transaction? false})
+           (let [write (future (e/write! db expression))]
+             ;; Commit only once the update! waits for person 1.
+             (loop [tries 0]
+               (when (and (< tries 100) (not (waiting-on-a-lock? spec)))
+                 (Thread/sleep 50)
+                 (recur (inc tries))))
+             (is (waiting-on-a-lock? spec) "the update! waits for the other transaction")
+             (.commit other)
+             @write))
+         (is (= [{:id 1 :note "theirs"} {:id 2 :note note}]
+                (jdbc/query spec ["SELECT id, note FROM person ORDER BY id"]))))))))
+
 (def ^:private json-where-queries
   ["SELECT t.id FROM tj t WHERE t.data->>'plan' = 'pro'"
    "SELECT t.id FROM tj t WHERE t.data->>'plan' != 'pro'"
