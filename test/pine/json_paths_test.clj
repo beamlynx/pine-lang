@@ -208,16 +208,18 @@
   (testing "Postgres: jsonb_set, with the literal as a JSON value"
     (is (= {:query (str "UPDATE \"customer\" SET \"data\" = jsonb_set(\"data\"::jsonb, ARRAY[?::text, ?::text], ?::jsonb) "
                         "WHERE jsonb_typeof(jsonb_extract_path(\"data\"::jsonb, ?::text)) = 'array' "
+                        "AND \"customer\".\"id\" = ? "
                         "AND \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )")
-            :params ["companies" "0" "\"c-42\"" "companies" 1]}
+            :params ["companies" "0" "\"c-42\"" "companies" 1 1]}
            (update-sql "customer | where: id = 1 | update! data.companies[0] = 'c-42'"))))
 
+  ;; The last two parameters are the where:'s, on the row and in the pipe.
   (testing "A literal means the same JSON value as in where:"
-    (is (= ["plan" "5"] (butlast (:params (update-sql "customer | where: id = 1 | update! data.plan = 5")))))
-    (is (= ["plan" "-1.5"] (butlast (:params (update-sql "customer | where: id = 1 | update! data.plan = -1.5")))))
-    (is (= ["plan" "true"] (butlast (:params (update-sql "customer | where: id = 1 | update! data.plan = true")))))
-    (is (= ["plan" "null"] (butlast (:params (update-sql "customer | where: id = 1 | update! data.plan = null")))))
-    (is (= ["plan" "\"2024-01-01\""] (butlast (:params (update-sql "customer | where: id = 1 | update! data.plan = '2024-01-01'"))))))
+    (is (= ["plan" "5"] (drop-last 2 (:params (update-sql "customer | where: id = 1 | update! data.plan = 5")))))
+    (is (= ["plan" "-1.5"] (drop-last 2 (:params (update-sql "customer | where: id = 1 | update! data.plan = -1.5")))))
+    (is (= ["plan" "true"] (drop-last 2 (:params (update-sql "customer | where: id = 1 | update! data.plan = true")))))
+    (is (= ["plan" "null"] (drop-last 2 (:params (update-sql "customer | where: id = 1 | update! data.plan = null")))))
+    (is (= ["plan" "\"2024-01-01\""] (drop-last 2 (:params (update-sql "customer | where: id = 1 | update! data.plan = '2024-01-01'"))))))
 
   (testing "The alias can name the table, and alias wins"
     (is (re-find #"SET \"data\" = jsonb_set\(\"data\"::jsonb, ARRAY\[\?::text\], \?::jsonb\) WHERE"
@@ -227,8 +229,9 @@
     (is (= {:query (str "UPDATE \"customer\" SET \"data\" = jsonb_set(jsonb_set(\"data\"::jsonb, ARRAY[?::text], ?::jsonb)::jsonb, "
                         "ARRAY[?::text], ?::jsonb), \"name\" = ? "
                         "WHERE jsonb_typeof(\"data\"::jsonb) = 'object' "
+                        "AND \"customer\".\"id\" = ? "
                         "AND \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )")
-            :params ["a" "1" "b" "2" "x" 1]}
+            :params ["a" "1" "b" "2" "x" 1 1]}
            (update-sql "customer | where: id = 1 | update! data.a = 1, name = 'x', data.b = 2"))))
 
   (testing "A Postgres json column gets the jsonb back as json"
@@ -238,8 +241,9 @@
   (testing "MySQL: JSON_SET with one path parameter"
     (is (= {:query (str "UPDATE `product` SET `config` = JSON_SET(`config`, ?, CAST(? AS JSON)) "
                         "WHERE JSON_TYPE(JSON_EXTRACT(`config`, ?)) = 'ARRAY' "
+                        "AND `product`.`id` = ? "
                         "AND `id` IN ( SELECT * FROM ( SELECT `p_0`.`id` FROM `product` AS `p_0` WHERE `p_0`.`id` = ? ) AS `pine_sub` )")
-            :params ["$.\"tags\"[0]" "\"x\"" "$.\"tags\"" 1]}
+            :params ["$.\"tags\"[0]" "\"x\"" "$.\"tags\"" 1 1]}
            (update-sql :test-mysql "product | where: id = 1 | update! config.tags[0] = 'x'"))))
 
   (testing "SQLite: json_set, reading the value as JSON"

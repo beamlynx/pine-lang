@@ -463,8 +463,10 @@
            (generate "employee | select: name, created_at => month | group: month with count"))))
 
   (testing "delete action"
-    (is (= {:query "DELETE FROM \"company\" WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )",
-            :params (list (dt/number "1"))}
+    ;; The where: on the deleted table is also on the DELETE's own row, so
+    ;; Postgres checks it again on a row another transaction changed first.
+    (is (= {:query "DELETE FROM \"company\" WHERE \"company\".\"id\" = ? AND \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )",
+            :params (list (dt/number "1") (dt/number "1"))}
            (generate "company | where: id = 1 | delete! .id")))
     (is (= {:query "DELETE FROM \"company\" WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" LIMIT 10 )",
             :params nil}
@@ -580,33 +582,35 @@
            (generate "company | where: id = 1 | u! name = 'x',"))))
 
   (testing "update action"
+    ;; The where: on the changed table is also on the UPDATE's own row (see
+    ;; "delete action").
     (is (= {:queries [{:table "company"
-                       :query "UPDATE \"company\" SET \"name\" = ? WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
-                       :params (list (dt/string "John Doe") (dt/number "1"))}]}
+                       :query "UPDATE \"company\" SET \"name\" = ? WHERE \"company\".\"id\" = ? AND \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
+                       :params (list (dt/string "John Doe") (dt/number "1") (dt/number "1"))}]}
            (generate "company | where: id = 1 | update! name = 'John Doe'")))
     (is (= {:queries [{:table "company"
-                       :query "UPDATE \"company\" SET \"name\" = ?, \"age\" = ? WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
-                       :params (list (dt/string "John") (dt/number "30") (dt/number "1"))}]}
+                       :query "UPDATE \"company\" SET \"name\" = ?, \"age\" = ? WHERE \"company\".\"id\" = ? AND \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
+                       :params (list (dt/string "John") (dt/number "30") (dt/number "1") (dt/number "1"))}]}
            (generate "company | where: id = 1 | update! name = 'John', age = 30")))
     (is (= {:queries [{:table "company"
-                       :query "UPDATE \"company\" SET \"active\" = true WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
-                       :params (list (dt/number "1"))}]}
+                       :query "UPDATE \"company\" SET \"active\" = true WHERE \"company\".\"id\" = ? AND \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
+                       :params (list (dt/number "1") (dt/number "1"))}]}
            (generate "company | where: id = 1 | update! active = true")))
     (is (= {:queries [{:table "company"
-                       :query "UPDATE \"company\" SET \"deleted_at\" = NULL WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
-                       :params (list (dt/number "1"))}]}
+                       :query "UPDATE \"company\" SET \"deleted_at\" = NULL WHERE \"company\".\"id\" = ? AND \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
+                       :params (list (dt/number "1") (dt/number "1"))}]}
            (generate "company | where: id = 1 | update! deleted_at = null")))
 
     ;; Test JSONB type conversion
     (is (= {:queries [{:table "customer"
-                       :query "UPDATE \"customer\" SET \"data\" = ?::jsonb WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
-                       :params (list (dt/jsonb "{\"test\": 1}") (dt/number "1"))}]}
+                       :query "UPDATE \"customer\" SET \"data\" = ?::jsonb WHERE \"customer\".\"id\" = ? AND \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"customer\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
+                       :params (list (dt/jsonb "{\"test\": 1}") (dt/number "1") (dt/number "1"))}]}
            (generate "customer | where: id = 1 | update! data = '{\"test\": 1}'")))
 
     ;; Test update with explicit table alias (disambiguates when multiple tables in context)
     (is (= {:queries [{:table "company"
-                       :query "UPDATE \"company\" SET \"x\" = ? WHERE \"id\" IN ( SELECT \"c\".\"id\" FROM \"company\" AS \"c\" JOIN \"document\" AS \"d_1\" ON \"c\".\"id\" = \"d_1\".\"company_id\" WHERE \"c\".\"id\" = ? )"
-                       :params (list (dt/string "y") (dt/number "1"))}]}
+                       :query "UPDATE \"company\" SET \"x\" = ? WHERE \"company\".\"id\" = ? AND \"id\" IN ( SELECT \"c\".\"id\" FROM \"company\" AS \"c\" JOIN \"document\" AS \"d_1\" ON \"c\".\"id\" = \"d_1\".\"company_id\" WHERE \"c\".\"id\" = ? )"
+                       :params (list (dt/string "y") (dt/number "1") (dt/number "1"))}]}
            (generate "company as c | where: id = 1 | document | update! c.x = 'y'")))
 
     ;; Test multi-table update (runs multiple queries, one per table)
@@ -617,42 +621,52 @@
     ;; Column-to-column: the right side is a column, written bare because
     ;; UPDATE has no alias in scope. It used to be a `?` bound to NULL.
     (is (= {:queries [{:table "company"
-                       :query "UPDATE \"company\" SET \"name\" = \"country\" WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
-                       :params (list (dt/number "1"))}]}
+                       :query "UPDATE \"company\" SET \"name\" = \"country\" WHERE \"company\".\"id\" = ? AND \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
+                       :params (list (dt/number "1") (dt/number "1"))}]}
            (generate "company | where: id = 1 | update! name = country")))
     (is (= {:queries [{:table "company"
-                       :query "UPDATE \"company\" SET \"name\" = \"country\" WHERE \"id\" IN ( SELECT \"c\".\"id\" FROM \"company\" AS \"c\" WHERE \"c\".\"id\" = ? )"
-                       :params (list (dt/number "1"))}]}
+                       :query "UPDATE \"company\" SET \"name\" = \"country\" WHERE \"company\".\"id\" = ? AND \"id\" IN ( SELECT \"c\".\"id\" FROM \"company\" AS \"c\" WHERE \"c\".\"id\" = ? )"
+                       :params (list (dt/number "1") (dt/number "1"))}]}
            (generate "company as c | where: id = 1 | update! c.name = c.country")))
-    ;; A column of another table of the pipe: a subquery on the pipe's rows,
-    ;; matched to the changed row by its key. The guard finds a row the
+    ;; A column of another table of the pipe: the pipe's rows are read once,
+    ;; and joined to the changed table by its key. The guard finds a row the
     ;; pipe gives more than one value.
     (let [source "SELECT \"c\".\"id\" AS \"__pine_key_1__\", \"d\".\"title\" AS \"__pine_value_1__\" FROM \"company\" AS \"c\" JOIN \"document\" AS \"d\" ON \"c\".\"id\" = \"d\".\"company_id\" WHERE \"c\".\"id\" = ?"]
       (is (= {:queries [{:table "company"
-                         :query (str "UPDATE \"company\" SET \"name\" = (SELECT DISTINCT \"__pine_source__\".\"__pine_value_1__\" FROM ( " source " ) AS \"__pine_source__\" WHERE \"__pine_source__\".\"__pine_key_1__\" = \"company\".\"id\"), \"updated_at\" = NOW() "
-                                     "WHERE \"id\" IN ( SELECT \"c\".\"id\" FROM \"company\" AS \"c\" JOIN \"document\" AS \"d\" ON \"c\".\"id\" = \"d\".\"company_id\" WHERE \"c\".\"id\" = ? )")
+                         :query (str "UPDATE \"company\" SET \"name\" = \"__pine_source__\".\"__pine_value_1__\", \"updated_at\" = NOW() "
+                                     "FROM ( " source " ) AS \"__pine_source__\" "
+                                     "WHERE \"company\".\"id\" = ? AND \"__pine_source__\".\"__pine_key_1__\" = \"company\".\"id\"")
                          :params (list (dt/number "1") (dt/number "1"))
                          :guard {:query (str "SELECT \"__pine_key_1__\" FROM ( SELECT DISTINCT \"__pine_key_1__\", \"__pine_value_1__\" FROM ( " source " ) AS \"__pine_source__\" ) AS \"__pine_values__\" GROUP BY \"__pine_key_1__\" HAVING COUNT(*) > 1")
                                  :params (list (dt/number "1"))
                                  :message "update! found more than one value for some rows of `company`: the pipe reaches them more than once, with different values. Narrow it with where: so each row is reached once."}}]}
              (generate "company as c | where: id = 1 | document as d | update! c.name = d.title, c.updated_at = now()"))))
     (testing "a computed value mixes the changed table's columns, written bare, with another table's"
-      (is (re-find #"SET \"title\" = \(SELECT DISTINCT COALESCE\(\"__pine_source__\".\"__pine_value_1__\", \"title\"\) FROM"
+      (is (re-find #"SET \"title\" = COALESCE\(\"__pine_source__\".\"__pine_value_1__\", \"title\"\) FROM \( "
                    (-> (generate "document as d | where: id = 1 | company as c | from: d | update! title = coalesce(c.name, title)") :queries first :query))))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"update! can't read `d.title` while it changes `d` too"
-                          (generate "company as c | where: id = 1 | document as d | update! c.name = d.title, d.title = c.name"))))
+                          (generate "company as c | where: id = 1 | document as d | update! c.name = d.title, d.title = c.name")))
+    (testing "only a where: that reads nothing but the changed table is also on its row"
+      ;; Another table's column, on either side of the condition or in an
+      ;; or, stays in the pipe only. So does a named result.
+      (is (= "UPDATE \"employee\" SET \"salary\" = ? WHERE \"id\" IN ( SELECT \"e_1\".\"id\" FROM \"company\" AS \"c\" JOIN \"employee\" AS \"e_1\" ON \"c\".\"id\" = \"e_1\".\"company_id\" WHERE \"c\".\"name\" = ? AND \"e_1\".\"name\" = \"c\".\"name\" )"
+             (-> (generate "company as c | where: name = 'x' | employee | where: name = c.name | update! salary = 1") :queries first :query)))
+      (is (= "UPDATE \"company\" SET \"name\" = ? WHERE (\"company\".\"id\" = ? OR \"company\".\"name\" = ?) AND \"id\" IN ( SELECT \"c\".\"id\" FROM \"company\" AS \"c\" JOIN \"employee\" AS \"e\" ON \"c\".\"id\" = \"e\".\"company_id\" WHERE (\"c\".\"id\" = ? OR \"c\".\"name\" = ?) AND (\"e\".\"name\" = ? OR \"c\".\"name\" = ?) )"
+             (-> (generate "company as c | where: id = 1 or name = 'x' | employee as e | where: e.name = 'a' or c.name = 'b' | from: c | update! name = 'y'") :queries first :query)))
+      (is (= "UPDATE \"company\" SET \"name\" = ? WHERE \"company\".\"name\" = ? AND \"id\" IN ( WITH \"x\" AS ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? ) SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" IN ( SELECT \"id\" FROM \"x\" ) AND \"c_0\".\"name\" = ? )"
+             (-> (generate-expressions ["company | where: id = 1 | s: id |= x" "company | where: id in x | where: name = 'b' | update! name = 'a'"]) :queries first :query)))))
 
   ;; Schema "p" in the fixtures: tables not keyed on `id`.
   (testing "update! finds rows by the table's primary key"
     (testing "a key of two columns is matched as a row"
       (is (= {:queries [{:table "p.membership"
-                         :query "UPDATE \"p\".\"membership\" SET \"role\" = ? WHERE (\"group_code\", \"member_code\") IN ( SELECT \"m_0\".\"group_code\", \"m_0\".\"member_code\" FROM \"p\".\"membership\" AS \"m_0\" WHERE \"m_0\".\"role\" = ? )"
-                         :params (list (dt/string "b") (dt/string "a"))}]}
+                         :query "UPDATE \"p\".\"membership\" SET \"role\" = ? WHERE \"membership\".\"role\" = ? AND (\"group_code\", \"member_code\") IN ( SELECT \"m_0\".\"group_code\", \"m_0\".\"member_code\" FROM \"p\".\"membership\" AS \"m_0\" WHERE \"m_0\".\"role\" = ? )"
+                         :params (list (dt/string "b") (dt/string "a") (dt/string "a"))}]}
              (generate "p.membership | where: role = 'a' | update! role = 'b'"))))
     (testing "a key that isn't `id` is used even when the table has an `id` column"
       (is (= {:queries [{:table "p.legacy"
-                         :query "UPDATE \"p\".\"legacy\" SET \"name\" = ? WHERE \"code\" IN ( SELECT \"l_0\".\"code\" FROM \"p\".\"legacy\" AS \"l_0\" WHERE \"l_0\".\"id\" = ? )"
-                         :params (list (dt/string "b") (dt/number "1"))}]}
+                         :query "UPDATE \"p\".\"legacy\" SET \"name\" = ? WHERE \"legacy\".\"id\" = ? AND \"code\" IN ( SELECT \"l_0\".\"code\" FROM \"p\".\"legacy\" AS \"l_0\" WHERE \"l_0\".\"id\" = ? )"
+                         :params (list (dt/string "b") (dt/number "1") (dt/number "1"))}]}
              (generate "p.legacy | where: id = 1 | update! name = 'b'"))))
     (testing "a table without a primary key is refused, even with an `id` column"
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"update! can't change `p.log_entry`: it has no primary key"
@@ -1517,8 +1531,8 @@
            (generate-mysql "product | where: released = '2025-01-01'"))))
 
   (testing "delete!/update! wrap the inner SELECT in a derived table (MySQL error 1093/1235) - identity for Postgres, already asserted above"
-    (is (= {:query "DELETE FROM `company` WHERE `id` IN ( SELECT * FROM ( SELECT `c_0`.`id` FROM `company` AS `c_0` WHERE `c_0`.`id` = ? ) AS `pine_sub` )"
-            :params (list (dt/number "1"))}
+    (is (= {:query "DELETE FROM `company` WHERE `company`.`id` = ? AND `id` IN ( SELECT * FROM ( SELECT `c_0`.`id` FROM `company` AS `c_0` WHERE `c_0`.`id` = ? ) AS `pine_sub` )"
+            :params (list (dt/number "1") (dt/number "1"))}
            (generate-mysql "company | where: id = 1 | delete! .id")))
 
     ;; The error-1235 case specifically: LIMIT inside an IN subquery. Must
@@ -1529,21 +1543,21 @@
            (generate-mysql "company | limit: 5 | delete! .id")))
 
     (is (= {:queries [{:table "company"
-                       :query "UPDATE `company` SET `name` = ? WHERE `id` IN ( SELECT * FROM ( SELECT `c_0`.`id` FROM `company` AS `c_0` WHERE `c_0`.`id` = ? ) AS `pine_sub` )"
-                       :params (list (dt/string "John Doe") (dt/number "1"))}]}
+                       :query "UPDATE `company` SET `name` = ? WHERE `company`.`id` = ? AND `id` IN ( SELECT * FROM ( SELECT `c_0`.`id` FROM `company` AS `c_0` WHERE `c_0`.`id` = ? ) AS `pine_sub` )"
+                       :params (list (dt/string "John Doe") (dt/number "1") (dt/number "1"))}]}
            (generate-mysql "company | where: id = 1 | update! name = 'John Doe'")))
 
     ;; Same case as the jsonb auto-cast test above, but through the
     ;; update path: both the CAST(? AS JSON) auto-cast and the derived-table
     ;; wrap have to hold together in one query.
     (is (= {:queries [{:table "customer"
-                       :query "UPDATE `customer` SET `data` = CAST(? AS JSON) WHERE `id` IN ( SELECT * FROM ( SELECT `c_0`.`id` FROM `customer` AS `c_0` WHERE `c_0`.`id` = ? ) AS `pine_sub` )"
-                       :params (list (dt/jsonb "{\"test\": 1}") (dt/number "1"))}]}
+                       :query "UPDATE `customer` SET `data` = CAST(? AS JSON) WHERE `customer`.`id` = ? AND `id` IN ( SELECT * FROM ( SELECT `c_0`.`id` FROM `customer` AS `c_0` WHERE `c_0`.`id` = ? ) AS `pine_sub` )"
+                       :params (list (dt/jsonb "{\"test\": 1}") (dt/number "1") (dt/number "1"))}]}
            (generate-mysql "customer | where: id = 1 | update! data = '{\"test\": 1}'")))
 
     (is (= {:queries [{:table "p.membership"
-                       :query "UPDATE `p`.`membership` SET `role` = ? WHERE (`group_code`, `member_code`) IN ( SELECT * FROM ( SELECT `m_0`.`group_code`, `m_0`.`member_code` FROM `p`.`membership` AS `m_0` WHERE `m_0`.`role` = ? ) AS `pine_sub` )"
-                       :params (list (dt/string "b") (dt/string "a"))}]}
+                       :query "UPDATE `p`.`membership` SET `role` = ? WHERE `membership`.`role` = ? AND (`group_code`, `member_code`) IN ( SELECT * FROM ( SELECT `m_0`.`group_code`, `m_0`.`member_code` FROM `p`.`membership` AS `m_0` WHERE `m_0`.`role` = ? ) AS `pine_sub` )"
+                       :params (list (dt/string "b") (dt/string "a") (dt/string "a"))}]}
            (generate-mysql "p.membership | where: role = 'a' | update! role = 'b'")))))
 
 (deftest test-build-query-sqlite
@@ -1621,21 +1635,21 @@
                                          "active_companies"]))))
 
   (testing "delete!/update! need no derived-table wrap - SQLite allows the target table in its own subquery, and a LIMIT in it"
-    (is (= {:query "DELETE FROM \"company\" WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
-            :params (list (dt/number "1"))}
+    (is (= {:query "DELETE FROM \"company\" WHERE \"company\".\"id\" = ? AND \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
+            :params (list (dt/number "1") (dt/number "1"))}
            (generate-sqlite "company | where: id = 1 | delete! .id")))
     (is (= {:query "DELETE FROM \"company\" WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" LIMIT 5 )"
             :params nil}
            (generate-sqlite "company | limit: 5 | delete! .id")))
     (is (= {:queries [{:table "company"
-                       :query "UPDATE \"company\" SET \"name\" = ? WHERE \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
-                       :params (list (dt/string "John Doe") (dt/number "1"))}]}
+                       :query "UPDATE \"company\" SET \"name\" = ? WHERE \"company\".\"id\" = ? AND \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = ? )"
+                       :params (list (dt/string "John Doe") (dt/number "1") (dt/number "1"))}]}
            (generate-sqlite "company | where: id = 1 | update! name = 'John Doe'"))))
 
   (testing "a composite primary key: row values, which SQLite supports in IN"
     (is (= {:queries [{:table "p.membership"
-                       :query "UPDATE \"p\".\"membership\" SET \"role\" = ? WHERE (\"group_code\", \"member_code\") IN ( SELECT \"m_0\".\"group_code\", \"m_0\".\"member_code\" FROM \"p\".\"membership\" AS \"m_0\" WHERE \"m_0\".\"role\" = ? )"
-                       :params (list (dt/string "b") (dt/string "a"))}]}
+                       :query "UPDATE \"p\".\"membership\" SET \"role\" = ? WHERE \"membership\".\"role\" = ? AND (\"group_code\", \"member_code\") IN ( SELECT \"m_0\".\"group_code\", \"m_0\".\"member_code\" FROM \"p\".\"membership\" AS \"m_0\" WHERE \"m_0\".\"role\" = ? )"
+                       :params (list (dt/string "b") (dt/string "a") (dt/string "a"))}]}
            (generate-sqlite "p.membership | where: role = 'a' | update! role = 'b'"))))
 
   (testing "JSON paths: json_extract with one path parameter, as for MySQL"
@@ -1708,13 +1722,13 @@
          "ON \"cr_0\".\"case_id\" = \"c_1\".\"id\" AND \"cr_0\".\"search_id\" = \"c_1\".\"search_id\"")))
 
   (testing "A write scopes its subquery with every column of the key"
-    (is (= {:query (str "DELETE FROM \"k\".\"case_ref\" WHERE \"id\" IN ( "
+    (is (= {:query (str "DELETE FROM \"k\".\"case_ref\" WHERE \"case_ref\".\"case_id\" = ? AND \"id\" IN ( "
                         "SELECT \"cr_1\".\"id\" FROM \"k\".\"case\" AS \"c_0\" "
                         "JOIN \"k\".\"case_ref\" AS \"cr_1\" "
                         "ON \"c_0\".\"id\" = \"cr_1\".\"case_id\" "
                         "AND \"c_0\".\"search_id\" = \"cr_1\".\"search_id\" "
                         "WHERE \"cr_1\".\"case_id\" = ? )")
-            :params (list (dt/number "1"))}
+            :params (list (dt/number "1") (dt/number "1"))}
            (generate "k.case | k.case_ref | where: case_id = 1 | delete! .id")))
 
     (is (clojure.string/includes?
@@ -1750,14 +1764,14 @@
 
     ;; MySQL wraps the inner SELECT in a derived table (error 1093/1235). The
     ;; wrap has to pass both columns through for the row comparison to work.
-    (is (= {:query (str "DELETE FROM `k`.`case_ref` WHERE (`case_id`, `search_id`) IN ( "
+    (is (= {:query (str "DELETE FROM `k`.`case_ref` WHERE `case_ref`.`case_id` = ? AND (`case_id`, `search_id`) IN ( "
                         "SELECT * FROM ( SELECT `cr_1`.`case_id`, `cr_1`.`search_id` "
                         "FROM `k`.`case` AS `c_0` "
                         "JOIN `k`.`case_ref` AS `cr_1` "
                         "ON `c_0`.`id` = `cr_1`.`case_id` "
                         "AND `c_0`.`search_id` = `cr_1`.`search_id` "
                         "WHERE `cr_1`.`case_id` = ? ) AS `pine_sub` )")
-            :params (list (dt/number "1"))}
+            :params (list (dt/number "1") (dt/number "1"))}
            (generate-mysql "k.case | k.case_ref | where: case_id = 1 | delete! .case_id, .search_id"))))
 
   (testing "A foreign key with no constraint name is still its own relation"
@@ -1899,8 +1913,8 @@
 
     (testing "a string written to an enum column by update! is cast too"
       (is (= {:queries [{:table "attachment"
-                         :query "UPDATE \"attachment\" SET \"type\" = ?::\"public\".\"attachment_type\" WHERE \"id\" IN ( SELECT \"a_0\".\"id\" FROM \"attachment\" AS \"a_0\" WHERE \"a_0\".\"type\" = ?::\"public\".\"attachment_type\" )"
-                         :params (list (enum-string "upload") (enum-string "sharepoint"))}]}
+                         :query "UPDATE \"attachment\" SET \"type\" = ?::\"public\".\"attachment_type\" WHERE \"attachment\".\"type\" = ?::\"public\".\"attachment_type\" AND \"id\" IN ( SELECT \"a_0\".\"id\" FROM \"attachment\" AS \"a_0\" WHERE \"a_0\".\"type\" = ?::\"public\".\"attachment_type\" )"
+                         :params (list (enum-string "upload") (enum-string "sharepoint") (enum-string "sharepoint"))}]}
              (generate "attachment | where: type = 'sharepoint' | update! type = 'upload'"))))
 
     (testing "MySQL compares its ENUM columns with strings as they are"

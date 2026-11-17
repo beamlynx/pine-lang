@@ -146,6 +146,13 @@
        (is (= {"person" {:changed {[4] {:note [nil "Initech/Di"] :name ["Di" "Dee"]}}}}
               (:changes (changed-by db "person | where: id = 4 | company | from: p_0 | update! note = concat(c_1.name, '/', name), name = 'Dee'"))))))))
 
+(deftest test-update-from-another-table-with-where
+  (scenario
+   (fn [db]
+     (testing "a where: on the changed table, also checked on the changed row"
+       (is (= {"person" {:changed {[4] {:note [nil "Initech"]}}}}
+              (:changes (changed-by db "company | person | where: note is null | where: active = false or id = 4 | where: company_id = 3 | update! note = c_0.name"))))))))
+
 (deftest test-update-from-a-row-reached-twice
   (scenario
    (fn [db]
