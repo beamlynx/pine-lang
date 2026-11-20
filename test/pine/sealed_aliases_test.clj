@@ -38,7 +38,7 @@
 
   (testing "In where:, on either side of a comparison"
     (is (s/ends-with? (sql "company as c | employee .company_id | o: created_at desc | l: 1 per c.id | where: e_1.id = 1")
-                      "WHERE \"result_1\".\"id\" = '1' LIMIT 250;"))
+                      "WHERE \"result_1\".\"id\" = 1 LIMIT 250;"))
     (is (s/ends-with? (sql "company as c | employee .company_id | s: c.id as cid, e_1.company_id | l: 10 | where: company_id = c.id")
                       "WHERE \"result_1\".\"company_id\" = \"result_1\".\"cid\" LIMIT 250;")))
 
@@ -53,7 +53,7 @@
     (is (= " ) SELECT \"result_1\".\"cid\", \"result_1\".\"name\" FROM \"result_1\" AS \"result_1\" LIMIT 250;"
            (outer (sql :test-sqlite "company as c | employee .company_id | s: c.id as cid, e_1.name | o: created_at desc | l: 1 per c.id | s: c.id, name"))))
     (is (s/ends-with? (sql :test-mysql "company as c | employee .company_id | group: c.id | where: c.id = 1")
-                      "WHERE `result_1`.`id` = '1' LIMIT 250;"))
+                      "WHERE `result_1`.`id` = 1 LIMIT 250;"))
     (is (s/ends-with? (sql :test-sqlite "company as c | employee .company_id | l: 10 | o: e_1.id")
                       "ORDER BY \"result_1\".\"id\" DESC LIMIT 250;"))))
 
