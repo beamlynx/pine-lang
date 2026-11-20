@@ -6,6 +6,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Fixed
 - **`update!` and `delete!` no longer overwrite a row another person has just changed.** If someone else changes a row while your write waits for it, Postgres checks your `where:` conditions on that table again, and leaves the row alone when they no longer hold, as SQL written by hand would. Before, `case_item | where: reference_id is null | update! ...` could overwrite a `reference_id` someone else had just set.
 - **Editing a decimal number in the results grid saves.** On Postgres, saving a cell of a `numeric`, `decimal` or floating-point column failed with "column is of type numeric but expression is of type character varying". A quoted number for such a column, such as `update! price = '12.50'` or `where: price < '15'`, is now a number.
+- **The SQL shown for a query writes whole numbers without quotes.** `where: count = 1` was shown as `"count" = '1'`, which reads as if the column were text. The query Pine runs already sent a number.
 
 ### Added
 - **`update!` can take a value from another table in the query.** In `employee as e | company as c .id = .company_id | from: e | update! note = c.name`, each employee gets its own company's name. If a row is joined to two different values, nothing changes and Pine says which table. SQL's `UPDATE ... SET c = other.c FROM other` now converts to this.

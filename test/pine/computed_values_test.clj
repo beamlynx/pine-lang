@@ -183,7 +183,7 @@
 (deftest test-conditions-as-values
   (testing "A condition is a true/false column"
     (is (s/starts-with? (sql "report | s: title like 'A%' as a, id in (1, 2) or title is null as b")
-                        "SELECT (\"r_0\".\"title\" LIKE 'A%') AS \"a\", (\"r_0\".\"id\" IN ('1', '2') OR \"r_0\".\"title\" IS NULL) AS \"b\"")))
+                        "SELECT (\"r_0\".\"title\" LIKE 'A%') AS \"a\", (\"r_0\".\"id\" IN (1, 2) OR \"r_0\".\"title\" IS NULL) AS \"b\"")))
 
   (testing "An enum compared inside one is cast, as in where:"
     (is (s/includes? (:query (build "attachment | s: type = 'sharepoint' as sp")) "(\"a_0\".\"type\" = ?::\"public\".\"attachment_type\") AS \"sp\"")))
@@ -197,14 +197,14 @@
 (deftest test-if
   (testing "Branches are one flat CASE"
     (is (s/includes? (sql "report | s: if id = 1 then 'one' else if id = 2 then 'two' else title as k")
-                     "CASE WHEN (\"r_0\".\"id\" = '1') THEN 'one' WHEN (\"r_0\".\"id\" = '2') THEN 'two' ELSE \"r_0\".\"title\" END AS \"k\"")))
+                     "CASE WHEN (\"r_0\".\"id\" = 1) THEN 'one' WHEN (\"r_0\".\"id\" = 2) THEN 'two' ELSE \"r_0\".\"title\" END AS \"k\"")))
 
   (testing "No else is NULL"
     (is (s/includes? (sql "report | s: if title is null then id as k") "CASE WHEN (\"r_0\".\"title\" IS NULL) THEN \"r_0\".\"id\" END AS \"k\"")))
 
   (testing "An if inside then is in parentheses"
     (is (s/includes? (sql "report | s: if id = 1 then (if title is null then 'a' else 'b') else 'c' as k")
-                     "CASE WHEN (\"r_0\".\"id\" = '1') THEN CASE WHEN (\"r_0\".\"title\" IS NULL) THEN 'a' ELSE 'b' END ELSE 'c' END"))))
+                     "CASE WHEN (\"r_0\".\"id\" = 1) THEN CASE WHEN (\"r_0\".\"title\" IS NULL) THEN 'a' ELSE 'b' END ELSE 'c' END"))))
 
 ;; ----------------
 ;; USING THE NAMES
@@ -256,16 +256,16 @@
     (is (= (str "WITH \"x_1\" AS ( SELECT \"e_0\".\"company_id\" AS \"company_id\", \"e_0\".\"id\" AS \"__pine_a0__\", \"e_0\".\"reports_to\" AS \"__pine_a1__\" FROM \"employee\" AS \"e_0\" ) "
                 "SELECT \"x_1\".\"company_id\", COUNT(1) AS \"count\", MIN(\"x_1\".\"__pine_a0__\"::text) FILTER (WHERE (\"x_1\".\"__pine_a1__\" IS NULL)) AS \"top\", "
                 "BOOL_OR((\"x_1\".\"__pine_a1__\" IS NULL)) AS \"any_reports_to\", MAX(\"x_1\".\"__pine_a0__\") AS \"max_id\", SUM(\"x_1\".\"__pine_a0__\") AS \"sum_id\", "
-                "AVG(\"x_1\".\"__pine_a0__\") AS \"avg_id\", BOOL_AND((\"x_1\".\"__pine_a0__\" > '1')) AS \"all_id\" FROM \"x_1\" GROUP BY \"x_1\".\"company_id\" LIMIT 10000;")
+                "AVG(\"x_1\".\"__pine_a0__\") AS \"avg_id\", BOOL_AND((\"x_1\".\"__pine_a0__\" > 1)) AS \"all_id\" FROM \"x_1\" GROUP BY \"x_1\".\"company_id\" LIMIT 10000;")
            (sql "employee | group: company_id with count, id::text => min where reports_to is null as top, any(reports_to is null), id => max, id => sum, id => avg, all(id > 1)"))))
 
   (testing "MySQL has no FILTER or BOOL_OR"
     (is (s/includes? (sql :test-mysql "employee | group: company_id with id => min where reports_to is null as top, any(reports_to is null) as r, count where id > 1")
-                     "MIN(CASE WHEN (`x_1`.`__pine_a1__` IS NULL) THEN `x_1`.`__pine_a0__` END) AS `top`, MAX((`x_1`.`__pine_a1__` IS NULL)) AS `r`, COUNT(CASE WHEN (`x_1`.`__pine_a0__` > '1') THEN 1 END) AS `count`")))
+                     "MIN(CASE WHEN (`x_1`.`__pine_a1__` IS NULL) THEN `x_1`.`__pine_a0__` END) AS `top`, MAX((`x_1`.`__pine_a1__` IS NULL)) AS `r`, COUNT(CASE WHEN (`x_1`.`__pine_a0__` > 1) THEN 1 END) AS `count`")))
 
   (testing "SQLite has FILTER, and no BOOL_AND"
     (is (s/includes? (sql :test-sqlite "employee | group: company_id with id => min where reports_to is null as top, all(id > 1) as a")
-                     "MIN(\"x_1\".\"__pine_a0__\") FILTER (WHERE (\"x_1\".\"__pine_a1__\" IS NULL)) AS \"top\", MIN((\"x_1\".\"__pine_a0__\" > '1')) AS \"a\"")))
+                     "MIN(\"x_1\".\"__pine_a0__\") FILTER (WHERE (\"x_1\".\"__pine_a1__\" IS NULL)) AS \"top\", MIN((\"x_1\".\"__pine_a0__\" > 1)) AS \"a\"")))
 
   (testing "A filter's string is a parameter after the inner query's"
     (let [{:keys [params]} (build "employee | where: id > 5 | group: company_id with count where reports_to = 3")]
@@ -274,7 +274,7 @@
   (testing "In a checkpoint, then filtered by name: SQL's HAVING"
     (is (= (str "WITH \"result_1\" AS ( SELECT \"e_0\".\"company_id\", MIN(\"e_0\".\"id\") AS \"first\", BOOL_OR((\"e_0\".\"reports_to\" IS NULL)) AS \"top\" "
                 "FROM \"employee\" AS \"e_0\" GROUP BY \"e_0\".\"company_id\" ) "
-                "SELECT \"result_1\".* FROM \"result_1\" AS \"result_1\" WHERE (\"result_1\".\"top\" = true OR \"result_1\".\"first\" > '10') LIMIT 250;")
+                "SELECT \"result_1\".* FROM \"result_1\" AS \"result_1\" WHERE (\"result_1\".\"top\" = true OR \"result_1\".\"first\" > 10) LIMIT 250;")
            (sql "employee | group: company_id with id => min as first, any(reports_to is null) as top | where: top = true or first > 10"))))
 
   (testing "The checkpoint lists the aggregates' names"
@@ -290,7 +290,7 @@
 
 (deftest test-update
   (testing "now() as a value"
-    (is (= "UPDATE \"company\" SET \"created_at\" = NOW() WHERE \"company\".\"id\" = '1' AND \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = '1' );"
+    (is (= "UPDATE \"company\" SET \"created_at\" = NOW() WHERE \"company\".\"id\" = 1 AND \"id\" IN ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" = 1 );"
            (s/trim (eval/formatted-query (first (:queries (build "company | where: id = 1 | update! created_at = now()"))))))))
   (testing "On SQLite"
     (is (s/includes? (:query (first (:queries (build :test-sqlite "company | where: id = 1 | update! created_at = now()"))))
@@ -363,7 +363,7 @@
     (is (= "SELECT jsonb_typeof(\"c_0\".\"data\"::jsonb) AS \"t\", jsonb_array_length(jsonb_extract_path(\"c_0\".\"data\"::jsonb, 'tags'::text)) AS \"n\", \"c_0\".\"id\" AS \"__c_0__id\" FROM \"customer\" AS \"c_0\" LIMIT 250;"
            (sql "customer | s: jsonb_typeof(data) as t, data.tags => jsonb_array_length as n")))
     (is (s/includes? (sql "customer | s: jsonb_array_length(if id = 1 then data else data.nodes) as n")
-                     "jsonb_array_length(CASE WHEN (\"c_0\".\"id\" = '1') THEN \"c_0\".\"data\"::jsonb ELSE jsonb_extract_path(\"c_0\".\"data\"::jsonb, 'nodes'::text) END)")))
+                     "jsonb_array_length(CASE WHEN (\"c_0\".\"id\" = 1) THEN \"c_0\".\"data\"::jsonb ELSE jsonb_extract_path(\"c_0\".\"data\"::jsonb, 'nodes'::text) END)")))
 
   (testing "A string literal is JSON text"
     (is (s/includes? (sql "customer | s: jsonb_typeof('[1]') as t") "jsonb_typeof('[1]'::jsonb)")))

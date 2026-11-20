@@ -730,11 +730,11 @@
                    "SELECT \"r\".* FROM \"r\" AS \"r\" LIMIT 250;")))
     (testing "from: back to the changed table, then update!"
       (builds "update employee e set reports_to = 1 from company c where e.company_id = c.id and c.name = 'Acme'"
-              (str "UPDATE \"employee\" SET \"reports_to\" = '1' WHERE \"id\" IN ( SELECT \"e\".\"id\" FROM \"employee\" AS \"e\" "
+              (str "UPDATE \"employee\" SET \"reports_to\" = 1 WHERE \"id\" IN ( SELECT \"e\".\"id\" FROM \"employee\" AS \"e\" "
                    "JOIN \"company\" AS \"c\" ON \"e\".\"company_id\" = \"c\".\"id\" WHERE \"c\".\"name\" = 'Acme' );")))
     (testing "A subquery's block, joined by its alias"
       (builds "select * from (select id from company where id > 1) x join employee e on e.company_id = x.id"
-              (str "WITH \"x\" AS ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" > '1' ) "
+              (str "WITH \"x\" AS ( SELECT \"c_0\".\"id\" FROM \"company\" AS \"c_0\" WHERE \"c_0\".\"id\" > 1 ) "
                    "SELECT \"x\".*, \"e\".*, \"e\".\"id\" AS \"__e__id\" FROM \"x\" AS \"x\" JOIN \"employee\" AS \"e\" ON \"x\".\"id\" = \"e\".\"company_id\" LIMIT 250;")))
     (testing "A set block, then in"
       (builds "select * from employee where company_id in (select id from company where name like 'A%')"
