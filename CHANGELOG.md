@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file. This change
 log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [0.58.0] - 2026-11-20
 ### Fixed
 - **`update!` and `delete!` no longer overwrite a row another person has just changed.** If someone else changes a row while your write waits for it, Postgres checks your `where:` conditions on that table again, and leaves the row alone when they no longer hold, as SQL written by hand would. Before, `case_item | where: reference_id is null | update! ...` could overwrite a `reference_id` someone else had just set.
 - **Editing a decimal number in the results grid saves.** On Postgres, saving a cell of a `numeric`, `decimal` or floating-point column failed with "column is of type numeric but expression is of type character varying". A quoted number for such a column, such as `update! price = '12.50'` or `where: price < '15'`, is now a number.
