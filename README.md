@@ -1,3 +1,5 @@
+> **Pine has moved.** It now lives in [beamlynx/beamlynx-desktop](https://github.com/beamlynx/beamlynx-desktop), in the [`pine/`](https://github.com/beamlynx/beamlynx-desktop/tree/main/pine) folder, with its full history. Open issues and pull requests there. This repo is archived. Its tags and releases stay here.
+
 # Pine
 
 ## Dependencies
